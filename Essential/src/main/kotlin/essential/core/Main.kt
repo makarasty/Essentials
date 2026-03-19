@@ -14,6 +14,9 @@ import essential.common.database.data.migrateMapRatingsFromPluginData
 import essential.common.database.databaseInit
 import essential.common.permission.Permission
 import essential.common.service.fileWatchService
+import essential.common.bundle.Bundle
+import essential.common.log.LogType
+import essential.common.log.writeLog
 import essential.core.generated.registerGeneratedClientCommands
 import essential.core.generated.registerGeneratedEventHandlers
 import essential.core.generated.registerGeneratedServerCommands
@@ -138,22 +141,33 @@ class Main : Plugin() {
                 if (!isNotTargetMap) {
                     pluginData.data.warpBlock.forEach {
                         if (it.mapName == state.map.name() && e.tile != null && it.x.toShort() == e.tile.x && it.y.toShort() == e.tile.y && it.tileName == e.tile.block().name) {
+                            Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Warp Block at ${e.tile.x}, ${e.tile.y}")
                             return false
                         }
                     }
                 }
 
                 if (state.rules.pvp && conf.feature.pvp.autoTeam && e.player.team() == Team.derelict) {
+                    Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Spectator (Derelict) in PvP")
                     return false
                 }
 
                 if (data != null) {
                     return when {
                         isHub != null && isHub == state.map.name() -> {
-                            Permission.check(data, "hub.build")
+                            val canBuild = Permission.check(data, "hub.build")
+                            if (!canBuild) {
+                                e.player.sendMessage(Bundle(e.player.locale())["event.permission.hub.denied"])
+                                Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) building denied: Hub Restriction")
+                                writeLog(LogType.Player, "Player ${e.player.plainName()} (${e.player.uuid()}) building denied: Hub Restriction")
+                            }
+                            canBuild
                         }
 
                         data.strictMode -> {
+                            e.player.sendMessage(Bundle(e.player.locale())["event.strict.mode.denied"])
+                            Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Strict Mode Active")
+                            writeLog(LogType.Player, "Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Strict Mode Active")
                             false
                         }
 
@@ -162,7 +176,9 @@ class Main : Plugin() {
                         }
                     }
                 }
-                return false
+                
+                // Allow interaction by default if player data is not yet loaded to avoid join race conditions
+                return true
             }
         }.also { listener -> actionFilter = listener })
 

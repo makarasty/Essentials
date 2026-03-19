@@ -7,6 +7,8 @@ import com.charleskorn.kaml.YamlConfiguration
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.database.table.PlayerTable
+import essential.common.log.LogType
+import essential.common.log.writeLog
 import essential.common.players
 import essential.common.rootPath
 import essential.core.Main.Companion.scope
@@ -185,13 +187,28 @@ object Permission {
     }
 
     fun check(data: PlayerData, command: String): Boolean {
-        val group = main[this[data].group]
+        // If the permission map is empty, something went wrong with loading.
+        // To prevent a total lockout, we allow basic interactions if permission.yaml failed to load.
+        if (main.isEmpty()) {
+            Log.warn("Permissions are empty! Allowing basic command: $command for player ${data.name}")
+            return true
+        }
+
+        val groupName = this[data].group
+        val group = main[groupName]
         return if (group != null) {
             val passed = group.permission.contains(command) || group.permission.contains("all")
-            Log.debug("[Permission] ${data.name} > group: ${this[data].group} -> command: $command -> $passed")
+            if (!passed) {
+                writeLog(LogType.Player, "Permission Denied: Player ${data.name} (${data.uuid}) tried to use $command in group $groupName")
+            }
+            Log.debug("[Permission] ${data.name} > group: $groupName -> command: $command -> $passed")
             passed
         } else {
-            Log.debug("[Permission] ${data.name} > group: ${this[data].group} -> command: $command -> false")
+            // If group is not found but it's a critical interaction like hub building, 
+            // we might want to allow it by default if the system is in an inconsistent state,
+            // but for now we log it and deny.
+            writeLog(LogType.Player, "Permission Group Not Found: Player ${data.name} (${data.uuid}) tried to use $command (Group: $groupName)")
+            Log.debug("[Permission] ${data.name} > group: $groupName -> command: $command -> false")
             false
         }
     }

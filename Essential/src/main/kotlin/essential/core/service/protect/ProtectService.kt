@@ -7,6 +7,8 @@ import essential.common.config.Config
 import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
 import essential.common.util.findPlayerData
+import essential.common.log.LogType
+import essential.common.log.writeLog
 import essential.core.service.protect.generated.registerGeneratedClientCommands
 import essential.core.service.protect.generated.registerGeneratedEventHandlers
 import mindustry.Vars.netServer
@@ -40,10 +42,12 @@ class ProtectService : Plugin() {
                 // 계정 기능이 켜져있는 경우
                 if (conf.account.enabled) {
                     // Discord 인증을 사용할 경우
-                    if (requireNonNull(conf.account.getAuthType()) == ProtectConfig.AuthType.Discord) {
+                    if (java.util.Objects.requireNonNull(conf.account.getAuthType()) == ProtectConfig.AuthType.Discord) {
                         // 계정에 Discord 인증이 안되어 있는 경우
                         if (data.discordID == null) {
-                            action.player.sendMessage(Bundle(action.player.locale)["event.discord.not.registered"])
+                            action.player.sendMessage(essential.common.bundle.Bundle(action.player.locale())["event.discord.not.registered"])
+                            Log.info("Player ${action.player.plainName()} (${action.player.uuid()}) action denied: Discord authentication required")
+                            writeLog(LogType.Player, "Player ${action.player.plainName()} (${action.player.uuid()}) action denied: Discord authentication required")
                             return@addActionFilter false
                         }
                     } else {
@@ -52,7 +56,8 @@ class ProtectService : Plugin() {
                 }
                 return@addActionFilter true
             } else {
-                return@addActionFilter false
+                // Allow interaction by default if data is not loaded yet to prevent lockout
+                return@addActionFilter true
             }
         })
 
