@@ -20,8 +20,8 @@ feature:
     # If you do not set this value to empty, AFK players will be moved to that server address instead of being kicked.
     server: ""
 
-  # Setting for voting features
-  vote:
+  # Setting for evoting features
+  evote:
     # Use plugin voting system (default: true)
     enabled: true
     # If you use this feature, players can be start voting from player list.

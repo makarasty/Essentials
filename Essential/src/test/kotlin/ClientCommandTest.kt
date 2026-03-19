@@ -465,7 +465,7 @@ class ClientCommandTest {
 
         setPermission("user", true)
         clientCommand.handleMessage("/help", player)
-        assertContains(playerData.lastReceivedMessage, "vote")
+        assertContains(playerData.lastReceivedMessage, "evote")
         clientCommand.handleMessage("/help 3", player)
         clientCommand.handleMessage("/help 5", player)
 
@@ -1067,43 +1067,43 @@ class ClientCommandTest {
     }
 
     @Test
-    fun client_vote() {
+    fun client_evote() {
         // Test vote command with kick parameter
-        clientCommand.handleMessage("/vote kick testplayer", player)
+        clientCommand.handleMessage("/evote kick testplayer", player)
 
         // Test vote command with map parameter
-        clientCommand.handleMessage("/vote map", player)
+        clientCommand.handleMessage("/evote map", player)
 
         // Test vote command with gg parameter
-        clientCommand.handleMessage("/vote gg", player)
+        clientCommand.handleMessage("/evote gg", player)
 
         // Test vote command with skip parameter
-        clientCommand.handleMessage("/vote skip", player)
+        clientCommand.handleMessage("/evote skip", player)
 
         // Test vote command with back parameter
-        clientCommand.handleMessage("/vote back", player)
+        clientCommand.handleMessage("/evote back", player)
 
         // Test vote command with random parameter
-        clientCommand.handleMessage("/vote random", player)
+        clientCommand.handleMessage("/evote random", player)
 
         // Test with invalid vote type
-        clientCommand.handleMessage("/vote invalidtype", player)
+        clientCommand.handleMessage("/evote invalidtype", player)
 
         // Test without providing parameters
-        clientCommand.handleMessage("/vote", player)
+        clientCommand.handleMessage("/evote", player)
     }
 
     @Test
-    fun client_votekick() {
+    fun client_evotekick() {
         // Test votekick command
         val dummy = newPlayer()
-        clientCommand.handleMessage("/votekick ${dummy.first.name}", player)
+        clientCommand.handleMessage("/evotekick ${dummy.first.name}", player)
 
         // Test votekick command with non-existent player
-        clientCommand.handleMessage("/votekick nonexistentplayer", player)
+        clientCommand.handleMessage("/evotekick nonexistentplayer", player)
 
         // Test without providing a player name
-        clientCommand.handleMessage("/votekick", player)
+        clientCommand.handleMessage("/evotekick", player)
 
         // Clean up
         leavePlayer(dummy.first)

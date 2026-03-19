@@ -459,7 +459,7 @@ fun gameOver(event: GameOverEvent) {
         val mostVotedMap = voteCount.maxByOrNull { it.value }?.key
 
         if (mostVotedMap != null) {
-            Call.sendMessage(Bundle()["command.nextmap.vote.result", mostVotedMap.plainName()])
+            Call.sendMessage(Bundle()["command.nextmap.evote.result", mostVotedMap.plainName()])
         }
 
         mapVotes.clear()

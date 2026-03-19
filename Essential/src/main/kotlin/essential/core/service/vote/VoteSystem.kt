@@ -44,24 +44,24 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
         fun sendMessage(playerData: PlayerData?) {
             if (playerData != null) {
                 val bundle = playerData.bundle
-                playerData.send("command.vote.starter", voteData.starter.player.plainName())
+                playerData.send("command.evote.starter", voteData.starter.player.plainName())
                 playerData.player.sendMessage(
                     when (voteData.type) {
-                        VoteType.Kick -> bundle["command.vote.kick.start", voteData.target!!.plainName(), voteData.reason!!]
-                        VoteType.Map -> bundle["command.vote.map.start", voteData.map!!.name(), voteData.reason!!]
+                        VoteType.Kick -> bundle["command.evote.kick.start", voteData.target!!.plainName(), voteData.reason!!]
+                        VoteType.Map -> bundle["command.evote.map.start", voteData.map!!.name(), voteData.reason!!]
                         VoteType.GameOver -> {
                             if (!isPvP) {
-                                bundle["command.vote.gg.start"]
+                                bundle["command.evote.gg.start"]
                             } else {
-                                bundle["command.vote.gg.pvp.team"]
+                                bundle["command.evote.gg.pvp.team"]
                             }
                         }
-                        VoteType.Skip -> bundle["command.vote.skip.start", voteData.wave!!]
-                        VoteType.Back -> bundle["command.vote.back.start", voteData.reason!!]
-                        VoteType.Random -> bundle["command.vote.random.start"]
+                        VoteType.Skip -> bundle["command.evote.skip.start", voteData.wave!!]
+                        VoteType.Back -> bundle["command.evote.back.start", voteData.reason!!]
+                        VoteType.Random -> bundle["command.evote.random.start"]
                     }
                 )
-                playerData.send("command.vote.how")
+                playerData.send("command.evote.how")
             }
         }
 
@@ -92,7 +92,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         } else if (isAdmin) {
                             isAdminVote = true
                         }
-                        data.send("command.vote.voted")
+                        data.send("command.evote.voted")
                     } else if (isVoting && message.equals("n", true) && isAdmin) {
                         isCanceled = true
                     }
@@ -167,7 +167,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     override fun run() {
         if (isVoting) {
             if (Groups.player.find { a -> a.uuid() == voteData.starter.uuid } == null) {
-                send("command.vote.canceled.leave")
+                send("command.evote.canceled.leave")
                 this.cancel()
             } else {
                 if (count % 10 == 0) {
@@ -176,20 +176,20 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             if (it.team() == voteData.team) {
                                 val data = findPlayerData(it.uuid())
                                 if (data != null && voteData.targetUUID != data.uuid) {
-                                    data.send("command.vote.count", count.toString(), check() - voted.size)
+                                    data.send("command.evote.count", count.toString(), check() - voted.size)
                                 }
                             }
                         }
                     } else {
-                        send("command.vote.count", count.toString(), check() - voted.size)
+                        send("command.evote.count", count.toString(), check() - voted.size)
                         if (voteData.type == VoteType.Kick && Groups.player.find { a -> a.uuid() == voteData.targetUUID } == null) {
-                            send("command.vote.kick.target.leave")
+                            send("command.evote.kick.target.leave")
                         }
                     }
                 }
                 count--
                 if ((count == 0 && check() <= voted.size) || check() <= voted.size || isAdminVote) {
-                    send("command.vote.success")
+                    send("command.evote.success")
 
                     val onlinePlayers = StringBuilder()
                     players.forEach {
@@ -202,7 +202,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             val name = Vars.netServer.admins.getInfo(voteData.targetUUID).lastName
                             if (Groups.player.find { a -> a.uuid() == voteData.targetUUID } == null) {
                                 Vars.netServer.admins.banPlayerID(voteData.targetUUID)
-                                send("command.vote.kick.target.banned", name)
+                                send("command.evote.kick.target.banned", name)
                                 Events.fire(
                                     CustomEvents.PlayerVoteBanned(
                                         voteData.starter.name,
@@ -213,7 +213,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                 )
                             } else {
                                 voteData.target?.kick(Packets.KickReason.kick, 60 * 60 * 3000)
-                                send("command.vote.kick.target.kicked", name)
+                                send("command.evote.kick.target.kicked", name)
                                 Events.fire(
                                     CustomEvents.PlayerVoteKicked(
                                         voteData.starter.name,
@@ -257,7 +257,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                 Vars.state.wave++
                                 Vars.state.wavetime = Vars.state.rules.waveSpacing
                             }
-                            send("command.vote.skip.done", voteData.wave!!.toString())
+                            send("command.evote.skip.done", voteData.wave!!.toString())
                         }
 
                         VoteType.Back -> {
@@ -285,43 +285,43 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             } catch (t: Exception) {
                                 t.printStackTrace()
                             }
-                            send("command.vote.back.done")
+                            send("command.evote.back.done")
                         }
 
                         VoteType.Random -> {
                             if (nextVoteAvailable.hasPassedNow() && !Permission.check(voteData.starter, "vote.random.bypass")) {
-                                send("command.vote.random.cool")
+                                send("command.evote.random.cool")
                             } else {
                                 voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(7.minutes)
                                 nextVoteAvailable = timeSource.markNow().plus(5.minutes)
-                                send("command.vote.random.done")
-                                send("command.vote.random.is")
+                                send("command.evote.random.done")
+                                send("command.evote.random.is")
                                 Time.runTask(180f, object : Timer.Task() {
                                     override fun run() {
                                         when (kotlin.random.Random.nextInt(7)) {
                                             0 -> {
-                                                send("command.vote.random.unit")
+                                                send("command.evote.random.unit")
                                                 Groups.unit.each {
                                                     if (it.team == voteData.starter.player.team()) it.kill()
                                                 }
-                                                send("command.vote.random.unit.wave")
+                                                send("command.evote.random.unit.wave")
                                                 Vars.logic.runWave()
                                             }
 
                                             1 -> {
-                                                send("command.vote.random.wave")
+                                                send("command.evote.random.wave")
                                                 for (a in 0..5) Vars.logic.runWave()
                                             }
 
                                             2 -> {
-                                                send("command.vote.random.health")
+                                                send("command.evote.random.health")
                                                 Groups.build.each {
                                                     it.health(it.health / 2)
                                                 }
                                             }
 
                                             3 -> {
-                                                send("command.vote.random.fill.core")
+                                                send("command.evote.random.fill.core")
                                                 Vars.content.items().forEach {
                                                     if (!it.isHidden) {
                                                         Vars.state.teams.cores(voteData.starter.player.team())
@@ -334,7 +334,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                             }
 
                                             4 -> {
-                                                send("command.vote.random.storm")
+                                                send("command.evote.random.storm")
                                                 Call.createWeather(
                                                     Weathers.rain,
                                                     10f,
@@ -345,7 +345,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                             }
 
                                             5 -> {
-                                                send("command.vote.random.fire")
+                                                send("command.evote.random.fire")
                                                 for (x in 0 until Vars.world.width()) {
                                                     for (y in 0 until Vars.world.height()) {
                                                         Call.effect(
@@ -384,7 +384,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                                             it.health(it.health() / 30)
                                                         }
                                                         if (tick == 300) {
-                                                            send("command.vote.random.supply")
+                                                            send("command.evote.random.supply")
                                                             repeat(2) {
                                                                 UnitTypes.oct.spawn(
                                                                     voteData.starter.player.team(),
@@ -400,7 +400,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                             }
 
                                             else -> {
-                                                send("command.vote.random.nothing")
+                                                send("command.evote.random.nothing")
                                             }
                                         }
                                     }
@@ -414,11 +414,11 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                     if (isPvP) {
                         players.forEach {
                             if (it.player.team() == voteData.team) {
-                                Core.app.post { it.send("command.vote.failed") }
+                                Core.app.post { it.send("command.evote.failed") }
                             }
                         }
                     } else {
-                        send("command.vote.failed")
+                        send("command.evote.failed")
                     }
                     this.cancel()
                 }

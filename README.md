@@ -61,7 +61,7 @@ Put this plugin in the ``<server folder location>/config/mods`` folder.
 | unban      | &lt;player&gt;                                                      | Unban player                                                                     |
 | unmute     | &lt;player&gt;                                                      | Unmute player                                                                    |
 | url        | &lt;command&gt;                                                     | Opens a URL contained in a specific command.                                     |
-| vote       | &lt;kick/map/gg/skip/back/random&gt; [player/amount/world] [reason] | Start voting                                                                     |
+| evote      | &lt;kick/map/gg/skip/back/random&gt; [player/amount/world] [reason] | Start voting                                                                     |
 | votekick   | &lt;player&gt;                                                      | Start kick voting                                                                |
 | weather    | &lt;weather&gt; &lt;seconds&gt;                                     | Adds a weather effect to the map.                                                |
 

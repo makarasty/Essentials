@@ -30,7 +30,7 @@ data class DatabaseConfig(
 @Serializable
 data class Feature(
     val afk: Afk = Afk(),
-    val vote: Vote = Vote(),
+    val evote: Evote = Evote(),
     val unit: UnitFeature = UnitFeature(),
     val motd: MessageOfTheDay = MessageOfTheDay(),
     val pvp: PvP = PvP(),
@@ -50,7 +50,7 @@ data class Afk(
 
 /** Feature - Vote settings */
 @Serializable
-data class Vote(
+data class Evote(
     val enabled: Boolean = true,
     val enableVotekick: Boolean = false,
 )

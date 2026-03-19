@@ -37,8 +37,8 @@ admin:
     - tempban
     - tpp
     - unmute
-    - vote.pass
-    - vote.reset
+    - evote.pass
+    - evote.reset
     - weather
 user:
   permission:
@@ -62,13 +62,13 @@ user:
     - tp
     - track
     - url
-    - vote
-    - vote.back
-    - vote.gg
-    - vote.kick
-    - vote.map
-    - vote.random
-    - vote.skip
+    - evote
+    - evote.back
+    - evote.gg
+    - evote.kick
+    - evote.map
+    - evote.random
+    - evote.skip
 visitor:
   default: true
   permission:

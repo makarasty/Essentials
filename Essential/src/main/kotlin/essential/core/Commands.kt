@@ -2232,23 +2232,23 @@ class Commands {
         }
     }
 
-    @ClientCommand("vote", "<kick/map/gg/skip/back/random> [player/amount/world] [reason]", "Start voting")
-    fun vote(playerData: PlayerData, arg: Array<out String>) {
-        val coolTime = "command.vote.coolTime"
-        val noReason = "command.vote.no.reason"
-        val mapNotFound = "command.vote.map.not.exists"
+    @ClientCommand("evote", "<kick/map/gg/skip/back/random> [player/amount/world] [reason]", "Start voting")
+    fun evote(playerData: PlayerData, arg: Array<out String>) {
+        val coolTime = "command.evote.coolTime"
+        val noReason = "command.evote.no.reason"
+        val mapNotFound = "command.evote.map.not.exists"
 
         fun start(voteData: VoteData) {
             if (!isVoting) {
                 isVoting = true
                 Timer.schedule(VoteSystem(voteData), 0f, 1f, 60)
             } else {
-                playerData.err("command.vote.process")
+                playerData.err("command.evote.process")
             }
         }
 
         if (arg.isEmpty()) {
-            playerData.err("command.vote.arg.empty")
+            playerData.err("command.evote.arg.empty")
             return
         }
 
@@ -2258,14 +2258,14 @@ class Commands {
         }
 
         val solo = players.size == 1 && arg[0] == "map"
-        if (!solo && players.filter { !it.afk }.size <= 3 && !Permission.check(playerData, "vote.admin")) {
-            playerData.err("command.vote.enough")
+        if (!solo && players.filter { !it.afk }.size <= 3 && !Permission.check(playerData, "evote.admin")) {
+            playerData.err("command.evote.enough")
             return
         }
 
         when (arg[0]) {
             "kick" -> {
-                if (!Permission.check(playerData, "vote.kick")) return
+                if (!Permission.check(playerData, "evote.kick")) return
                 if (arg.size != 3) {
                     playerData.err(noReason)
                     return
@@ -2273,7 +2273,7 @@ class Commands {
                 val target = findPlayers(arg[1])
                 if (target != null) {
                     if (Permission.check(playerData, "kick.admin")) {
-                        playerData.err("command.vote.kick.target.admin")
+                        playerData.err("command.evote.kick.target.admin")
                     } else {
                         val voteData = VoteData(
                             target = target,
@@ -2291,9 +2291,9 @@ class Commands {
 
             // vote map <map name> <reason>
             "map" -> {
-                if (!Permission.check(playerData, "vote.map")) return
+                if (!Permission.check(playerData, "evote.map")) return
                 if (arg.size == 1) {
-                    playerData.err("command.vote.no.map")
+                    playerData.err("command.evote.no.map")
                     return
                 }
                 if (arg.size == 2) {
@@ -2346,7 +2346,7 @@ class Commands {
 
             // vote gg
             "gg" -> {
-                if (!Permission.check(playerData, "vote.gg")) return
+                if (!Permission.check(playerData, "evote.gg")) return
                 if (nextVoteAvailable.hasPassedNow()) {
                     val voteData = VoteData(
                         type = VoteType.GameOver,
@@ -2364,12 +2364,12 @@ class Commands {
 
             // vote skip <count>
             "skip" -> {
-                if (!Permission.check(playerData, "vote.skip")) return
+                if (!Permission.check(playerData, "evote.skip")) return
                 if (arg.size == 1) {
-                    playerData.send("command.vote.skip.wrong")
+                    playerData.send("command.evote.skip.wrong")
                 } else if (arg[1].toIntOrNull() != null) {
                     if (arg[1].toInt() > conf.command.skip.limit) {
-                        playerData.send("command.vote.skip.tooMany")
+                        playerData.send("command.evote.skip.tooMany")
                     } else {
                         if (nextVoteAvailable.hasPassedNow()) {
                             val voteData = VoteData(
@@ -2388,9 +2388,9 @@ class Commands {
 
             // vote back <reason>
             "back" -> {
-                if (!Permission.check(playerData, "vote.back")) return
+                if (!Permission.check(playerData, "evote.back")) return
                 if (!Vars.saveDirectory.child("rollback.msav").exists()) {
-                    playerData.err("command.vote.back.no.file")
+                    playerData.err("command.evote.back.no.file")
                     return
                 }
                 if (arg.size == 1) {
@@ -2407,8 +2407,8 @@ class Commands {
 
             // vote random
             "random" -> {
-                if (!Permission.check(playerData, "vote.random")) return
-                if (nextVoteAvailable.hasPassedNow() || Permission.check(playerData, "vote.random.bypass")) {
+                if (!Permission.check(playerData, "evote.random")) return
+                if (nextVoteAvailable.hasPassedNow() || Permission.check(playerData, "evote.random.bypass")) {
                     val voteData = VoteData(
                         type = VoteType.Random,
                         starter = playerData
@@ -2421,31 +2421,31 @@ class Commands {
             }
 
             "reset" -> {
-                if (!Permission.check(playerData, "vote.reset")) return
+                if (!Permission.check(playerData, "evote.reset")) return
                 isVoting = false
                 nextVoteAvailable = timeSource.markNow()
                 voterCooldown.clear()
-                playerData.send("command.vote.reset")
+                playerData.send("command.evote.reset")
             }
 
             else -> {
-                playerData.send("command.help.vote")
+                playerData.send("command.help.evote")
             }
         }
     }
 
-    @ClientCommand("votekick", "<player>", "Start kick voting")
-    fun votekick(playerData: PlayerData, arg: Array<out String>) {
+    @ClientCommand("evotekick", "<player>", "Start kick voting")
+    fun evotekick(playerData: PlayerData, arg: Array<out String>) {
         if (arg[0].contains("#")) {
             val target = players.find { e ->
                 e.uuid == Groups.player.find { p -> p.id() == arg[0].substring(1).toInt() }.uuid()
             }
             if (target != null) {
                 if (Permission.check(target, "kick.admin")) {
-                    playerData.err("command.vote.kick.target.admin")
+                    playerData.err("command.evote.kick.target.admin")
                 } else {
                     val array = arrayOf("kick", target.name, "Kick")
-                    vote(playerData, array)
+                    evote(playerData, array)
                 }
             }
         }
@@ -2457,7 +2457,7 @@ class Commands {
 
         if (arg.isEmpty()) {
             if (mapVotes.isEmpty()) {
-                playerData.send("command.nextmap.vote.none")
+                playerData.send("command.nextmap.evote.none")
             } else {
                 val voteCount = HashMap<Map, Int>()
                 mapVotes.values.forEach { map ->
@@ -2466,16 +2466,16 @@ class Commands {
 
                 val sortedVotes = voteCount.entries.sortedByDescending { it.value }
 
-                val message = StringBuilder(playerData.bundle["command.nextmap.vote.current"] + "\n")
+                val message = StringBuilder(playerData.bundle["command.nextmap.evote.current"] + "\n")
                 sortedVotes.forEach { (map, count) ->
-                    message.append(playerData.bundle["command.nextmap.vote.count", map.plainName(), count] + "\n")
+                    message.append(playerData.bundle["command.nextmap.evote.count", map.plainName(), count] + "\n")
                 }
 
                 val playerVote = mapVotes[playerData.uuid]
                 if (playerVote != null) {
-                    message.append("\n" + playerData.bundle["command.nextmap.vote.your", playerVote.plainName()])
+                    message.append("\n" + playerData.bundle["command.nextmap.evote.your", playerVote.plainName()])
                 } else {
-                    message.append("\n" + playerData.bundle["command.nextmap.vote.none.yours"])
+                    message.append("\n" + playerData.bundle["command.nextmap.evote.none.yours"])
                 }
 
                 playerData.player.sendMessage(message.toString())
@@ -2510,15 +2510,15 @@ class Commands {
                 if (mapVotes[playerUuid] == target) {
                     // Cancel the vote
                     mapVotes.remove(playerUuid)
-                    playerData.send("command.nextmap.vote.canceled", target.plainName())
+                    playerData.send("command.nextmap.evote.canceled", target.plainName())
                 } else {
                     // Record the vote
                     val previousVote = mapVotes.put(playerUuid, target)
 
                     if (previousVote != null) {
-                        playerData.send("command.nextmap.vote.changed", previousVote.plainName(), target.plainName())
+                        playerData.send("command.nextmap.evote.changed", previousVote.plainName(), target.plainName())
                     } else {
-                        playerData.send("command.nextmap.vote.cast", target.plainName())
+                        playerData.send("command.nextmap.evote.cast", target.plainName())
                     }
 
                     // If admin, they can still override the next map
