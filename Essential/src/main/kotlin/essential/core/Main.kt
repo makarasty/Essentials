@@ -3,163 +3,171 @@ package essential.core
 import arc.ApplicationListener
 import arc.Core
 import arc.Events
-import arc.files.Fi
 import arc.util.CommandHandler
 import arc.util.Http
 import arc.util.Log
-import com.charleskorn.kaml.Yaml
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
-import essential.core.Event.actionFilter
-import essential.core.Event.findPlayerData
-import essential.core.annotation.ClientCommand
-import essential.core.annotation.ServerCommand
+import essential.common.*
+import essential.common.config.Config
+import essential.common.database.data.createPluginData
+import essential.common.database.data.getPluginData
+import essential.common.database.data.migrateMapRatingsFromPluginData
+import essential.common.database.databaseInit
+import essential.common.permission.Permission
+import essential.common.service.fileWatchService
+import essential.common.bundle.Bundle
+import essential.common.log.LogType
+import essential.common.log.writeLog
+import essential.core.generated.registerGeneratedClientCommands
+import essential.core.generated.registerGeneratedEventHandlers
+import essential.core.generated.registerGeneratedServerCommands
+import essential.core.service.achievements.AchievementService
+import essential.core.service.bridge.BridgeService
+import essential.core.service.chat.ChatService
+import essential.core.service.discord.DiscordService
+import essential.core.service.protect.ProtectService
+import essential.core.service.web.WebService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import mindustry.Vars
+import mindustry.Vars.state
 import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
-import mindustry.gen.Playerc
 import mindustry.mod.Plugin
 import mindustry.net.Administration
 import org.apache.maven.artifact.versioning.DefaultArtifactVersion
-import org.hjson.JsonValue
-import java.io.InputStream
-import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 import java.util.*
-import java.util.concurrent.*
-import kotlin.reflect.full.declaredFunctions
-import kotlin.reflect.full.findAnnotation
-
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class Main : Plugin() {
     companion object {
-        const val CONFIG_PATH = "config/config.yaml"
-        lateinit var conf: Config
-        lateinit var pluginData: PluginData
-
-        @JvmField
-        val root: Fi = Core.settings.dataDirectory.child("mods/Essentials/")
-
-        @JvmField
-        val database = DB()
-
-        @JvmField
-        val daemon: ExecutorService =
-            ThreadPoolExecutor(0, Int.MAX_VALUE, 60L, TimeUnit.MILLISECONDS, SynchronousQueue())
-
-        fun currentTime(): String {
-            return ZonedDateTime.now().format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.FULL).withLocale(Locale.getDefault()))
+        const val CONFIG_PATH = "config/config"
+        var conf: CoreConfig = runBlocking {
+            // 플러그인 설정 불러오기
+            val config = Config.load("config", CoreConfig.serializer(), CoreConfig())
+            require(config != null) {
+                Log.err(bundle["event.plugin.load.failed"])
+            }
+            config
         }
 
-        fun <T> createAndReadConfig(name: String, file: InputStream, type: Class<T>): T? {
-            if (!root.child("config/$name").exists()) {
-                root.child("config/$name").write(file, false)
-            }
-
-            val mapper = ObjectMapper(YAMLFactory())
-            return try {
-                mapper.readValue(root.child("config/$name").file(), type)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-        }
+        val scope = CoroutineScope(Dispatchers.IO)
+        val threadPool: ExecutorService = Executors.newFixedThreadPool(2)
     }
 
-    val bundle = Bundle()
+    private var bridgeService = BridgeService()
+    private var chatService = ChatService()
+    private var protectService = ProtectService()
+    private var achievementService = AchievementService()
+    private var discordService = DiscordService()
+    private var webService = WebService()
 
-    override fun init() {
+    override fun init() = runBlocking {
+        Config.migrate()
+        conf = Config.load("config", CoreConfig.serializer(), CoreConfig()) ?: conf
+
+        // 플러그인 언어 설정 및 태그 추가
         bundle.prefix = "[Essential]"
+
         Log.debug(bundle["event.plugin.starting"])
 
-        // 플러그인 설정
-        if (!root.child("config/config.yaml").exists()) {
-            root.child("config/config.yaml").write(this.javaClass.getResourceAsStream("/config.yaml"), false)
-        }
-        if (root.child("log/old").exists()) {
-            root.child("log/old").mkdirs()
-        }
-
-        conf = Yaml.default.decodeFromString(Config.serializer(), root.child(CONFIG_PATH).readString())
-        bundle.locale = Locale(conf.plugin.lang)
-
-        if (!root.child("data").exists()) {
-            root.child("data").mkdirs()
-        }
-
-        // 설정 및 DB 업그레이드
-        Upgrade().upgrade()
-
-        // DB 설정
-        database.load()
-        database.connect()
-        database.createTable()
-
-        // 데이터 설정
-        pluginData = PluginData()
-        pluginData.load()
+        bundle.locale = Locale.forLanguageTag(conf.plugin.lang.replace("_", "-"))
+        bundle.resource = ResourceBundle.getBundle("bundles/common/bundle", bundle.locale)
 
         // 업데이트 확인
         checkUpdate()
 
-        // 권한 기능 설정
-        Permission.load()
+        // 기록 및 데이터 폴더 생성
+        rootPath.child("log").mkdirs()
+        rootPath.child("data").mkdirs()
+
+        // DB 설정
+        // todo 이전 버전 db 업그레이드
+        databaseInit(
+            conf.plugin.database.url,
+            conf.plugin.database.username,
+            conf.plugin.database.password
+        )
+
+        // 플러그인 데이터 설정
+            var data = getPluginData()
+            if (data == null) {
+                data = createPluginData()
+            }
+
+            pluginData = data
+
+            try {
+                migrateMapRatingsFromPluginData(data)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            // 권한 기능 설정
+            Permission.load()
 
         // 설정 파일 감시기능
-        daemon.submit(FileWatchService())
+        threadPool.execute {
+            fileWatchService()
+        }
 
         // 이벤트 등록
-        for (functions in Event::class.declaredFunctions) {
-            val annotation = functions.findAnnotation<essential.core.annotation.Event>()
-            if (annotation != null) {
-                functions.call(Event)
-            }
-        }
+        registerGeneratedEventHandlers()
 
         // 스레드 등록
         val trigger = Trigger()
         trigger.register()
-        daemon.submit(Trigger.Thread())
-        daemon.submit(Trigger.UpdateThread())
+        threadPool.execute(Trigger.PingThread())
 
         Vars.netServer.admins.addActionFilter(object : Administration.ActionFilter {
-            var isNotTargetMap = false
-
             init {
                 Events.on(WorldLoadEvent::class.java) {
-                    isNotTargetMap = !isNotTargetMap && pluginData.warpBlocks.none { f -> f.mapName == Vars.state.map.name() }
+                    isNotTargetMap =
+                        !isNotTargetMap && pluginData.data.warpBlock.none { f -> f.mapName == state.map.name() }
                 }
             }
 
             override fun allow(e: Administration.PlayerAction): Boolean {
                 if (e.player == null) return true
-                val data = database.players.find { it.uuid == e.player.uuid() }
-                val isHub = pluginData["hubMode"]
+                val data = players.find { it.uuid == e.player.uuid() }
+                val isHub = pluginData.hubMapName
 
                 if (!isNotTargetMap) {
-                    pluginData.warpBlocks.forEach {
-                        if (it.mapName == pluginData.currentMap && e.tile != null && it.x.toShort() == e.tile.x && it.y.toShort() == e.tile.y && it.tileName == e.tile.block().name) {
+                    pluginData.data.warpBlock.forEach {
+                        if (it.mapName == state.map.name() && e.tile != null && it.x.toShort() == e.tile.x && it.y.toShort() == e.tile.y && it.tileName == e.tile.block().name) {
+                            Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Warp Block at ${e.tile.x}, ${e.tile.y}")
                             return false
                         }
                     }
                 }
 
-                if (Vars.state.rules.pvp && conf.feature.pvp.autoTeam && e.player.team() == Team.derelict) {
+                if (state.rules.pvp && conf.feature.pvp.autoTeam && e.player.team() == Team.derelict) {
+                    Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Spectator (Derelict) in PvP")
                     return false
                 }
 
                 if (data != null) {
-                    if (e.type == Administration.ActionType.commandUnits) {
-                        data.currentControlCount += e.unitIDs.size
-                    }
-
                     return when {
-                        isHub != null && isHub == Vars.state.map.name() -> {
-                            Permission.check(data, "hub.build")
+                        isHub != null && isHub == state.map.name() -> {
+                            val canBuild = Permission.check(data, "hub.build")
+                            if (!canBuild) {
+                                e.player.sendMessage(Bundle(e.player.locale())["event.permission.hub.denied"])
+                                Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) building denied: Hub Restriction")
+                                writeLog(LogType.Player, "Player ${e.player.plainName()} (${e.player.uuid()}) building denied: Hub Restriction")
+                            }
+                            canBuild
                         }
 
-                        data.strict -> {
+                        data.strictMode -> {
+                            e.player.sendMessage(Bundle(e.player.locale())["event.strict.mode.denied"])
+                            Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Strict Mode Active")
+                            writeLog(LogType.Player, "Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Strict Mode Active")
                             false
                         }
 
@@ -168,68 +176,87 @@ class Main : Plugin() {
                         }
                     }
                 }
-                return false
+                
+                // Allow interaction by default if player data is not yet loaded to avoid join race conditions
+                return true
             }
         }.also { listener -> actionFilter = listener })
 
         Core.app.addListener(object : ApplicationListener {
             override fun dispose() {
-                daemon.shutdownNow()
+                scope.cancel()
+                threadPool.shutdownNow()
             }
         })
+
+        if (conf.module.bridge) bridgeService.init()
+        if (conf.module.chat) chatService.init()
+        if (conf.module.protect) protectService.init()
+        if (conf.module.achievement) achievementService.init()
+        if (conf.module.discord) discordService.init()
+        if (conf.module.web) webService.init()
 
         Log.info(bundle["event.plugin.loaded"])
     }
 
     override fun registerServerCommands(handler: CommandHandler) {
-        val commands = Commands()
+        registerGeneratedServerCommands(handler)
+        removeBannedCommands(handler)
 
-        for (functions in commands::class.declaredFunctions) {
-            val annotation = functions.findAnnotation<ServerCommand>()
-            if (annotation != null) {
-                handler.register(annotation.name, annotation.parameter, annotation.description) { args ->
-                    if (args.isNotEmpty()) {
-                        functions.call(commands, arrayOf(*args))
-                    } else {
-                        try {
-                            functions.call(commands, arrayOf<String>())
-                        } catch (e: Exception) {
-                            Log.err("arg size - ${args.size}")
-                            Log.err("command - ${annotation.name}")
-                        }
-                    }
-                }
-            }
-        }
+        if (conf.module.bridge) bridgeService.registerServerCommands(handler)
+        if (conf.module.chat) chatService.registerServerCommands(handler)
+        if (conf.module.protect) protectService.registerServerCommands(handler)
+        if (conf.module.achievement) achievementService.registerServerCommands(handler)
+        if (conf.module.discord) discordService.registerServerCommands(handler)
+        if (conf.module.web) webService.registerServerCommands(handler)
     }
 
 
     override fun registerClientCommands(handler: CommandHandler) {
-        val commands = Commands()
+        val commandClass = Class.forName("arc.util.CommandHandler\$Command")
+        val runnerField = commandClass.getDeclaredField("runner")
+        runnerField.isAccessible = true
 
-        for (functions in commands::class.declaredFunctions) {
-            val annotation = functions.findAnnotation<ClientCommand>()
-            if (annotation != null) {
-                handler.register(
-                    annotation.name,
-                    annotation.parameter,
-                    annotation.description
-                ) { args, player: Playerc ->
-                    val data = findPlayerData(player.uuid()) ?: DB.PlayerData()
-                    if (Permission.check(data, annotation.name)) {
-                        if (args.isNotEmpty()) {
-                            functions.call(commands, player, data, arrayOf(*args))
-                        } else {
-                            functions.call(commands, player, data, arrayOf<String>())
-                        }
-                    } else {
-                        if (annotation.name == "js") {
-                            player.kick(Bundle(player.locale())["command.js.no.permission"])
-                        } else {
-                            data.send("command.permission.false")
-                        }
-                    }
+        val vote = Vars.netServer.clientCommands.commandList.find { command -> command.text.equals("vote", true) }
+        val votekick = Vars.netServer.clientCommands.commandList.find { command -> command.text.equals("votekick", true) }
+
+        registerGeneratedClientCommands(handler)
+        removeBannedCommands(handler)
+
+        if (!conf.feature.vote.enabled && vote != null) {
+            val voteRunner = runnerField.get(vote)
+            handler.register(vote.text, vote.paramText, vote.description, voteRunner as CommandHandler.CommandRunner<*>)
+
+            if (conf.feature.vote.enableVotekick && votekick != null) {
+                val votekickRunner = runnerField.get(votekick)
+                handler.register(votekick.text, votekick.paramText, votekick.description, votekickRunner as CommandHandler.CommandRunner<*>)
+            } else {
+                handler.removeCommand("votekick")
+            }
+        } else {
+            if (!conf.feature.vote.enableVotekick) {
+                handler.removeCommand("votekick")
+            }
+        }
+
+        if (conf.module.bridge) bridgeService.registerClientCommands(handler)
+        if (conf.module.chat) chatService.registerClientCommands(handler)
+        if (conf.module.protect) protectService.registerClientCommands(handler)
+        if (conf.module.achievement) achievementService.registerClientCommands(handler)
+        if (conf.module.discord) discordService.registerClientCommands(handler)
+        if (conf.module.web) webService.registerClientCommands(handler)
+    }
+
+    private fun removeBannedCommands(handler: CommandHandler) {
+        val file = rootPath.child("bannedCommands.txt")
+        if (file.exists()) {
+            try {
+                val banned: List<String> = Json.decodeFromString(file.readString())
+                for (command in banned) {
+                    handler.removeCommand(command)
                 }
+            } catch (e: Exception) {
+                Log.err("Failed to load bannedCommands.txt", e)
             }
         }
     }
@@ -240,27 +267,24 @@ class Main : Plugin() {
                 .error { _ -> Log.warn(bundle["event.plugin.update.check.failed"]) }
                 .block {
                     if (it.status == Http.HttpStatus.OK) {
-                        val json = JsonValue.readJSON(it.resultAsString).asObject()
-                        pluginData.pluginVersion = JsonValue.readJSON(
-                            this::class.java.getResourceAsStream("/plugin.json")!!.reader().readText()
-                        ).asObject()["version"].asString()
-                        val latest = DefaultArtifactVersion(json.getString("tag_name", pluginData.pluginVersion))
-                        val current = DefaultArtifactVersion(pluginData.pluginVersion)
+                        val json = Json { ignoreUnknownKeys = true; isLenient = true }
+                        val jsonObject = json.parseToJsonElement(it.resultAsString).jsonObject
+                        
+                        val tagName = jsonObject["tag_name"]?.jsonPrimitive?.content ?: PLUGIN_VERSION
+                        val latest = DefaultArtifactVersion(tagName)
+                        val current = DefaultArtifactVersion(PLUGIN_VERSION)
+                        
+                        // Parse assets array and get download URL from first asset
+                        val browserDownloadUrl = jsonObject["assets"]?.jsonArray?.getOrNull(0)?.jsonObject?.get("browser_download_url")?.jsonPrimitive?.content ?: ""
+                        val body = jsonObject["body"]?.jsonPrimitive?.content ?: ""
 
                         when {
-                            latest > current -> Log.info(bundle["config.update.new", json["assets"].asArray()[0].asObject()["browser_download_url"].asString(), json["body"].asString()])
+                            latest > current -> Log.info(bundle["config.update.new", browserDownloadUrl, body])
                             latest.compareTo(current) == 0 -> Log.info(bundle["config.update.current"])
                             latest < current -> Log.info(bundle["config.update.devel"])
                         }
                     }
                 }
-        } else {
-            Vars.mods.list().forEach { mod ->
-                if (mod.meta.name == "Essentials") {
-                    pluginData.pluginVersion = mod.meta.version
-                    return@forEach
-                }
-            }
         }
     }
 }
