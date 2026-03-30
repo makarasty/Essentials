@@ -5,12 +5,17 @@ import com.charleskorn.kaml.Yaml
 import com.charleskorn.kaml.YamlConfiguration
 import essential.common.bundle
 import essential.common.rootPath
+import essential.core.CoreConfig
+import essential.core.service.bridge.BridgeConfig
+import essential.core.service.chat.ChatConfig
+import essential.core.service.discord.DiscordConfig
+import essential.core.service.protect.ProtectConfig
+import essential.core.service.web.WebConfig
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Paths
-import java.nio.file.StandardCopyOption
 
 
 object Config {
@@ -111,37 +116,32 @@ object Config {
         val marker = rootPath.child("config/.migrated")
         if (marker.exists()) return
 
-        val oldDirPath = "D:\\민더\\config\\mods\\Essentials\\config"
-        val oldDir = Paths.get(oldDirPath).toFile()
-        val newDir = rootPath.child("config")
+        Log.info("[Essential] Starting configuration migration...")
 
-        if (oldDir.exists() && oldDir.isDirectory) {
-            Log.info("[Essential] Old configuration found, starting migration...")
-            val configFiles = listOf(
-                "config.yaml",
-                "config_bridge.yaml",
-                "config_chat.yaml",
-                "config_discord.yaml",
-                "config_protect.yaml",
-                "config_web.yaml"
-            )
+        migrateConfig("config", CoreConfig.serializer())
+        migrateConfig("config_bridge", BridgeConfig.serializer())
+        migrateConfig("config_chat", ChatConfig.serializer())
+        migrateConfig("config_discord", DiscordConfig.serializer())
+        migrateConfig("config_protect", ProtectConfig.serializer())
+        migrateConfig("config_web", WebConfig.serializer())
 
-            if (!newDir.exists()) newDir.mkdirs()
+        marker.writeString(System.currentTimeMillis().toString())
+        Log.info("[Essential] Configuration migration completed.")
+    }
 
-            for (fileName in configFiles) {
-                val oldFile = oldDir.resolve(fileName)
-                val newFile = newDir.child(fileName).file()
+    private fun <T> migrateConfig(name: String, serializer: KSerializer<T>) {
+        val fileName = "$name.yaml"
+        val file = rootPath.child("config/$fileName").file()
 
-                if (oldFile.exists()) {
-                    try {
-                        Files.copy(oldFile.toPath(), newFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                        Log.info("[Essential] Migrated config file: $fileName")
-                    } catch (e: Exception) {
-                        Log.err("[Essential] Failed to migrate config file: $fileName", e)
-                    }
-                }
+        if (file.exists()) {
+            try {
+                val content = Files.readString(file.toPath())
+                val config = yaml.decodeFromString(serializer, content)
+                save(name, serializer, config)
+                Log.info("[Essential] Updated config file: $fileName")
+            } catch (e: Exception) {
+                Log.err("[Essential] Failed to update config file: $fileName", e)
             }
-            marker.writeString(System.currentTimeMillis().toString())
         }
     }
 }
