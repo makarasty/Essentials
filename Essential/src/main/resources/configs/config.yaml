@@ -86,3 +86,11 @@ command:
     enabled: true
     # Set how often to save. (Time unit: minute, default: 10)
     time: 10
+
+module:
+  achievement: false
+  bridge: false
+  chat: true
+  discord: false
+  protect: true
+  web: false

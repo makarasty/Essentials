@@ -98,19 +98,6 @@ fun withdraw(event: WithdrawEvent) {
             Bundle()["log.withdraw", event.player.plainName(), event.player.unit()
                 .item().name, event.amount, event.tile.block.name, event.tile.tileX(), event.tile.tileY()]
         )
-        addLog(
-            TileLog(
-                System.currentTimeMillis(),
-                event.player.name,
-                "withdraw",
-                event.tile.tile.x,
-                event.tile.tile.y,
-                checkValidBlock(event.tile.tile),
-                event.tile.rotation,
-                event.tile.team,
-                event.tile.config()
-            )
-        )
     }
 }
 
@@ -122,52 +109,13 @@ fun deposit(event: DepositEvent) {
             Bundle()["log.deposit", event.player.plainName(), event.player.unit()
                 .item().name, event.amount, checkValidBlock(event.tile.tile), event.tile.tileX(), event.tile.tileY()]
         )
-        addLog(
-            TileLog(
-                System.currentTimeMillis(),
-                event.player.name,
-                "deposit",
-                event.tile.tile.x,
-                event.tile.tile.y,
-                checkValidBlock(event.tile.tile),
-                event.tile.rotation,
-                event.tile.team,
-                event.tile.config()
-            )
-        )
     }
 }
 
 @Event
 fun config(event: ConfigEvent) {
     if (event.tile != null && event.tile.block != null && event.player != null) {
-        addLog(
-            TileLog(
-                System.currentTimeMillis(),
-                event.player.name,
-                "config",
-                event.tile.tile.x,
-                event.tile.tile.y,
-                checkValidBlock(event.tile.tile),
-                event.tile.rotation,
-                event.tile.team,
-                event.value
-            )
-        )
         if (checkValidBlock(event.tile.tile).contains("message", true)) {
-            addLog(
-                TileLog(
-                    System.currentTimeMillis(),
-                    event.player.name,
-                    "message",
-                    event.tile.tile.x,
-                    event.tile.tile.y,
-                    checkValidBlock(event.tile.tile),
-                    event.tile.rotation,
-                    event.tile.team,
-                    event.value
-                )
-            )
         }
     }
 }
@@ -175,19 +123,6 @@ fun config(event: ConfigEvent) {
 @Event
 fun tap(event: TapEvent) {
     writeLog(LogType.Tap, Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)])
-    addLog(
-        TileLog(
-            System.currentTimeMillis(),
-            event.player.name,
-            "tap",
-            event.tile.x,
-            event.tile.y,
-            checkValidBlock(event.tile),
-            if (event.tile.build != null) event.tile.build.rotation else 0,
-            if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-            null
-        )
-    )
     val data = findPlayerData(event.player.uuid())
     if (data != null) {
         pluginData.data.warpBlock.forEach { two ->
@@ -243,68 +178,6 @@ fun tap(event: TapEvent) {
 
                 Call.connect(event.player.con(), two.ip, two.port)
                 continue
-            }
-        }
-
-        if (data.viewHistoryMode) {
-            scope.launch {
-                val buf = ArrayList<TileLog>()
-
-                try {
-                    val dbEntries = getWorldHistoryByCoordinates(event.tile.x, event.tile.y)
-                    dbEntries.forEach { entry ->
-                        buf.add(
-                            TileLog(
-                                time = entry.time,
-                                player = entry.player,
-                                action = entry.action,
-                                x = entry.x,
-                                y = entry.y,
-                                tile = entry.tile,
-                                rotate = entry.rotate,
-                                team = Team.all.find { it.name == entry.team } ?: Team.derelict,
-                                value = entry.value
-                            )
-                        )
-                    }
-                } catch (e: Exception) {
-                    Log.err("Error retrieving world history from database", e)
-                }
-
-                val str = StringBuilder()
-                val bundle = data.bundle
-                val coreBundle =
-                    Bundle(ResourceBundle.getBundle("bundles/mindustry/bundle", Locale.forLanguageTag(data.player.locale().replace("_", "-"))))
-
-                str.append(bundle["event.log.position", event.tile.x, event.tile.y]).append("\n")
-
-                buf.sortedByDescending { it.time }
-                    .take(8)
-                    .forEach { two ->
-                        val action = when (two.action) {
-                            "tap" -> "[royal]${bundle["event.log.tap"]}[]"
-                            "break" -> "[scarlet]${bundle["event.log.break"]}[]"
-                            "place" -> "[sky]${bundle["event.log.place"]}[]"
-                            "config" -> "[cyan]${bundle["event.log.config"]}[]"
-                            "withdraw" -> "[green]${bundle["event.log.withdraw"]}[]"
-                            "deposit" -> "[brown]${bundle["event.log.deposit"]}[]"
-                            "message" -> "[orange]${bundle["event.log.message"]}"
-                            else -> ""
-                        }
-
-                        if (two.action == "message") {
-                            str.append(
-                                bundle["event.log.format.message", dateformat.format(two.time), two.player, coreBundle["block.${two.tile}.name"], two.value as String]
-                            ).append("\n")
-                        } else {
-                            str.append(
-                                bundle["event.log.format", dateformat.format(two.time), two.player, coreBundle["block.${two.tile}.name"], action]
-                            ).append("\n")
-                        }
-                    }
-
-                Call.effect(event.player.con(), Fx.shockwave, event.tile.getX(), event.tile.getY(), 0f, Color.cyan)
-                event.player.sendMessage(str.toString().trim())
             }
         }
 
@@ -544,11 +417,6 @@ fun gameOver(event: GameOverEvent) {
     }
     offlinePlayers.clear()
 
-    // Clear the world history database
-    scope.launch {
-        clearWorldHistory()
-    }
-
     pvpSpecters.clear()
     pvpPlayer.clear()
 }
@@ -578,78 +446,11 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                     Bundle()["log.block.place", target.name, checkValidBlock(event.tile), event.tile.x, event.tile.y]
                 )
 
-                val buf = ArrayList<TileLog>()
-
-                scope.launch {
-                    try {
-                        val all = getAllWorldHistory()
-                        all.forEach { entry ->
-                            if (entry.x == event.tile.x && entry.y == event.tile.y) {
-                                buf.add(
-                                    TileLog(
-                                        time = entry.time,
-                                        player = entry.player,
-                                        action = entry.action,
-                                        x = entry.x,
-                                        y = entry.y,
-                                        tile = entry.tile,
-                                        rotate = entry.rotate,
-                                        team = Team.all.find { it.name == entry.team } ?: Team.derelict,
-                                        value = entry.value
-                                    )
-                                )
-                            }
-                        }
-
-                        // Get entries from the database
-                        val dbEntries = getWorldHistoryByCoordinates(event.tile.x, event.tile.y)
-
-                        // Convert database entries to TileLog objects
-                        val dbTileLogs = dbEntries.map { entry ->
-                            TileLog(
-                                time = entry.time,
-                                player = entry.player,
-                                action = entry.action,
-                                x = entry.x,
-                                y = entry.y,
-                                tile = entry.tile,
-                                rotate = entry.rotate,
-                                team = Team.all.find { it.name == entry.team } ?: Team.derelict,
-                                value = entry.value
-                            )
-                        }
-
-                        dbTileLogs.forEach { dbLog ->
-                            if (!buf.any { it.time == dbLog.time && it.player == dbLog.player && it.action == dbLog.action }) {
-                                buf.add(dbLog)
-                            }
-                        }
-
-                        buf.sortBy { it.time }
-                    } catch (e: Exception) {
-                        Log.err("Error retrieving world history from database", e)
-                    }
-
-                    if (!Vars.state.rules.infiniteResources && event.tile != null && event.tile.build != null && event.tile.build.maxHealth() == event.tile.block().health.toFloat() && (!buf.isEmpty() && buf.last().tile != event.tile.block().name)) {
-                        target.blockPlaceCount++
-                        target.exp += blockExp[block.name]!!
-                        target.currentExp += blockExp[block.name]!!
-                    }
+                if (!Vars.state.rules.infiniteResources && event.tile != null && event.tile.build != null && event.tile.build.maxHealth() == event.tile.block().health.toFloat()) {
+                    target.blockPlaceCount++
+                    target.exp += blockExp[block.name]!!
+                    target.currentExp += blockExp[block.name]!!
                 }
-
-                addLog(
-                    TileLog(
-                        System.currentTimeMillis(),
-                        target.name,
-                        "place",
-                        event.tile.x,
-                        event.tile.y,
-                        checkValidBlock(event.tile),
-                        if (event.tile.build != null) event.tile.build.rotation else 0,
-                        if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-                        event.config
-                    )
-                )
 
                 if (isDebug) {
                     Log.info("${player.name} placed ${event.tile.block().name} to ${event.tile.x},${event.tile.y}")
@@ -658,19 +459,6 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                 writeLog(
                     LogType.Block,
                     Bundle()["log.block.break", target.name, checkValidBlock(event.tile), event.tile.x, event.tile.y]
-                )
-                addLog(
-                    TileLog(
-                        System.currentTimeMillis(),
-                        target.name,
-                        "break",
-                        event.tile.x,
-                        event.tile.y,
-                        checkValidBlock(player.unit().buildPlan().tile()),
-                        if (event.tile.build != null) event.tile.build.rotation else 0,
-                        if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-                        event.config
-                    )
                 )
 
                 if (!Vars.state.rules.infiniteResources) {
@@ -689,19 +477,6 @@ fun buildSelect(event: BuildSelectEvent) {
         writeLog(
             LogType.Block,
             Bundle()["log.block.remove", (event.builder as Playerc).plainName(), checkValidBlock(event.tile), event.tile.x, event.tile.y]
-        )
-        addLog(
-            TileLog(
-                System.currentTimeMillis(),
-                (event.builder as Playerc).plainName(),
-                "select",
-                event.tile.x,
-                event.tile.y,
-                checkValidBlock(Vars.player.unit().buildPlan().tile()),
-                if (event.tile.build != null) event.tile.build.rotation else 0,
-                if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-                event.tile.build.config()
-            )
         )
     }
 }
@@ -1220,34 +995,6 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
         target.level - oldLevel
     )
 }
-
-private fun addLog(log: TileLog) {
-    scope.launch {
-        createWorldHistory(
-            time = log.time,
-            player = log.player,
-            action = log.action,
-            x = log.x,
-            y = log.y,
-            tile = log.tile,
-            rotate = log.rotate,
-            team = log.team.name,
-            value = log.value?.toString()
-        )
-    }
-}
-
-class TileLog(
-    val time: Long,
-    val player: String,
-    val action: String,
-    val x: Short,
-    val y: Short,
-    val tile: String,
-    val rotate: Int,
-    val team: Team,
-    val value: Any?
-)
 
 fun isUnitInside(target: Tile, first: Tile, second: Tile): Boolean {
     val minX = minOf(first.getX(), second.getX())

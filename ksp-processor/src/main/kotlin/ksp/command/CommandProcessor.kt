@@ -158,6 +158,8 @@ class CommandProcessor(
             .addImport("essential.common.permission", "Permission")
             .addImport("essential.common.bundle", "Bundle")
             .addImport("essential.common.database.data", "PlayerData")
+            .addImport("kotlinx.datetime", "toLocalDateTime")
+            .addImport("kotlinx.datetime", "TimeZone")
             .addFunction(generateRegisterClientCommandsFunction(functions))
 
         val fileSpec = builder.build()
@@ -277,16 +279,27 @@ class CommandProcessor(
                     val annotation = annotations[i]
 
                     handler.register<Playerc>(annotation.name, annotation.parameter, annotation.description) { args, player ->
-                        val data = findPlayerData(player.uuid())
-                        if (data != null) {
-                            if (Permission.check(data, annotation.name)) {
-                                command(data, args)
+                        var data = findPlayerData(player.uuid())
+                        if (data == null) {
+                            // Provide temporary guest data while the real data is loading
+                            data = PlayerData(
+                                id = 0u,
+                                name = player.name(),
+                                uuid = player.uuid(),
+                                firstPlayed = kotlinx.datetime.Clock.System.now().toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()),
+                                lastPlayed = kotlinx.datetime.Clock.System.now().toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()),
+                                lastLoginDate = kotlinx.datetime.Clock.System.now().toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()),
+                                permission = "visitor"
+                            ).apply { this.player = player }
+                        }
+                        
+                        if (Permission.check(data, annotation.name)) {
+                            command(data, args)
+                        } else {
+                            if (annotation.name == "js") {
+                                player.kick(Bundle(player.locale())["command.js.no.permission"])
                             } else {
-                                if (annotation.name == "js") {
-                                    player.kick(Bundle(player.locale())["command.js.no.permission"])
-                                } else {
-                                    data.err("command.permission.false")
-                                }
+                                data.err("command.permission.false")
                             }
                         }
                     }

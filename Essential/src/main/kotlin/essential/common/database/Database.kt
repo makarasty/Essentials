@@ -53,17 +53,7 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
         else -> "h2" // Default to H2
     }
 
-    val h2History = h2("worldHistory")
-
-    worldHistoryDatabase = connectDatabase(h2History.first, h2History.second)
-
     rootPath.child("data").mkdirs()
-
-    worldHistoryDatabase?.let { db ->
-        suspendTransaction(db = db) {
-            SchemaUtils.create(WorldHistoryTable)
-        }
-    }
 
     val (connectionFactory, dialect) = when (databaseType) {
         "postgresql" -> postgresql(r2dbcUrl, user, pass)

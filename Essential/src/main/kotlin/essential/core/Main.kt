@@ -147,10 +147,7 @@ class Main : Plugin() {
                     }
                 }
 
-                if (state.rules.pvp && conf.feature.pvp.autoTeam && e.player.team() == Team.derelict) {
-                    Log.info("Player ${e.player.plainName()} (${e.player.uuid()}) action denied: Spectator (Derelict) in PvP")
-                    return false
-                }
+
 
                 if (data != null) {
                     return when {
