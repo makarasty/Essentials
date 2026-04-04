@@ -4,14 +4,13 @@ owner:
     - all
 admin:
   admin: true
-  inheritance: user
+  inheritance: sponsor
   permission:
     - afk.admin
     - changemap
     - chars
     - chat
     - chat.admin
-    - color
     - dps
     - fillitems
     - freeze
@@ -20,14 +19,12 @@ admin:
     - hud.enemy
     - info.other
     - kick.admin
-    - kill
     - kill.other
     - meme
     - mute
     - pause
     - pm.other
     - pvp.spector
-    - rollback
     - search
     - skip
     - spawn
@@ -37,16 +34,23 @@ admin:
     - tempban
     - tpp
     - unmute
-    - evote.pass
+    - vote.pass
     - evote.reset
-    - weather
-user:
+sponsor:
+  inheritance: user
   permission:
-    - achievements
-    - changepw
-    - discord
+    - color
     - effect
     - hud
+    - kill
+    - tp
+    - track
+    - weather
+user:
+  default: true
+  permission:
+    - changepw
+    - discord
     - help
     - info
     - lang
@@ -59,8 +63,6 @@ user:
     - report
     - status
     - time
-    - tp
-    - track
     - url
     - evote
     - evote.back
@@ -69,9 +71,6 @@ user:
     - evote.map
     - evote.random
     - evote.skip
-visitor:
-  default: true
-  permission:
-    - help
     - login
     - reg
+    - hub.build
