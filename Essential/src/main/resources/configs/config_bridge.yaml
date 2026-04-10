@@ -1,11 +1,10 @@
-# Enter the server address where you have multiple servers.
-address: 127.0.0.1
-# Enter a available port.
-port: 42600
-
-# Set settings to synchronize settings between servers
+# Bridge server address (for client mode connection)
+address: "127.0.0.1"
+# Bridge server port number
+port: 10371
+# Settings for sharing data with bridge server
 sharing:
-  # All servers use the same ban list. (default: false)
+  # Share ban list with bridge server
   ban: false
-  # When this setting is turned on, players with broadcast permission can forward messages to all servers.
+  # Share broadcast messages with bridge server
   broadcast: false

@@ -1,88 +1,87 @@
+# Plugin configuration
 plugin:
-  # Plugin language (default: en)
-  lang: en
-  # Check for plugin update from GitHub (default: true)
+  # Default language code (en: English, ko: Korean, etc.)
+  lang: "en"
+  # Automatically update the plugin when new version is available
   autoUpdate: true
-  # Database URL
-  # Example) postgresql://127.0.0.1:5432/essentials
+  # Database configuration
   database:
-    url: h2:./config/mods/Essentials/data/database.db
-    username: sa
-    password: 123
-
+    # Database connection URL (h2: embedded database, mysql: MySQL, etc.)
+    url: "h2:./config/mods/Essentials/data/database"
+    # Database username
+    username: "sa"
+    # Database password
+    password: ""
+# Feature settings
 feature:
-  # Settings for AFK players
+  # AFK (Away From Keyboard) detection
   afk:
-    # If enabled, AFK players will be kick after the time setting has elapsed. (default: false)
     enabled: false
-    # Time unit: seconds (default: 300)
+    # Time in seconds before player is marked as AFK
     time: 300
-    # If you do not set this value to empty, AFK players will be moved to that server address instead of being kicked.
+    # Server to teleport AFK players to (empty = disable teleport)
     server: ""
-
-  # Setting for voting features
+  # Vote system
   vote:
-    # Use plugin voting system (default: true)
     enabled: true
-    # If you use this feature, players can be start voting from player list.
-    # A modded client may start voting for random players and then watch them griefing.
+    # Enable vote kick feature
     enableVotekick: false
-
-  # Setting for unit features
+  # Unit (block) usage limits
   unit:
-    # Set an upper limit on the total number of units in the world. (default: false)
-    # This is useful on low-end servers or sandbox servers.
     enabled: false
+    # Maximum number of blocks a player can place
     limit: 3000
-
-  # Setting for message of the day features
+  # Message of the Day (MOTD)
   motd:
-    # A message is output to the server for each set time value. (default: false)
-    # This is useful for advertising notices or discord server addresses, etc.
     enabled: false
-    # Time unit: seconds (default: 600)
+    # Update interval in seconds
     time: 600
-
-  # Setting for PvP features
+  # PvP-related features
   pvp:
-    # Automatically sets PvP teams based on a player's PvP win rate. (default: false)
+    # Automatically assign teams in PvP
     autoTeam: false
-    # If a PvP team loses, all affected players will become spectators.
+    # Spectator mode for defeated players
     spector: false
-
-  # Setting for Particle effect features
+  # Leveling system
   level:
-    # Activates movement effects according to the player's level. (default: false)
+    # Visual effects for leveling up
     effect:
       enabled: false
-      # If this value is disabled, the effect will occur even if the player is not moving.
+      # Trigger effect only when moving
       moving: false
-    # When the player levels up, a level up message is displayed as a message.
+    # Show level-up notification
     levelNotify: false
-    # Displays the current level status on the screen.
+    # Display level information
     display: false
+  # Game mode settings (wave survival, etc.)
   game:
     wave:
-      # Starts the wave n times at a time. (default: 1)
+      # Process 1 + n waves (default is 1)
       autoSkip: 1
+  # Player name blacklist settings
   blacklist:
-    # Set the word ban function.
-    # It only applies to player name, not chat.
-    enabled: false
-    # When enabling this function, a blacklist of words is read as a regular expression.
+    enabled: true
+    # Use regex patterns for blacklist matching
     regex: false
-  # If this setting is turned on, the number of servers connected using the hub command is totaled and displayed on the current server.
-  # default: false
+  # Show total player count on server list
   count: false
-
+# Module enable/disable settings
+module:
+  achievement: true
+  bridge: true
+  chat: true
+  discord: true
+  protect: true
+  web: true
+# Command settings
 command:
+  # Vote skip command configuration
   skip:
-    # Set the maximum wave skip limit by voting. (default: true)
     enabled: true
-    # Sets the maximum skippable wave that can be executed in a single command. (default: 10)
+    # Maximum number of skips allowed
     limit: 10
+  # Rollback command configuration
   rollback:
-    # When enabling this function, it will save separately from the built-in auto-save.
     enabled: true
-    # Set how often to save. (Time unit: minute, default: 10)
-    time: 10
+    # Maximum rollback time in seconds
+    time: 300
