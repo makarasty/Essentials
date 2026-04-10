@@ -3,13 +3,21 @@ package essential.core.service.discord
 import arc.util.CommandHandler
 import arc.util.Log
 import essential.common.bundle.Bundle
+import essential.common.config.Config
 import essential.core.service.discord.generated.registerGeneratedClientCommands
+import kotlinx.coroutines.runBlocking
 import mindustry.mod.Plugin
 
 class DiscordService : Plugin() {
     companion object {
         var bundle: Bundle = Bundle()
-        lateinit var conf: DiscordConfig
+        val conf: DiscordConfig = runBlocking {
+            val config = Config.load("config_discord", DiscordConfig.serializer(), DiscordConfig())
+            require(config != null) {
+                Log.err(bundle["event.plugin.load.failed"])
+            }
+            config
+        }
     }
 
     override fun init() {

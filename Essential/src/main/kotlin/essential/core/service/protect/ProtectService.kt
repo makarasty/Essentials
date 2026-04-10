@@ -9,6 +9,7 @@ import essential.common.permission.Permission
 import essential.common.util.findPlayerData
 import essential.core.service.protect.generated.registerGeneratedClientCommands
 import essential.core.service.protect.generated.registerGeneratedEventHandlers
+import kotlinx.coroutines.runBlocking
 import mindustry.Vars.netServer
 import mindustry.mod.Plugin
 import java.net.URI
@@ -18,20 +19,18 @@ import java.util.Objects.requireNonNull
 class ProtectService : Plugin() {
     companion object {
         var bundle: Bundle = Bundle()
-        lateinit var conf: ProtectConfig
+        val conf: ProtectConfig = runBlocking {
+            val config = Config.load("config_protect", ProtectConfig.serializer(), ProtectConfig())
+            require(config != null) {
+                Log.err(bundle["event.plugin.load.failed"])
+            }
+            config
+        }
         var pluginData: PluginData = PluginData()
     }
 
     override fun init() {
         bundle.prefix = "[EssentialProtect]"
-
-        val config = Config.load("config_protect", ProtectConfig.serializer(), ProtectConfig())
-        require(config != null) {
-            Log.err(bundle["event.plugin.load.failed"])
-            return
-        }
-
-        conf = config
 
         netServer.admins.addActionFilter({ action ->
             if (action.player == null) return@addActionFilter true
