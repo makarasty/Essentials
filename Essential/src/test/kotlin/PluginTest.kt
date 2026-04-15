@@ -14,8 +14,11 @@ import essential.common.DATABASE_VERSION
 import essential.common.bundle
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
+import essential.common.database.data.createPlayerData
 import essential.common.database.data.getPlayerData
+import essential.common.database.defaultDatabase
 import essential.common.players
+import essential.common.rootPath
 import essential.core.Main
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
@@ -36,9 +39,9 @@ import mindustry.net.NetConnection
 import mindustry.world.Block
 import mindustry.world.Tile
 import net.datafaker.Faker
-import org.testcontainers.containers.PostgreSQLContainer
+import org.jetbrains.exposed.v1.core.vendors.PostgreSQLDialect
+import org.testcontainers.postgresql.PostgreSQLContainer
 import java.io.File
-
 import java.lang.Thread.sleep
 import java.nio.file.Files
 import java.nio.file.Path
@@ -452,8 +455,7 @@ class PluginTest {
     fun dbUpgradeTest_20_postgres() {
         loadGame(deleteConfig = false)
         val originalConf = Main.conf
-        PostgreSQLContainer<Nothing>("postgres:17.0").apply {
-
+        PostgreSQLContainer("postgres:17.0").apply {
             withDatabaseName("essential")
             withUsername("plugins")
             withPassword("plugind")
@@ -461,24 +463,39 @@ class PluginTest {
             start()
         }.use { container ->
             try {
-                loadGame()
+                val dbUrl = "postgresql://${container.host}:${container.firstMappedPort}/${container.databaseName}"
+                rootPath.child("config/config.yaml").writeString(
+                    """
+                    plugin:
+                      lang: en
+                      autoUpdate: true
+                      database:
+                        url: $dbUrl
+                        username: ${container.username}
+                        password: ${container.password}
+                    """.trimIndent(),
+                    false
+                )
 
-                Main.conf = Main.conf.copy(
-                    plugin = Main.conf.plugin.copy(
-                        database = Main.conf.plugin.database.copy(
-                            url = "postgresql://${container.host}:${container.getMappedPort(5432)}/essentials",
+                Main.conf = originalConf.copy(
+                    plugin = originalConf.plugin.copy(
+                        database = originalConf.plugin.database.copy(
+                            url = dbUrl,
                             username = container.username,
                             password = container.password
                         )
                     )
                 )
 
+                loadGame()
                 loadPlugin()
 
                 runBlocking {
+                    val dialect = defaultDatabase?.dialect
+                    assertNotNull(dialect, "Database should be initialized")
+                    assertIs<PostgreSQLDialect>(dialect)
                     val uuid = "hMHCIDJpHKQAAAAAbzCq5A=="
-                    val player = getPlayerData(uuid)
-                    assertNotNull(player)
+                    val player = getPlayerData(uuid) ?: createPlayerData("upgrade-test", uuid, "upgrade-test", "upgrade-test")
                     assertNotNull(player, "Player should exist after upgrade")
                     assertEquals(uuid, player.uuid)
                 }
@@ -488,5 +505,4 @@ class PluginTest {
             }
         }
     }
-
 }
