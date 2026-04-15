@@ -14,11 +14,9 @@ import mindustry.gen.Player
 import mindustry.net.Administration
 import java.util.regex.Pattern
 
-fun load() {
+@Event
+fun serverLoaded(event: EventType.ServerLoadEvent) {
     Vars.netServer.admins.addChatFilter(object : Administration.ChatFilter {
-        private val specificTextRegex: Pattern =
-            Pattern.compile("[!@#$%&*()_+=|<>?{}\\[\\]~-]")
-
         override fun filter(player: Player, message: String): String? {
             val bundle = Bundle(player.locale)
 
@@ -44,11 +42,6 @@ fun load() {
         }
     })
 
-
-}
-
-@Event
-fun serverLoaded(event: EventType.ServerLoadEvent) {
     Vars.netServer.chatFormatter = NetServer.ChatFormatter { player, message ->
         if (player != null) {
             val data: PlayerData? = findPlayerData(player.uuid())
