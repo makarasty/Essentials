@@ -1,44 +1,46 @@
 [versions]
-kotlin = "2.2.21"
+kotlin = "2.3.20"
 kotlinxDatetime = "0.7.1-0.6.x-compat"
 kotlinxCoroutines = "1.10.2"
-kotlinxSerialization = "1.9.0"
-ksp = "2.3.3"
-kotlinpoet = "2.2.0"
+kotlinxSerialization = "1.10.0"
+ksp = "2.3.6"
+kotlinpoet = "2.3.0"
 
 game = "v155.4"
 arc = "v155.4"
 local = "local-SNAPSHOT"
 kaml = "0.104.0"
-exposed = "1.0.0-rc-4"
+exposed = "1.2.0"
 hjson = "3.0.0-C11"
 jbcrypt = "0.4.3"
 mavenArtifact = "4.0.0-alpha-3"
 jackson = "2.19.0"
 jfiglet = "0.0.9"
 logback = "1.5.16"
-dataFaker = "2.5.3"
-mockito = "5.21.0"
+dataFaker = "2.5.4"
+mockito = "5.23.0"
 jts = "1.20.0"
-proguard = "7.8.2"
+proguard = "7.9.1"
 
 lingua = "1.2.2"
 discord = "5.6.1"
-ktor = "3.3.3"
+ktor = "3.4.2"
 thymeleaf = "3.1.2.RELEASE"
 shadowJar = "9.0.0-beta12"
 
 r2dbcH2 = "1.1.0.RELEASE"
 r2dbcPool = "1.0.2.RELEASE"
 r2dbcMysql = "1.4.1"
-r2dbcMariadb = "1.3.0"
+r2dbcMariadb = "1.4.0"
 r2dbcPostgresql = "1.1.1.RELEASE"
 
-testcontainers = "1.21.4"
+testcontainers = "2.0.4"
+jdbcPostgresql = "42.7.7"
 
 [libraries]
 testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
-testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
+testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
+postgresql = { module = "org.postgresql:postgresql", version.ref = "jdbcPostgresql" }
 
 kotlinxSerializer = { module="org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization"}
 kotlinxDatetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime-jvm", version.ref = "kotlinxDatetime" }
@@ -109,6 +111,7 @@ game-test = ["arc", "core", "server", "headless", "datafaker", "mockito", "jts"]
 local-game-test = ["arc-local", "core-local", "server-local", "headless-local", "datafaker", "mockito", "jts"]
 r2dbc-drivers = ["r2dbc-h2", "r2dbc-mariadb", "r2dbc-mysql", "r2dbc-pool", "r2dbc-postgresql"]
 ktor = ["ktor", "ktor-netty", "ktor-content", "ktor-serialize-json", "ktor-auth", "ktor-auth-jwt", "ktor-sessions", "ktor-html", "ktor-websockets"]
+testcontainers = ["testcontainers", "testcontainers-postgresql", "postgresql"]
 
 [plugins]
 kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
