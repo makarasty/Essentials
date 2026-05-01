@@ -28,10 +28,8 @@ dependencies {
     testImplementation(libs.bundles.kotlinxEcosystem)
     testImplementation(libs.bundles.exposed)
     testImplementation(libs.bundles.r2dbc.drivers)
-    testImplementation("org.postgresql:postgresql:42.7.7")
+    testImplementation(libs.bundles.testcontainers)
     testImplementation(libs.jbcrypt)
-    testImplementation(libs.testcontainers)
-    testImplementation(libs.testcontainers.postgresql)
 }
 
 

@@ -673,7 +673,7 @@ fun connectPacket(event: ConnectPacketEvent) {
     }
 
     // Server routing validation - applied only when hub_map_name is not null
-    /*val hubMapName = pluginData.hubMapName
+    val hubMapName = pluginData.hubMapName
     if (hubMapName != null) {
         val currentMapName = Vars.state.map.name()
 
@@ -702,7 +702,7 @@ fun connectPacket(event: ConnectPacketEvent) {
                 }
             }
         }
-    }*/
+    }
 }
 
 @Event
@@ -844,11 +844,9 @@ fun playerDataLoad(event: CustomEvents.PlayerDataLoad) {
                     if (activeTeams != null && activeTeams.any()) {
                         val teamStats = activeTeams.map { teamData ->
                             val team = teamData.team
-                            // teamData.players.size might not be accurate in tests, use our players list
-                            // We calculate stats excluding the current player (playerData) who is being assigned
                             val teamPlayers = players.filter {
                                 val p = it.player
-                                p != null && p.team() == team && it.uuid != playerData.uuid
+                                p.team() == team && it.uuid != playerData.uuid
                             }
                             val playerCount = teamPlayers.size
                             val avgWinRate = if (teamPlayers.isEmpty()) 0.5 else teamPlayers.map {
@@ -859,11 +857,8 @@ fun playerDataLoad(event: CustomEvents.PlayerDataLoad) {
                         }.toList()
 
                         if (teamStats.isNotEmpty()) {
-                            // Sort teams by average win rate ascending (weakest first)
                             val sortedByWinRate = teamStats.sortedBy { it.second.second }
 
-                            // User Rule: Assign to the weakest team until it has 2 more players than ANY other team
-                            // Find the first team (from weakest to strongest) that hasn't reached the limit
                             val bestTeam = sortedByWinRate.find { stats ->
                                 val team = stats.first
                                 val count = stats.second.first
@@ -930,7 +925,6 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
             rootPath.child("data/exp.json").writeString("[]")
         }
 
-        // Define a data class for the exp record
         @Serializable
         data class ExpRecord(
             val name: String,

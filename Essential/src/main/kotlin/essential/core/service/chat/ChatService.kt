@@ -7,25 +7,25 @@ import essential.common.config.Config
 import essential.common.rootPath
 import essential.core.service.chat.generated.registerGeneratedClientCommands
 import essential.core.service.chat.generated.registerGeneratedEventHandlers
+import kotlinx.coroutines.runBlocking
 import mindustry.mod.Plugin
 
 class ChatService : Plugin() {
     companion object {
         var bundle: Bundle = Bundle()
-        lateinit var conf: ChatConfig
+        val conf: ChatConfig = runBlocking {
+            val config = Config.load("config_chat", ChatConfig.serializer(), ChatConfig())
+            require(config != null) {
+                Log.err(bundle["event.plugin.load.failed"])
+            }
+            config
+        }
     }
 
     override fun init() {
         bundle.prefix = "[EssentialChat]"
 
         Log.debug(bundle["event.plugin.starting"])
-
-        val config = Config.load("config_chat", ChatConfig.serializer(), ChatConfig())
-        require(config != null) {
-            Log.err(bundle["event.plugin.load.failed"])
-            return
-        }
-        conf = config
 
 
         // 이벤트 등록

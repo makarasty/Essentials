@@ -47,7 +47,7 @@ import java.util.concurrent.Executors
 
 class Main : Plugin() {
     companion object {
-        const val CONFIG_PATH = "config/config"
+        const val CONFIG_PATH = "config.yaml"
         var conf: CoreConfig = runBlocking {
             // 플러그인 설정 불러오기
             val config = Config.load("config", CoreConfig.serializer(), CoreConfig())
@@ -69,9 +69,6 @@ class Main : Plugin() {
     private var webService = WebService()
 
     override fun init() = runBlocking {
-        Config.migrate()
-        conf = Config.load("config", CoreConfig.serializer(), CoreConfig()) ?: conf
-
         // 플러그인 언어 설정 및 태그 추가
         bundle.prefix = "[Essential]"
 
@@ -88,7 +85,6 @@ class Main : Plugin() {
         rootPath.child("data").mkdirs()
 
         // DB 설정
-        // todo 이전 버전 db 업그레이드
         databaseInit(
             conf.plugin.database.url,
             conf.plugin.database.username,

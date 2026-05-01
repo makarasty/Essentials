@@ -1,12 +1,15 @@
-chatFormat: "[coral][{0}[coral]]:[white] {1}"
+# Global default chat format (leave empty to use permission group formats)
+# Placeholders: {player} for player name, {message} for chat message
+chatFormat: ""
+# Strict chat filtering (deprecated - not implemented)
 strict:
-  # Enabling this feature will only allow specific languages.
+  # Enable strict filtering (currently unused)
   enabled: false
-  # Set the langauges you want to allow. (default: en)
-  language: "en"
-
+  # Language code for filtering (ko-KR: Korean, en-US: English, etc.)
+  language: "ko-KR"
+# Chat blacklist settings
 blacklist:
-  # Set the word ban function.
+  # Enable blacklist filtering to block prohibited words in chat
   enabled: false
-  # When enabling this function, a blacklist of words is read as a regular expression.
+  # Use regex patterns for blacklist entries instead of plain text
   regex: false

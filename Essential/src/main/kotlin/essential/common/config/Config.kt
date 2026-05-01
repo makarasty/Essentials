@@ -5,12 +5,6 @@ import com.charleskorn.kaml.Yaml
 import com.charleskorn.kaml.YamlConfiguration
 import essential.common.bundle
 import essential.common.rootPath
-import essential.core.CoreConfig
-import essential.core.service.bridge.BridgeConfig
-import essential.core.service.chat.ChatConfig
-import essential.core.service.discord.DiscordConfig
-import essential.core.service.protect.ProtectConfig
-import essential.core.service.web.WebConfig
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import java.io.IOException
@@ -58,14 +52,19 @@ object Config {
         return try {
             val content = Files.readString(Paths.get(rootPath.child("config/$name").absolutePath()))
             val config = yaml.decodeFromString(serializer, content)
-            Log.info(bundle["config.loaded", name])
             config
         } catch (e: IOException) {
-            Log.err(bundle["config.load.failed", name], e)
             null
         } catch (e: SerializationException) {
-            Log.err(bundle["config.parse.failed", name], e)
-            null
+            try {
+                Migration.migrateConfigs()
+                
+                val content = Files.readString(Paths.get(rootPath.child("config/$name").absolutePath()))
+                val config = yaml.decodeFromString(serializer, content)
+                config
+            } catch (e2: Exception) {
+                null
+            }
         }
     }
 
@@ -91,57 +90,6 @@ object Config {
         } catch (e: SerializationException) {
             Log.err(bundle["config.serialize.failed", name], e)
             false
-        }
-    }
-
-    /**
-     * Watch for changes to the configuration file.
-     *
-     * @param name Configuration file name in the config folder
-     * @param serializer Serializable configuration class
-     * @param onReload Code to run when the configuration file is modified
-     */
-    inline fun <reified T> watch(
-        name: String,
-        serializer: KSerializer<T>,
-        crossinline onReload: (T) -> Unit
-    ) {
-        Log.info(bundle["config.watch", name])
-    }
-
-    /**
-     * Migrate old configuration files to the new location.
-     */
-    fun migrate() {
-        val marker = rootPath.child("config/.migrated")
-        if (marker.exists()) return
-
-        Log.info("[Essential] Starting configuration migration...")
-
-        migrateConfig("config", CoreConfig.serializer())
-        migrateConfig("config_bridge", BridgeConfig.serializer())
-        migrateConfig("config_chat", ChatConfig.serializer())
-        migrateConfig("config_discord", DiscordConfig.serializer())
-        migrateConfig("config_protect", ProtectConfig.serializer())
-        migrateConfig("config_web", WebConfig.serializer())
-
-        marker.writeString(System.currentTimeMillis().toString())
-        Log.info("[Essential] Configuration migration completed.")
-    }
-
-    private fun <T> migrateConfig(name: String, serializer: KSerializer<T>) {
-        val fileName = "$name.yaml"
-        val file = rootPath.child("config/$fileName").file()
-
-        if (file.exists()) {
-            try {
-                val content = Files.readString(file.toPath())
-                val config = yaml.decodeFromString(serializer, content)
-                save(name, serializer, config)
-                Log.info("[Essential] Updated config file: $fileName")
-            } catch (e: Exception) {
-                Log.err("[Essential] Failed to update config file: $fileName", e)
-            }
         }
     }
 }

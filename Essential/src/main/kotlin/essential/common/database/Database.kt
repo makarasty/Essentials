@@ -22,10 +22,12 @@ import io.r2dbc.spi.ValidationDepth
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.datetime.LocalDateTime
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.vendors.*
@@ -97,12 +99,12 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
  * Migration for player achievements from status column to player_achievements table
  */
 private suspend fun migrateStatusToAchievements() {
-    val playerTable = object : org.jetbrains.exposed.v1.core.Table("players") {
+    val playerTable = object : Table("players") {
         val id = uinteger("id")
         val status = text("status")
     }
 
-    val achievementTable = object : org.jetbrains.exposed.v1.core.Table("player_achievements") {
+    val achievementTable = object : Table("player_achievements") {
         val id = uinteger("id").autoIncrement()
         val playerId = uinteger("player_id")
         val achievementName = varchar("achievement_name", 100)
@@ -134,7 +136,7 @@ private suspend fun migrateStatusToAchievements() {
                                         it[achievementTable.playerId] = playerId
                                         it[achievementTable.achievementName] = name
                                         try {
-                                            it[achievementTable.completedAt] = kotlinx.datetime.LocalDateTime.parse(dateStr)
+                                            it[achievementTable.completedAt] = LocalDateTime.parse(dateStr)
                                         } catch (_: Exception) {
                                             // Keep default (CurrentDateTime)
                                         }
@@ -181,7 +183,7 @@ private suspend fun updatePluginVersion(version: UByte) {
 
 private suspend fun upgradeDatabase() {
     try {
-        var currentVersion: UByte? = null
+        var currentVersion: UByte?
 
         val candidates = listOf(
             Paths.get("config/mods/Essentials/data/database.mv.db").toFile(),
@@ -193,7 +195,12 @@ private suspend fun upgradeDatabase() {
         } catch (_: Throwable) {
             val dbExists = try {
                 suspendTransaction {
-                    exec("SELECT 1 FROM db LIMIT 1")
+                    val dialect = defaultDatabase!!.config.explicitDialect
+                    val query = when {
+                        dialect is PostgreSQLDialect -> "SELECT 1 FROM public.db LIMIT 1"
+                        else -> "SELECT 1 FROM db LIMIT 1"
+                    }
+                    exec(query)
                     true
                 }
             } catch (_: Throwable) {

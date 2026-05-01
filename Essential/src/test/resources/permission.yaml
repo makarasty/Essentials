@@ -1,0 +1,83 @@
+---
+owner:
+  admin: true
+  chatFormat: "[sky][Owner] %1[orange] > [white]%2"
+  permission:
+  - all
+admin:
+  inheritance: user
+  admin: true
+  chatFormat: "[yellow][Admin] %1[orange] > [white]%2"
+  permission:
+  - afk.admin
+  - chars
+  - chat
+  - chat.admin
+  - color
+  - effect
+  - fillitems
+  - freeze
+  - hud.enemy
+  - gg
+  - god
+  - info.other
+  - kick.admin
+  - kill
+  - kill.other
+  - killall
+  - killunit
+  - meme
+  - me
+  - mute
+  - pause
+  - pm.other
+  - pvp.spector
+  - search
+  - spawn
+  - strict
+  - changemap
+  - skip
+  - team
+  - team.other
+  - tempban
+  - tpp
+  - unmute
+  - weather
+  - vote.pass
+  - rollback
+  - vote.random
+  - vote.skip
+  - vote.cancel
+  - unban
+user:
+  inheritance: visitor
+  chatFormat: "%1[orange] > [white]%2"
+  permission:
+  - achievements
+  - '*reg'
+  - discord
+  - info
+  - lang
+  - log
+  - maps
+  - hud
+  - motd
+  - players
+  - report
+  - status
+  - time
+  - tp
+  - track
+  - url
+  - pm
+  - effect
+  - ranking
+  - changepw
+visitor:
+  chatFormat: "%1[scarlet] > [white]%2"
+  default: true
+  permission:
+  - help
+  - login
+  - reg
+  - t
