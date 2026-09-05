@@ -634,6 +634,7 @@ class PluginTest {
             val updatedWebContent = configDir.child("config_web.yaml").readString()
             assertTrue(updatedWebContent.contains("sessionSecret"), "config_web.yaml should be upgraded with sessionSecret")
             assertTrue(updatedWebContent.contains("enableWebSocket"), "config_web.yaml should be upgraded with enableWebSocket")
+            assertTrue(updatedWebContent.contains("mapRenderServer"), "config_web.yaml should be upgraded with mapRenderServer")
 
             assertEquals("%player.name[orange] >[white] %chat", chatConf.javaClass.getMethod("getChatFormat").invoke(chatConf))
 
