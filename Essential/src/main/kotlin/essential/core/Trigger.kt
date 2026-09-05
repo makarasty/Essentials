@@ -9,6 +9,7 @@ import arc.util.Log
 import arc.util.Time
 import arc.util.Timer
 import essential.common.bundle.Bundle
+import essential.common.database.data.PlayerData
 import essential.common.database.data.PluginData
 import essential.common.event.CustomEvents
 import essential.common.database.data.cleanupExpiredRoutingPermissions
@@ -52,31 +53,29 @@ import kotlin.time.Instant
 import essential.common.database.data.update
 
 
-class Trigger {
-    companion object {
-        fun pingHostImpl(address: String, port: Int, listener: Consumer<Host>) {
-            val packetSupplier: Prov<DatagramPacket> = Prov<DatagramPacket> { DatagramPacket(ByteArray(512), 512) }
+object Trigger {
+    fun pingHostImpl(address: String, port: Int, listener: Consumer<Host>) {
+        val packetSupplier: Prov<DatagramPacket> = Prov<DatagramPacket> { DatagramPacket(ByteArray(512), 512) }
 
-            try {
-                DatagramSocket().use { socket ->
-                    val s: Long = Time.millis()
-                    socket.send(DatagramPacket(byteArrayOf(-2, 1), 2, InetAddress.getByName(address), port))
-                    socket.soTimeout = 1000
-                    val packet: DatagramPacket = packetSupplier.get()
-                    socket.receive(packet)
-                    val buffer = ByteBuffer.wrap(packet.data)
-                    val host =
-                        NetworkIO.readServerData(Time.timeSinceMillis(s).toInt(), packet.address.hostAddress, buffer)
-                    host.port = port
-                    listener.accept(host)
-                }
-            } catch (_: Exception) {
-                listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
+        try {
+            DatagramSocket().use { socket ->
+                val s: Long = Time.millis()
+                socket.send(DatagramPacket(byteArrayOf(-2, 1), 2, InetAddress.getByName(address), port))
+                socket.soTimeout = 1000
+                val packet: DatagramPacket = packetSupplier.get()
+                socket.receive(packet)
+                val buffer = ByteBuffer.wrap(packet.data)
+                val host =
+                    NetworkIO.readServerData(Time.timeSinceMillis(s).toInt(), packet.address.hostAddress, buffer)
+                host.port = port
+                listener.accept(host)
             }
+        } catch (_: Exception) {
+            listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
         }
     }
 
-    class PingThread: Runnable {
+    class PingThread : Runnable {
         private var ping = 0.000
 
         private fun calculateCenter(startTile: Tile, endTile: Tile): Pair<Int, Int> {
@@ -460,26 +459,7 @@ class Trigger {
                 return@run
             }
             for (data in players) {
-                val registeredTeam = pvpPlayer[data.uuid]
-                if (Vars.state.rules.pvp
-                    && registeredTeam == data.player.team()
-                    && data.player.unit() != null
-                    && data.player.team().cores().isEmpty
-                    && data.player.team() != Team.derelict
-                ) {
-                    data.pvpLoseCount++
-                    if (conf.feature.pvp.spector) {
-                        data.player.team(Team.derelict)
-                        pvpSpecters.add(data.uuid)
-                    }
-                    pvpPlayer.remove(data.uuid)
-
-                    val time = data.currentPlayTime
-                    val score = time + 5000
-
-                    data.exp += ((score * data.expMultiplier).toInt())
-                    data.send("event.exp.earn.defeat", data.currentExp + score)
-                }
+                recordPvpDefeat(data)
 
                 if (data.status.containsKey("freeze")) {
                     val d = findPlayerData(data.uuid)
@@ -502,7 +482,14 @@ class Trigger {
                         for (line in text) {
                             for (char in line) {
                                 if (char == '#' && Vars.world.tile(x, y) != null) {
-                                    Call.effect(data.player.con(), Fx.placeBlock, x * 8f + 4f, y * 8f + 4f, 1f, Color.green)
+                                    Call.effect(
+                                        data.player.con(),
+                                        Fx.placeBlock,
+                                        x * 8f + 4f,
+                                        y * 8f + 4f,
+                                        1f,
+                                        Color.green
+                                    )
                                 }
                                 x++
                             }
@@ -570,8 +557,15 @@ class Trigger {
 
                             if (hubMapName != null && currentMapName == hubMapName) {
                                 val targetServerName = "${two.ip}:${two.port}"
-                                val hubConnectionTime = Instant.fromEpochMilliseconds(data.player.con().connectTime).toLocalDateTime(systemTimezone)
-                                grantRoutingPermission(data.player.uuid(), hubMapName, targetServerName, two.port, hubConnectionTime)
+                                val hubConnectionTime = Instant.fromEpochMilliseconds(data.player.con().connectTime)
+                                    .toLocalDateTime(systemTimezone)
+                                grantRoutingPermission(
+                                    data.player.uuid(),
+                                    hubMapName,
+                                    targetServerName,
+                                    two.port,
+                                    hubConnectionTime
+                                )
                             }
                             val transfer = CustomEvents.ServerTransfer(data.player, two.ip, two.port)
                             Events.fire(transfer)
@@ -671,9 +665,18 @@ class Trigger {
                                     it.update()
 
                                     if (hubMapName != null && currentMapName == hubMapName) {
-                                        val targetServerName = if (server.size == 1) "${server[0]}:6567" else "${server[0]}:${server[1]}"
-                                        val hubConnectionTime = Instant.fromEpochMilliseconds(it.player.con().connectTime).toLocalDateTime(systemTimezone)
-                                        grantRoutingPermission(it.player.uuid(), hubMapName, targetServerName, port, hubConnectionTime)
+                                        val targetServerName =
+                                            if (server.size == 1) "${server[0]}:6567" else "${server[0]}:${server[1]}"
+                                        val hubConnectionTime =
+                                            Instant.fromEpochMilliseconds(it.player.con().connectTime)
+                                                .toLocalDateTime(systemTimezone)
+                                        grantRoutingPermission(
+                                            it.player.uuid(),
+                                            hubMapName,
+                                            targetServerName,
+                                            port,
+                                            hubConnectionTime
+                                        )
                                         Log.debug("Granted routing permission for ${it.player.plainName()} to $targetServerName (AFK)")
                                     }
                                     val transfer = CustomEvents.ServerTransfer(it.player, server[0], port)
@@ -706,9 +709,7 @@ class Trigger {
         Timer.schedule({
             if (Vars.state.rules.pvp) {
                 players.forEach {
-                    if (!pvpPlayer.containsKey(it.uuid) && it.player.team() != Team.derelict && it.player.unit() != null) {
-                        pvpPlayer[it.uuid] = it.player.team()
-                    }
+                    registerPvpPlayer(it)
                 }
             }
 
@@ -717,7 +718,8 @@ class Trigger {
                 val backupFile = Vars.saveDirectory.child("rollback_$timestamp.msav")
                 SaveIO.save(backupFile)
 
-                val files = Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
+                val files =
+                    Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
                 val sortedFiles = files.sortedBy { it.lastModified() }
                 if (sortedFiles.size > conf.command.rollback.limit) {
                     for (i in 0 until (sortedFiles.size - conf.command.rollback.limit)) {
@@ -767,4 +769,41 @@ class Trigger {
             }
         }
     }
+
+    fun registerPvpPlayer(data: PlayerData) {
+        if (!Vars.state.rules.pvp) return
+        val player = data.player
+        val connection = player.con() ?: return
+        if (connection.hasDisconnected) return
+        val team = player.team()
+        if (data.uuid !in pvpPlayer && data.uuid !in pvpSpecters
+            && team != Team.derelict && player.unit() != null && team.data().hasCore()
+            && !(Vars.state.rules.waves && team == Vars.state.rules.waveTeam)
+        ) {
+            pvpPlayer[data.uuid] = team
+        }
+    }
+
+    fun recordPvpDefeat(data: PlayerData) {
+        if (!Vars.state.rules.pvp || data.uuid in pvpSpecters) return
+        val player = data.player
+        val connection = player.con() ?: return
+        if (connection.hasDisconnected) return
+        val team = player.team()
+        if (team == Team.derelict || pvpPlayer[data.uuid] != team
+            || player.unit() == null || team.data().hasCore()
+        ) return
+
+        pvpPlayer.remove(data.uuid)
+        data.pvpLoseCount++
+        if (conf.feature.pvp.spector) {
+            player.team(Team.derelict)
+            pvpSpecters.add(data.uuid)
+        }
+
+        val score = data.currentPlayTime + 5000
+        data.exp += (score * data.expMultiplier).toInt()
+        data.send("event.exp.earn.defeat", data.currentExp + score)
+    }
+
 }
