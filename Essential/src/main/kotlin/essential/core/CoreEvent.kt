@@ -103,7 +103,7 @@ fun withdraw(event: WithdrawEvent) {
 
 @Event
 fun deposit(event: DepositEvent) {
-    if (event.tile != null && event.player.unit().item() != null && event.player.name != null) {
+    if (event.tile != null && event.player?.unit()?.item() != null && event.player?.name != null) {
         writeLog(
             LogType.Deposit,
             Bundle()["log.deposit", event.player.plainName(), event.player.unit()

@@ -84,7 +84,7 @@ fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
     }
 }
 
-@Event
+// @Event
 fun runEverySecond() {
     Timer.schedule({
         if (conf.pvp.peace.enabled && Vars.state.rules.pvp && Vars.state.isPlaying) {
@@ -101,7 +101,7 @@ fun runEverySecond() {
     }, 0f, 1f)
 }
 
-@Event
+// @Event
 fun update() {
     if (conf.pvp.border.enabled) {
         Groups.unit.forEach { unit ->
