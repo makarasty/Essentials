@@ -83,10 +83,9 @@ class Commands {
 
                 scope.launch {
                     try {
-                        if (hasConflict) {
-                            deletePlayerData(currentUuid)
+                        if (!rebindAccountUuid(target.id, currentUuid)) {
+                            throw IllegalStateException("Failed to rebind player UUID")
                         }
-                        rebindAccountUuid(target.id, currentUuid)
                         target.uuid = currentUuid
                         Core.app.post {
                             val activePlayer = Groups.player.find { p -> p.uuid() == currentUuid }

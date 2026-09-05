@@ -266,6 +266,17 @@ suspend fun deletePlayerData(uuid: String): Boolean = suspendTransaction {
 }
 
 suspend fun rebindAccountUuid(id: UInt, newUuid: String): Boolean = suspendTransaction {
+    val conflictingId = PlayerTable.select(PlayerTable.id)
+        .where { PlayerTable.uuid eq newUuid }
+        .map { it[PlayerTable.id] }
+        .firstOrNull()
+
+    if (conflictingId != null && conflictingId != id) {
+        AchievementTable.deleteWhere { AchievementTable.playerId eq conflictingId }
+        ContributionTable.deleteWhere { ContributionTable.playerId eq conflictingId }
+        PlayerTable.deleteWhere { PlayerTable.id eq conflictingId }
+    }
+
     PlayerTable.update({ PlayerTable.id eq id }) {
         it[PlayerTable.uuid] = newUuid
     } > 0
