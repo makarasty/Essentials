@@ -1,5 +1,6 @@
 package essential.core
 
+import arc.util.Log
 import arc.util.Timer
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.update
@@ -31,12 +32,15 @@ object TempBan {
 
     suspend fun tick() {
         val now = Clock.System.now().toLocalDateTime(systemTimezone)
-        val expired = suspendTransaction {
-            PlayerTable.select(PlayerTable.uuid)
-                .where { PlayerTable.banExpireDate lessEq now }
-                .map { it[PlayerTable.uuid] }
-                .toList()
-        } + orphaned().filterValues { it <= now }.keys
+        val stored = runCatching {
+            suspendTransaction {
+                PlayerTable.select(PlayerTable.uuid)
+                    .where { PlayerTable.banExpireDate lessEq now }
+                    .map { it[PlayerTable.uuid] }
+                    .toList()
+            }
+        }.onFailure { Log.err("Failed to read temp ban expiries from the database", it) }.getOrDefault(emptyList())
+        val expired = (stored + orphaned().filterValues { it <= now }.keys).toSet()
 
         for (uuid in expired) {
             clearBanExpire(uuid)
@@ -45,21 +49,27 @@ object TempBan {
     }
 
     suspend fun setBanExpire(uuid: String, expire: LocalDateTime) {
-        val data = findPlayerData(uuid)?.takeIf { !it.temporary } ?: getPlayerData(uuid)
-        if (data != null) {
-            data.banExpireDate = expire
-            data.update()
-            return
-        }
+        val stored = runCatching {
+            val data = findPlayerData(uuid)?.takeIf { !it.temporary } ?: getPlayerData(uuid)
+            if (data != null) {
+                data.banExpireDate = expire
+                data.update()
+            }
+            data != null
+        }.onFailure { Log.err("Failed to store the temp ban expiry of $uuid in the database, keeping it in plugin data", it) }
+            .getOrDefault(false)
+        if (stored) return
         pluginData.data.tempBans[uuid] = expire.toString()
         pluginData.update()
     }
 
     suspend fun clearBanExpire(uuid: String) {
         findPlayerData(uuid)?.banExpireDate = null
-        suspendTransaction {
-            PlayerTable.update({ PlayerTable.uuid eq uuid }) { it[banExpireDate] = null }
-        }
+        runCatching {
+            suspendTransaction {
+                PlayerTable.update({ PlayerTable.uuid eq uuid }) { it[banExpireDate] = null }
+            }
+        }.onFailure { Log.err("Failed to clear the temp ban expiry of $uuid in the database", it) }
         if (pluginData.data.tempBans.remove(uuid) != null) pluginData.update()
     }
 

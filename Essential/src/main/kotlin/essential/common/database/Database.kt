@@ -120,6 +120,12 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
         )
 
         SchemaUtils.create(*tablesToCreate.toTypedArray())
+        SchemaUtils.addMissingColumnsStatements(*tablesToCreate.toTypedArray())
+            .filter { statement -> listOf("CONSTRAINT", "INDEX").none { statement.contains(it, ignoreCase = true) } }
+            .forEach { statement ->
+                Log.info("[Database] $statement")
+                exec(statement)
+            }
     }
 
     val currentDbVersion = runFlywayMigration(databaseType, r2dbcUrl, user, pass)
