@@ -19,7 +19,8 @@ import kotlin.time.TimeMark
 object MatchClock {
     private var start: TimeMark? = null
 
-    val text: String get() = start?.elapsedNow()?.toHString() ?: ""
+    /** Zeroes rather than an empty string, so a separator around it never dangles. */
+    val text: String get() = start?.elapsedNow()?.toHString() ?: "00:00"
 
     fun reset() {
         start = null
