@@ -646,9 +646,12 @@ class Commands {
                                                     Clock.System.now().plus(time.minutes).toString()
                                                 )
                                             )
+                                            val uuid = targetData!!.uuid
+                                            val label = Undo.label(uuid)
                                             if (targetData!!.player.con() != null) {
                                                 targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
                                             }
+                                            Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it) }
                                         }
                                     }
                                     Call.menu(
@@ -661,6 +664,8 @@ class Commands {
                                 } else if (s == 6) {
                                     val banConfirmMenu = Menus.registerMenu { _, i ->
                                         if (i == 0) {
+                                            val uuid = targetData!!.uuid
+                                            val label = Undo.label(uuid)
                                             if (targetData!!.player.con() != null) {
                                                 targetData!!.player.kick(Packets.KickReason.banned)
                                             }
@@ -673,6 +678,7 @@ class Commands {
                                                 )
                                             )
                                             banPlayer(targetData)
+                                            Undo.record(playerData, "ban", uuid, label) { Undo.unban(it) }
                                         }
                                     }
                                     // 영구 차단
@@ -704,6 +710,10 @@ class Commands {
                                 unbanPlayer(targetData)
                                 Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
                                 playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
+                                val uuid = targetData!!.uuid
+                                Undo.record(
+                                    playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                                ) { Undo.ban(it) }
                             }
                         }
                         Call.menu(
@@ -717,14 +727,19 @@ class Commands {
 
                     2 -> {
                         if (targetData != null) {
+                            val uuid = targetData!!.uuid
+                            val label = Undo.label(uuid)
                             targetData!!.player.kick(Packets.KickReason.kick)
+                            Undo.record(
+                                playerData, "kick", uuid, label,
+                                alternativeKey = "command.undo.button.ban", alternative = { Undo.ban(it) }
+                            ) { Undo.liftKick(it) }
                         }
                     }
                 }
             }
 
-            scope.launch {
-                val other = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+            fun open(other: PlayerData) {
                 val info = Vars.netServer.admins.getInfo(other.uuid)
                 isBanned = Vars.netServer.admins.isIDBanned(other.uuid) || Vars.netServer.admins.isIPBanned(info.lastIP)
                 val banned = "\n${bundle["info.banned"]}: $isBanned"
@@ -743,6 +758,14 @@ class Commands {
                     show(other) + banned + lineBreak,
                     menu
                 )
+            }
+
+            val online = (PlayerLookup.findOnline(arg[0]) as? PlayerLookup.Result.Found)?.value
+            val current = online?.let { target -> players.find { it.uuid == target.uuid() } }
+            if (current != null) {
+                open(current)
+            } else {
+                scope.launch { open(PlayerLookup.offline(arg[0], playerData) ?: return@launch) }
             }
         } else {
             playerData.err("command.permission.false")
@@ -1193,6 +1216,7 @@ class Commands {
             target.chatMuted = true
             target.update()
             playerData.send("command.mute", target.name)
+            Undo.record(playerData, "mute", target.uuid, Undo.label(target.uuid)) { Undo.mute(it, false) }
         }
     }
 
@@ -1204,6 +1228,7 @@ class Commands {
             target.chatMuted = true
             target.update()
             Log.info(bundle["command.mute", target.name])
+            Undo.record(null, "mute", target.uuid, Undo.label(target.uuid)) { Undo.mute(it, false) }
         }
     }
 
@@ -1699,16 +1724,20 @@ class Commands {
     @ClientCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(playerData: PlayerData, arg: Array<out String>) {
         val data = findPermissionTarget(arg[0], playerData) ?: return
+        val previous = Permission.groupOf(data.uuid, data.permission)
         setPermissionGroup(data, arg[1])
         playerData.send("command.setPerm.success", data.name, arg[1])
+        Undo.record(playerData, "setperm", data.uuid, Undo.label(data.uuid)) { Undo.permission(it, previous) }
     }
 
     @ServerCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(arg: Array<out String>) {
         val bundle = Bundle()
         val data = findPermissionTarget(arg[0], null) ?: return
+        val previous = Permission.groupOf(data.uuid, data.permission)
         setPermissionGroup(data, arg[1])
         Log.info(bundle["command.setPerm.success", data.name, arg[1]])
+        Undo.record(null, "setperm", data.uuid, Undo.label(data.uuid)) { Undo.permission(it, previous) }
     }
 
     @ServerCommand("perm", "<player>", "Show the player's effective permission group.")
@@ -1884,6 +1913,8 @@ class Commands {
         scope.launch { target.update() }
         val undo = if (target.strictMode) ".undo" else ""
         playerData.send("command.strict$undo", target.name)
+        val previous = !target.strictMode
+        Undo.record(playerData, "strict", target.uuid, Undo.label(target.uuid)) { Undo.strict(it, previous) }
     }
 
     @ServerCommand("strict", "<player>", "Set whether the target player can build or not.")
@@ -1894,6 +1925,8 @@ class Commands {
         scope.launch { target.update() }
         val undo = if (target.strictMode) ".undo" else ""
         Log.info(bundle["command.strict$undo", target.name])
+        val previous = !target.strictMode
+        Undo.record(null, "strict", target.uuid, Undo.label(target.uuid)) { Undo.strict(it, previous) }
     }
 
     @ClientCommand("t", "<message...>", "Send a meaage only to your teammates.")
@@ -1922,14 +1955,24 @@ class Commands {
         if (arg.size == 1) {
             playerData.player.team(team)
         } else if (Permission.check(playerData, "team.other")) {
-            PlayerLookup.online(arg[1], playerData)?.team(team)
+            val other = PlayerLookup.online(arg[1], playerData)
+            if (other != null) {
+                val previous = other.team()
+                other.team(team)
+                Undo.record(playerData, "team", other.uuid(), Undo.label(other.uuid())) { Undo.team(it, previous) }
+            }
         }
     }
 
     @ServerCommand("team", "<team> <name>", "Set player team")
     fun team(arg: Array<out String>) {
         val team = selectTeam(arg[0])
-        PlayerLookup.online(arg[1])?.team(team)
+        val other = PlayerLookup.online(arg[1])
+        if (other != null) {
+            val previous = other.team()
+            other.team(team)
+            Undo.record(null, "team", other.uuid(), Undo.label(other.uuid())) { Undo.team(it, previous) }
+        }
     }
 
     // todo tempban client -> server
@@ -1947,11 +1990,13 @@ class Commands {
         scope.launch {
             val target = PlayerLookup.offline(arg[0]) ?: return@launch
             val reason = if (arg.size > 2) arg[2] else null
+            val label = Undo.label(target.uuid)
 
             target.banExpireDate = Clock.System.now().plus(minute.minutes).toLocalDateTime(systemTimezone)
             target.update()
             Groups.player.find { it.uuid() == target.uuid }
                 ?.kick(reason ?: bundle["command.tempBan.banned", target.name, "Server", target.banExpireDate.toString()])
+            Undo.record(null, "tempban", target.uuid, label) { Undo.unban(it) }
         }
     }
 
@@ -1993,8 +2038,61 @@ class Commands {
                 }
             } else {
                 playerData.send("command.unban.id", uuid)
+                Undo.record(
+                    playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                ) { Undo.ban(it) }
             }
         }
+    }
+
+    @ClientCommand("undo", "[index/list]", "Undo the last administrative action.")
+    fun undo(playerData: PlayerData, arg: Array<out String>) {
+        val bundle = playerData.bundle
+        val stack = Undo.stack(playerData.uuid)
+
+        if (arg.isNotEmpty() && arg[0].equals("list", true)) {
+            if (stack.isEmpty()) {
+                playerData.send("command.undo.empty")
+            } else {
+                stack.forEachIndexed { index, entry ->
+                    playerData.sendDirect(bundle["command.undo.list", index + 1, entry.description])
+                }
+            }
+            return
+        }
+
+        val entry = Undo.take(playerData.uuid, if (arg.isEmpty()) 1 else arg[0].toIntOrNull() ?: 0)
+        if (entry == null) {
+            if (stack.isEmpty()) playerData.send("command.undo.empty") else playerData.err("command.undo.invalid")
+            return
+        }
+        entry.revert(entry.targetUuid)
+        playerData.send("command.undo.done", entry.description)
+    }
+
+    @ServerCommand("undo", "[index/list]", "Undo the last administrative action.")
+    fun undo(arg: Array<out String>) {
+        val bundle = Bundle()
+        val stack = Undo.stack(Undo.CONSOLE)
+
+        if (arg.isNotEmpty() && arg[0].equals("list", true)) {
+            if (stack.isEmpty()) {
+                Log.info(bundle["command.undo.empty"])
+            } else {
+                stack.forEachIndexed { index, entry ->
+                    Log.info(bundle["command.undo.list", index + 1, entry.description])
+                }
+            }
+            return
+        }
+
+        val entry = Undo.take(Undo.CONSOLE, if (arg.isEmpty()) 1 else arg[0].toIntOrNull() ?: 0)
+        if (entry == null) {
+            Log.info(bundle[if (stack.isEmpty()) "command.undo.empty" else "command.undo.invalid"])
+            return
+        }
+        entry.revert(entry.targetUuid)
+        Log.info(bundle["command.undo.done", entry.description])
     }
 
     @ClientCommand("unmute", "<player>", "Unmute player")
@@ -2004,6 +2102,7 @@ class Commands {
             target.chatMuted = false
             target.update()
             playerData.send("command.unmute", target.name)
+            Undo.record(playerData, "unmute", target.uuid, Undo.label(target.uuid)) { Undo.mute(it, true) }
         }
     }
 
@@ -2015,6 +2114,7 @@ class Commands {
             target.chatMuted = false
             target.update()
             Log.info(bundle["command.unmute", target.name])
+            Undo.record(null, "unmute", target.uuid, Undo.label(target.uuid)) { Undo.mute(it, true) }
         }
     }
 

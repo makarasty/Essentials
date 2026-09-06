@@ -7,6 +7,7 @@ import PluginTest.Companion.loadGame
 import essential.common.database.data.PlayerData
 import essential.common.database.table.PlayerTable
 import kotlinx.coroutines.runBlocking
+import mindustry.gen.Groups
 import mindustry.gen.Player
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.or
@@ -37,8 +38,12 @@ class PlayerLookupTest {
 
     @AfterTest
     fun cleanup() {
-        joined.forEach { leavePlayer(it) }
+        joined.forEach { player ->
+            runCatching { leavePlayer(player) }
+            player.remove()
+        }
         joined.clear()
+        Groups.player.update()
     }
 
     private fun join(name: String): Pair<Player, PlayerData> {
