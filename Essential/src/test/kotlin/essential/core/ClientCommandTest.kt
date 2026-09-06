@@ -617,7 +617,10 @@ class ClientCommandTest {
 
         // Test info command with not exist player
         clientCommand.handleMessage("/info nonexistentplayer", player)
-        assertEquals(err("player.not.found"), playerData.lastReceivedMessage)
+        assertTrue(
+            waitUntil(2000) { playerData.lastReceivedMessage == err("player.not.found") },
+            "info should report a missing player but was ${playerData.lastReceivedMessage}"
+        )
     }
 
     @Test
@@ -889,10 +892,15 @@ class ClientCommandTest {
         // Test ranking command with invalid type parameter
         clientCommand.handleMessage("/ranking invalid", player)
         run {
-            val msg = playerData.lastReceivedMessage
             val expected1 = err("command.ranking.wrong")
             val expected2 = err("player.not.found")
-            assertTrue(msg == expected1 || msg == expected2)
+            assertTrue(
+                waitUntil(2000) {
+                    val msg = playerData.lastReceivedMessage
+                    msg == expected1 || msg == expected2
+                },
+                "ranking said: ${playerData.lastReceivedMessage}"
+            )
         }
 
         // Test ranking command without parameter

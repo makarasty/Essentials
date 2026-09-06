@@ -2,7 +2,6 @@ package essential.core.service.protect
 
 import arc.Core
 import arc.Events
-import arc.struct.ObjectSet
 import arc.util.Log
 import essential.common.bundle.Bundle
 import essential.common.database.data.*
@@ -12,6 +11,7 @@ import essential.common.event.CustomEvents.PlayerDiscordRequested
 import essential.common.event.CustomEvents.PlayerReported
 import essential.common.log.LogType
 import essential.common.log.writeLog
+import essential.common.util.PlayerLookup
 import essential.common.util.currentTime
 import essential.core.Main.Companion.scope
 import essential.core.service.protect.ProtectService.Companion.conf
@@ -174,18 +174,18 @@ class Commands {
     @ClientCommand(name = "report", parameter = "<player> <reason...>", description = "Report a player")
     fun report(playerData: PlayerData, arg: Array<out String>) {
         val player = playerData.player
-        val target: ObjectSet<PlayerInfo?> = Vars.netServer.admins.findByName(arg[0])
-        target.first()?.let {
+
+        scope.launch {
+            val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
             val reason = arg[1]
-            val infos: PlayerInfo = Vars.netServer.admins.findByName(it.plainLastName()).first()
+            val infos: PlayerInfo = Vars.netServer.admins.getInfo(target.uuid)
+            val name = infos.plainLastName()
             val date = currentTime()
-            val text: String = Bundle()["command.report.texts", it.plainLastName(), player.plainName(), reason, infos.lastName, infos.names, infos.id, infos.lastIP, infos.ips]
-            writeLog(LogType.Report, date + text, it.plainLastName())
-            Log.info(Bundle()["command.report.received", player.plainName(), it.plainLastName(), reason])
-            playerData.send("command.report.done", it.plainLastName())
-            Events.fire(PlayerReported(player.plainName(), it.plainLastName(), reason))
-        } ?: run {
-            playerData.err(PLAYER_NOT_FOUND)
+            val text: String = Bundle()["command.report.texts", name, player.plainName(), reason, infos.lastName, infos.names, infos.id, infos.lastIP, infos.ips]
+            writeLog(LogType.Report, date + text, name)
+            Log.info(Bundle()["command.report.received", player.plainName(), name, reason])
+            playerData.send("command.report.done", name)
+            Events.fire(PlayerReported(player.plainName(), name, reason))
         }
     }
 }

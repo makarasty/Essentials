@@ -2,7 +2,7 @@ package essential.core.service.chat
 
 import arc.Core
 import essential.common.database.data.PlayerData
-import essential.common.util.findPlayers
+import essential.common.util.PlayerLookup
 import essential.core.service.chat.ChatService.Companion.conf
 import ksp.command.ClientCommand
 import mindustry.Vars
@@ -10,9 +10,6 @@ import mindustry.gen.Call
 import mindustry.gen.Playerc
 
 class Commands {
-    companion object {
-        private const val PLAYER_NOT_FOUND = "player.not.found"
-    }
     @ClientCommand(name = "me", parameter = "<text...>", description = "Chat with special prefix")
     fun me(playerData: PlayerData, arg: Array<out String>) {
         if (playerData.chatMuted) return
@@ -36,12 +33,9 @@ class Commands {
     fun pm(playerData: PlayerData, arg: Array<out String>) {
         if (playerData.chatMuted) return
 
-        val targetName = arg[0]
-        val target: Playerc? = findPlayers(targetName)
+        val target: Playerc = PlayerLookup.online(arg[0], playerData) ?: return
 
-        if (target == null) {
-            playerData.err(PLAYER_NOT_FOUND)
-        } else if (arg.size > 1) {
+        if (arg.size > 1) {
             val message = arg[1]
             playerData.player.sendMessage("[green][PM] " + target.plainName() + "[yellow] => [white] " + message)
             target.sendMessage("[blue][PM] [gray][" + playerData.entityId + "][]" + playerData.player.plainName() + "[yellow] => [white] " + message)
