@@ -506,6 +506,7 @@ fun wave(event: WaveEvent) {
 fun serverLoad(event: ServerLoadEvent) {
     if (conf.command.layoutFix) KeyboardLayout.install()
     ServerDescription.start()
+    TempBan.start()
 
     Vars.content.blocks().each { two ->
         var buf = 0
@@ -994,14 +995,13 @@ fun playerChat(event: PlayerChatEvent) {
 
 @Event
 fun playerBan(event: PlayerBanEvent) {
+    val info = Vars.netServer.admins.getInfo(event.uuid)
     writeLog(
         LogType.Player,
-        Bundle()["log.player.banned", Vars.netServer.admins.getInfo(event.uuid).ips.first(), Vars.netServer.admins.getInfo(
-            event.uuid
-        ).names.first()]
+        Bundle()["log.player.banned", info.ips.firstOpt() ?: info.lastIP, info.names.firstOpt() ?: info.lastName]
     )
     scope.launch {
-        createBanInfo(Vars.netServer.admins.getInfo(event.uuid), null)
+        createBanInfo(info, null)
     }
 }
 
@@ -1010,6 +1010,7 @@ fun playerUnban(event: PlayerUnbanEvent) {
     Events.fire(CustomEvents.PlayerUnbanned(Vars.netServer.admins.getInfo(event.uuid).lastName, currentTime()))
     scope.launch {
         removeBanInfoByUUID(event.uuid)
+        TempBan.clearBanExpire(event.uuid)
     }
 }
 

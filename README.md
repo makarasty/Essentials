@@ -86,6 +86,35 @@ The full test suite targets the full distribution. For a modular build, the
 `test` task runs a headless Mindustry boot smoke test against the exact sources
 packaged in that artifact.
 
+## Working next to WebSocketAdmin
+
+The WebSocketAdmin plugin bridges a Discord bot to the same servers. Mindustry's own
+`Administration` state stays the source of truth for bans and admin status, and this plugin
+keeps its side consistent with it in both directions.
+
+- Keep `ban.useDatabase: false`. The plugin then reads the vanilla ban list, so both plugins
+  agree on who is banned. With `true` the database list wins and the bot's ban view drifts.
+- A player who is admin in the vanilla admin list joins into the group named by
+  `feature.permission.vanillaAdminGroup` (default `admin`), and `setperm` writes the vanilla
+  admin flag back. A vanilla admin flag that this plugin did not set is never cleared on join.
+- `/tempban` and the `tempban` console command now create a real vanilla ban, so the bot sees
+  it in its ban list. A scheduler lifts the ban and clears the stored expiry once the time
+  has passed.
+
+WebSocketAdmin invokes these console commands when this plugin is loaded:
+
+| Bot action | Console command |
+|:---|:---|
+| Grant admin | `setperm <uuid> admin` |
+| Revoke admin | `setperm <uuid> user` |
+| Ban with a duration | `tempban <uuid> <minutes> <reason>` |
+| Unban | `unban <uuid>` |
+
+The bot's `/logs` command reads the log files this plugin writes, so the `feature.log` types it
+needs are `player` (joins, leaves, kicks, bans), `chat`, `block`, `tap` and `item` (both the
+deposit and the withdraw file). Its `server` log choice is the Mindustry server log and does not
+depend on `feature.log`.
+
 ## Client commands
 | Command      | Parameter                                                               | Description                                                                      |
 |:-------------|:------------------------------------------------------------------------|:---------------------------------------------------------------------------------|
@@ -168,7 +197,8 @@ packaged in that artifact.
 | setperm             | &lt;player&gt; &lt;group&gt;         | Set the player's permission group.                |
 | strict              | &lt;player&gt;                       | Set whether the target player can build or not.   |
 | team                | &lt;team&gt; &lt;name&gt;            | Set player team                                   |
-| tempban             | &lt;player&gt; &lt;time&gt; [reason] | Ban the player for a certain period of time       |
+| tempban             | &lt;player&gt; &lt;time&gt; [reason...] | Ban the player for a certain period of time    |
+| unban               | &lt;player&gt;                       | Unban player                                      |
 | unmute              | &lt;player&gt;                       | Unmute player                                     |
 
 README.md Generated time: 2026-05-20 20:44

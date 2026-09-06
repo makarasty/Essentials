@@ -14,13 +14,20 @@ import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.update
 import essential.common.database.table.AchievementTable
+import essential.common.pluginData
 import essential.common.rootPath
+import essential.common.systemTimezone
 import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.toLocalDateTime
+import mindustry.Vars
 import mindustry.game.EventType
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import kotlin.test.*
+import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.ExperimentalTime
 
 class ServerCommandTest {
     companion object {
@@ -221,5 +228,92 @@ class ServerCommandTest {
         }
 
         assertTrue(lines.any { it.contains(Bundle()["player.not.found"]) }, "perm should report a missing player but was $lines")
+    }
+
+    @Test
+    fun server_setPermSyncsVanillaAdmin() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val admins = Vars.netServer.admins
+
+        serverCommand.handleMessage("setperm $uuid admin")
+
+        assertTrue(admins.getInfo(uuid).admin, "setperm admin should raise the vanilla admin flag")
+        assertTrue(admins.isAdmin(uuid, target.first.usid()), "the stored admin usid should match the session")
+
+        serverCommand.handleMessage("setperm $uuid user")
+
+        assertFalse(admins.getInfo(uuid).admin, "setperm user should clear the vanilla admin flag")
+
+        leavePlayer(target.first)
+    }
+
+    @OptIn(ExperimentalTime::class)
+    @Test
+    fun server_tempBanCreatesVanillaBanAndExpires() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val admins = Vars.netServer.admins
+
+        serverCommand.handleMessage("tempban $uuid 10 test reason")
+
+        assertTrue(waitUntil(10000) { admins.isIDBanned(uuid) }, "tempban should create a vanilla ban")
+        assertTrue(
+            waitUntil(10000) { runBlocking { getPlayerData(uuid)?.banExpireDate } != null },
+            "tempban should store the ban expiry"
+        )
+
+        runBlocking {
+            val data = getPlayerData(uuid)!!
+            data.banExpireDate = Clock.System.now().minus(1.minutes).toLocalDateTime(systemTimezone)
+            data.update()
+            TempBan.tick()
+        }
+
+        assertFalse(admins.isIDBanned(uuid), "the scheduler should lift an expired ban")
+        assertNull(runBlocking { getPlayerData(uuid)?.banExpireDate }, "the scheduler should clear the ban expiry")
+    }
+
+    @Test
+    fun server_unbanClearsBanExpire() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+
+        serverCommand.handleMessage("tempban $uuid 10 test reason")
+        assertTrue(
+            waitUntil(10000) { runBlocking { getPlayerData(uuid)?.banExpireDate } != null },
+            "tempban should store the ban expiry"
+        )
+
+        serverCommand.handleMessage("unban $uuid")
+
+        assertTrue(
+            waitUntil(10000) { runBlocking { getPlayerData(uuid)?.banExpireDate } == null },
+            "unban should clear the ban expiry"
+        )
+        assertFalse(Vars.netServer.admins.isIDBanned(uuid), "unban should lift the vanilla ban")
+    }
+
+    @OptIn(ExperimentalTime::class)
+    @Test
+    fun server_tempBanWithoutPlayerRow() {
+        val uuid = "orphan" + Clock.System.now().toEpochMilliseconds()
+        val admins = Vars.netServer.admins
+        admins.getInfo(uuid)
+
+        serverCommand.handleMessage("tempban $uuid 10 test reason")
+
+        assertTrue(admins.isIDBanned(uuid), "an unregistered uuid should still get a vanilla ban")
+        assertTrue(
+            waitUntil(10000) { pluginData.data.tempBans.containsKey(uuid) },
+            "the expiry of an unregistered uuid should be kept in the plugin data"
+        )
+
+        pluginData.data.tempBans[uuid] =
+            Clock.System.now().minus(1.minutes).toLocalDateTime(systemTimezone).toString()
+        runBlocking { TempBan.tick() }
+
+        assertFalse(admins.isIDBanned(uuid), "the scheduler should lift an expired ban without a player row")
+        assertFalse(pluginData.data.tempBans.containsKey(uuid), "the scheduler should drop the stored expiry")
     }
 }

@@ -648,6 +648,7 @@ class Commands {
                                             )
                                             val uuid = targetData!!.uuid
                                             val label = Undo.label(uuid)
+                                            Vars.netServer.admins.banPlayerID(uuid)
                                             if (targetData!!.player.con() != null) {
                                                 targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
                                             }
@@ -1975,9 +1976,17 @@ class Commands {
         }
     }
 
+    private fun applyTempBan(uuid: String, name: String, expire: LocalDateTime, reason: String?) {
+        val message = Bundle()["command.tempBan.banned", name, "Server", expire.toString()]
+        Vars.netServer.admins.banPlayerID(uuid)
+        Groups.player.find { it.uuid() == uuid }?.kick(reason ?: message)
+        Undo.record(null, "tempban", uuid, Undo.label(uuid)) { Undo.unban(it) }
+        Log.info(message)
+    }
+
     // todo tempban client -> server
     @OptIn(ExperimentalTime::class)
-    @ServerCommand("tempban", "<player> <time> [reason]", "Ban the player for aa certain peroid of time")
+    @ServerCommand("tempban", "<player> <time> [reason...]", "Ban the player for aa certain peroid of time")
     fun tempBan(arg: Array<out String>) {
         val bundle = Bundle()
         val minute = arg[1].toIntOrNull()
@@ -1987,16 +1996,22 @@ class Commands {
             return
         }
 
+        val admins = Vars.netServer.admins
+        val expire = Clock.System.now().plus(minute.minutes).toLocalDateTime(systemTimezone)
+        val reason = if (arg.size > 2) arg[2] else null
+        val online = (PlayerLookup.findOnline(arg[0]) as? PlayerLookup.Result.Found)?.value
+        val uuid = online?.uuid() ?: arg[0].takeIf { admins.getInfoOptional(it) != null }
+
+        if (uuid != null) {
+            applyTempBan(uuid, online?.plainName() ?: admins.getInfo(uuid).lastName, expire, reason)
+            scope.launch { TempBan.setBanExpire(uuid, expire) }
+            return
+        }
+
         scope.launch {
             val target = PlayerLookup.offline(arg[0]) ?: return@launch
-            val reason = if (arg.size > 2) arg[2] else null
-            val label = Undo.label(target.uuid)
-
-            target.banExpireDate = Clock.System.now().plus(minute.minutes).toLocalDateTime(systemTimezone)
-            target.update()
-            Groups.player.find { it.uuid() == target.uuid }
-                ?.kick(reason ?: bundle["command.tempBan.banned", target.name, "Server", target.banExpireDate.toString()])
-            Undo.record(null, "tempban", target.uuid, label) { Undo.unban(it) }
+            applyTempBan(target.uuid, target.name, expire, reason)
+            TempBan.setBanExpire(target.uuid, expire)
         }
     }
 
@@ -2024,11 +2039,35 @@ class Commands {
         playerData.send("command.track.toggle$msg")
     }
 
+    @ServerCommand("unban", "<player>", "Unban player")
+    fun unban(arg: Array<out String>) {
+        val bundle = Bundle()
+        scope.launch {
+            val found = PlayerLookup.findOffline(arg[0])
+            val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
+            TempBan.clearBanExpire(uuid)
+
+            if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
+                if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
+                    Log.warn(bundle[PlayerLookup.NOT_FOUND])
+                } else {
+                    Log.info(bundle["command.unban.ip", arg[0]])
+                }
+            } else {
+                Log.info(bundle["command.unban.id", uuid])
+                Undo.record(
+                    null, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                ) { Undo.ban(it) }
+            }
+        }
+    }
+
     @ClientCommand("unban", "<player>", "Unban player")
     fun unban(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
             val found = PlayerLookup.findOffline(arg[0])
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
+            TempBan.clearBanExpire(uuid)
 
             if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
                 if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {

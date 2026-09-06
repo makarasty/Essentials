@@ -28,7 +28,8 @@ data class DisplayData(
     val warpTotal: ArrayList<WarpTotal> = arrayListOf(),
     val warpBlock: ArrayList<WarpBlock> = arrayListOf(),
     val blacklistedNames: ArrayList<String> = arrayListOf(),
-    val mapRatings: HashMap<String, HashMap<String, Boolean>> = hashMapOf()
+    val mapRatings: HashMap<String, HashMap<String, Boolean>> = hashMapOf(),
+    val tempBans: HashMap<String, String> = hashMapOf()
 )
 
 /** Read plugin data */
