@@ -14,6 +14,7 @@ import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.update
 import essential.common.database.table.AchievementTable
+import essential.common.permission.Permission
 import essential.common.pluginData
 import essential.common.rootPath
 import essential.common.systemTimezone
@@ -161,7 +162,10 @@ class ServerCommandTest {
 
         serverCommand.handleMessage("setperm $uuid admin")
 
-        assertEquals("admin", runBlocking { getPlayerData(uuid)?.permission })
+        assertTrue(
+            waitUntil(10000) { runBlocking { getPlayerData(uuid)?.permission } == "admin" },
+            "the offline group change should land"
+        )
         assertContains(rootPath.child("permission_user.yaml").readString(), uuid)
 
         val rejoin = createPlayer()
@@ -183,7 +187,10 @@ class ServerCommandTest {
 
         serverCommand.handleMessage("setperm $name owner")
 
-        assertEquals("owner", runBlocking { getPlayerData(uuid)?.permission })
+        assertTrue(
+            waitUntil(10000) { runBlocking { getPlayerData(uuid)?.permission } == "owner" },
+            "the offline group change should land"
+        )
     }
 
     @Test
@@ -223,11 +230,127 @@ class ServerCommandTest {
         }
         try {
             serverCommand.handleMessage("perm nobody-here")
+            assertTrue(
+                waitUntil(10000) { lines.any { it.contains(Bundle()["player.not.found"]) } },
+                "perm should report a missing player but was $lines"
+            )
         } finally {
             Log.logger = previous
         }
+    }
 
-        assertTrue(lines.any { it.contains(Bundle()["player.not.found"]) }, "perm should report a missing player but was $lines")
+    private fun captureLog(block: () -> Unit): List<String> {
+        val lines = mutableListOf<String>()
+        val previous = Log.logger
+        Log.logger = Log.LogHandler { level, text ->
+            previous.log(level, text)
+            lines.add(text)
+        }
+        try {
+            block()
+        } finally {
+            Log.logger = previous
+        }
+        return lines
+    }
+
+    @Test
+    fun server_setPermRejectsUnknownGroup() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val before = Permission.groupOf(uuid, target.second.permission)
+
+        val lines = captureLog { serverCommand.handleMessage("setperm $uuid nonexistent") }
+
+        assertEquals(
+            before,
+            Permission.groupOf(uuid, target.second.permission),
+            "an unknown group must not be applied"
+        )
+        assertTrue(
+            lines.any { it.contains("nonexistent") && it.contains("admin") },
+            "the reply should name the valid groups but was $lines"
+        )
+
+        leavePlayer(target.first)
+    }
+
+    @Test
+    fun server_setPermRefusesWhenUserFileIsBroken() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val file = rootPath.child("permission_user.yaml")
+        val good = file.readString()
+        val broken = "broken-entry:\n    group: [unclosed\n"
+
+        file.writeString(broken, false)
+        Permission.load()
+
+        val lines = captureLog { serverCommand.handleMessage("setperm $uuid admin") }
+
+        assertEquals(broken, file.readString(), "a file that failed to parse must be left untouched")
+        assertTrue(
+            lines.any { it.contains("permission_user.yaml") },
+            "the admin should be told why the write was refused but was $lines"
+        )
+
+        file.writeString(good, false)
+        Permission.load()
+        leavePlayer(target.first)
+    }
+
+    @Test
+    fun server_setPermBacksUpAndKeepsUnknownKeys() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val file = rootPath.child("permission_user.yaml")
+        val backup = rootPath.child("permission_user.yaml.bak")
+        val good = file.readString()
+
+        file.writeString("$uuid:\n    group: \"user\"\n    customField: \"keep me\"\n", false)
+        Permission.load()
+        backup.delete()
+
+        serverCommand.handleMessage("setperm $uuid admin")
+
+        val written = file.readString()
+        assertTrue(backup.exists(), "the previous file should be kept as permission_user.yaml.bak")
+        assertContains(written, "customField", message = "an unknown key must survive a write")
+        assertContains(written, "keep me", message = "an unknown value must survive a write")
+        assertEquals("admin", Permission.groupOf(uuid, "user"), "the group should still be patched")
+
+        file.writeString(good, false)
+        Permission.load()
+        leavePlayer(target.first)
+    }
+
+    @Test
+    fun server_setPermQueuesOfflineTarget() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val name = target.second.name
+        leavePlayer(target.first)
+
+        val bundle = Bundle()
+        val lines = mutableListOf<String>()
+        val previous = Log.logger
+        Log.logger = Log.LogHandler { level, text ->
+            previous.log(level, text)
+            lines.add(text)
+        }
+        try {
+            serverCommand.handleMessage("setperm $uuid admin")
+            assertTrue(
+                lines.any { it == bundle["command.setPerm.queued", uuid] },
+                "the queued line must be printed before the command returns but was $lines"
+            )
+            assertTrue(
+                waitUntil(10000) { lines.any { it == bundle["command.setPerm.success", name, "admin"] } },
+                "the result line should follow but was $lines"
+            )
+        } finally {
+            Log.logger = previous
+        }
     }
 
     @Test

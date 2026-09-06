@@ -4,6 +4,11 @@ import arc.files.Fi
 import arc.util.Log
 import com.charleskorn.kaml.Yaml
 import com.charleskorn.kaml.YamlConfiguration
+import com.charleskorn.kaml.YamlException
+import com.charleskorn.kaml.YamlMap
+import com.charleskorn.kaml.YamlNode
+import com.charleskorn.kaml.YamlPath
+import com.charleskorn.kaml.YamlScalar
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.database.table.PlayerTable
@@ -24,13 +29,18 @@ import java.util.*
 object Permission {
     private var main: Map<String, RoleConfig> = mapOf()
     private var user: Map<String, PermissionData>? = mapOf()
+    private var userRaw: Map<String, YamlNode> = mapOf()
+    private var userFileValid = true
+    private var userFileError: String? = null
     var default = "user"
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
+    private val userBackupFile: Fi = rootPath.child("permission_user.yaml.bak")
 
     private val bundle = Bundle(Locale.getDefault().toLanguageTag())
     private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
     private val userSerializer = MapSerializer(String.serializer(), PermissionData.serializer())
+    private val rawSerializer = MapSerializer(String.serializer(), YamlNode.serializer())
 
     private val comment = """
         #${bundle["permission.wiki"]}
@@ -76,19 +86,26 @@ object Permission {
                     .filter { line -> !line.trimStart().startsWith("#") }
                     .joinToString("\n")
                     .trim()
-                user = if (stripped.isEmpty() || stripped == "---") {
+                if (stripped.isEmpty() || stripped == "---") {
                     // Treat comment-only or effectively empty files as empty map
-                    mapOf()
+                    user = mapOf()
+                    userRaw = mapOf()
                 } else {
-                    yaml.decodeFromString(userSerializer, raw)
+                    user = yaml.decodeFromString(userSerializer, raw)
+                    userRaw = yaml.decodeFromString(rawSerializer, raw)
                 }
             } else {
                 user = mapOf()
+                userRaw = mapOf()
             }
+            userFileValid = true
+            userFileError = null
         } catch (e: Exception) {
-            Log.warn("Failed to parse permission_user.yaml: ${e.message}")
+            userFileValid = false
+            userFileError = if (e is YamlException) "line ${e.line}: ${e.message}" else e.message.orEmpty()
+            Log.warn(bundle["permission.user.file.invalid", userFileError!!])
         }
-        
+
         try {
             main = if (mainFile.exists()) {
                 yaml.decodeFromString(MapSerializer(String.serializer(), RoleConfig.serializer()), mainFile.readString())
@@ -207,19 +224,71 @@ object Permission {
 
     fun hasUserEntry(uuid: String): Boolean = user?.containsKey(uuid) == true
 
-    fun setGroup(uuid: String, group: String) {
-        val map = user.orEmpty().toMutableMap()
-        val entry = (map[uuid] ?: PermissionData()).also { it.group = group }
-        map[uuid] = entry
-        user = map
-        userFile.writeString(comment + "\n" + yaml.encodeToString(userSerializer, map), false)
+    val groups: Set<String> get() = main.keys
 
+    fun hasGroup(group: String): Boolean = main.containsKey(group)
+
+    fun userFileProblem(): String? = if (userFileValid) null else userFileError.orEmpty()
+
+    fun setGroup(uuid: String, group: String): Boolean {
+        if (!writeUser { it[uuid] = patchGroup(it[uuid], group) }) return false
+
+        val map = user.orEmpty().toMutableMap()
+        map[uuid] = (map[uuid] ?: PermissionData()).also { it.group = group }
+        user = map
+
+        applyGroup(uuid, group)
+        return true
+    }
+
+    fun removeUserEntry(uuid: String, fallbackGroup: String): Boolean {
+        if (!writeUser { it.remove(uuid) }) return false
+
+        val map = user.orEmpty().toMutableMap()
+        map.remove(uuid)
+        user = map
+
+        applyGroup(uuid, fallbackGroup)
+        return true
+    }
+
+    private fun applyGroup(uuid: String, group: String) {
         syncVanillaAdmin(uuid, group)
 
         players.find { data -> data.uuid == uuid }?.let { data ->
             data.permission = group
             data.player.admin(isAdmin(uuid, group))
         }
+    }
+
+    private fun writeUser(edit: (MutableMap<String, YamlNode>) -> Unit): Boolean {
+        if (!userFileValid) {
+            Log.warn(bundle["permission.user.file.invalid", userFileError.orEmpty()])
+            return false
+        }
+
+        val next = userRaw.toMutableMap()
+        edit(next)
+
+        if (userFile.exists()) userFile.copyTo(userBackupFile)
+        userFile.writeString(comment + "\n" + yaml.encodeToString(rawSerializer, next), false)
+        userRaw = next
+        return true
+    }
+
+    private fun patchGroup(node: YamlNode?, group: String): YamlMap {
+        val entries = LinkedHashMap<YamlScalar, YamlNode>()
+        var replaced = false
+        (node as? YamlMap)?.entries?.forEach { (key, value) ->
+            if (key.content == "group") {
+                entries[key] = YamlScalar(group, YamlPath.root)
+                replaced = true
+            } else {
+                entries[key] = value
+            }
+        }
+        if (!replaced) entries[YamlScalar("group", YamlPath.root)] = YamlScalar(group, YamlPath.root)
+        return YamlMap(entries, YamlPath.root)
     }
 
     fun check(data: PlayerData, command: String): Boolean {

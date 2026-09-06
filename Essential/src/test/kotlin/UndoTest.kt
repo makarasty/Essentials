@@ -10,6 +10,7 @@ import essential.common.database.data.PlayerData
 import essential.common.database.data.checkPlayerBanned
 import essential.common.permission.Permission
 import essential.common.players
+import essential.common.rootPath
 import essential.common.timeSource
 import essential.core.Undo
 import kotlinx.coroutines.runBlocking
@@ -74,6 +75,7 @@ class UndoTest {
         Menus.menuChoose(admin, lastMenuId(), 0)
 
         assertTrue(Vars.netServer.admins.isIDBanned(uuid), "target should be banned")
+        assertTrue(Vars.netServer.admins.bannedIPs.contains(ip), "the ban should place an ip ban")
         assertTrue(
             waitUntil(10000) { runBlocking { checkPlayerBanned(uuid, ip, name) } },
             "ban should be stored by the plugin"
@@ -82,12 +84,95 @@ class UndoTest {
         clickUndoMenu(admin, 0)
 
         assertFalse(Vars.netServer.admins.isIDBanned(uuid), "ban list should be cleared")
-        assertFalse(Vars.netServer.admins.isIPBanned(ip), "ip ban should be cleared")
+        assertFalse(Vars.netServer.admins.bannedIPs.contains(ip), "the ip ban placed by the ban should be lifted")
         assertTrue(
             waitUntil(10000) { runBlocking { !checkPlayerBanned(uuid, ip, name) } },
             "plugin ban state should be cleared"
         )
         assertTrue(Undo.stack(admin.uuid()).isEmpty(), "undone entry should leave the stack")
+    }
+
+    @Test
+    fun undo_banKeepsAnEarlierIpBan() {
+        val target = newPlayer().first
+        val uuid = target.uuid()
+        val ip = target.con.address
+
+        Vars.netServer.admins.banPlayerIP(ip)
+
+        val ipBanned = Undo.ban(uuid)
+        assertFalse(ipBanned, "the ban must not claim an ip ban that was already in place")
+        assertTrue(Vars.netServer.admins.isIDBanned(uuid), "target should be banned")
+
+        Undo.unban(uuid, ipBanned)
+
+        assertTrue(
+            Vars.netServer.admins.bannedIPs.contains(ip),
+            "an ip ban the undone action did not place must survive"
+        )
+
+        Vars.netServer.admins.unbanPlayerIP(ip)
+        Vars.netServer.admins.unbanPlayerID(uuid)
+    }
+
+    @Test
+    fun undo_pendingClearedByCommand() {
+        val admin = admin()
+        val target = newPlayer().first
+        val uuid = target.uuid()
+        val ip = target.con.address
+
+        val infoMenu = openInfo(admin, target)
+        Menus.menuChoose(admin, infoMenu, 2)
+        assertTrue(waitUntil(10000) { Undo.stack(admin.uuid()).isNotEmpty() }, "kick should be recorded")
+
+        clientCommand.handleMessage("/undo", admin)
+        assertEquals(0L, Vars.netServer.admins.getKickTime(uuid, ip), "undo should let the player rejoin")
+
+        clickUndoMenu(admin, 2)
+
+        assertFalse(
+            Vars.netServer.admins.isIDBanned(uuid),
+            "the leftover menu must not ban after the kick was already undone"
+        )
+    }
+
+    @Test
+    fun undo_entriesKeepStableIds() {
+        val admin = admin()
+        val first = newPlayer().first
+        val second = newPlayer().first
+
+        clientCommand.handleMessage("/mute ${first.name}", admin)
+        assertTrue(waitUntil(10000) { Undo.stack(admin.uuid()).size == 1 }, "first mute should be recorded")
+        val firstId = Undo.stack(admin.uuid()).first().id
+
+        clientCommand.handleMessage("/mute ${second.name}", admin)
+        assertTrue(waitUntil(10000) { Undo.stack(admin.uuid()).size == 2 }, "second mute should be recorded")
+        assertEquals(firstId, Undo.stack(admin.uuid()).last().id, "an id must not shift when the stack grows")
+
+        clientCommand.handleMessage("/undo $firstId", admin)
+        assertTrue(waitUntil(10000) { !data(first).chatMuted }, "/undo <id> should revert the entry with that id")
+        assertTrue(data(second).chatMuted, "the newer entry should be untouched")
+    }
+
+    @Test
+    fun undo_setPermRemovesTheEntryItCreated() {
+        val admin = admin("owner")
+        val target = newPlayer().first
+        val uuid = target.uuid()
+
+        assertFalse(Permission.hasUserEntry(uuid), "a fresh player should have no yaml entry")
+
+        clientCommand.handleMessage("/setperm ${target.name} admin", admin)
+        assertTrue(Permission.hasUserEntry(uuid), "setperm should create a yaml entry")
+
+        clientCommand.handleMessage("/undo", admin)
+        assertFalse(Permission.hasUserEntry(uuid), "undo should remove the entry setperm created")
+        assertFalse(
+            rootPath.child("permission_user.yaml").readString().contains(uuid),
+            "the created entry should be gone from the file"
+        )
     }
 
     @Test
@@ -172,8 +257,9 @@ class UndoTest {
         clientCommand.handleMessage("/mute ${target.name}", admin)
         assertTrue(waitUntil(10000) { Undo.stack(admin.uuid()).isNotEmpty() }, "mute should be recorded")
 
+        val id = Undo.stack(admin.uuid()).first().id
         clientCommand.handleMessage("/undo list", admin)
-        assertTrue(data(admin).lastReceivedMessage.contains("1."), "list should number the entries")
+        assertTrue(data(admin).lastReceivedMessage.contains("$id."), "list should show the entry id")
 
         Undo.stack(admin.uuid()).forEach { it.expiresAt = timeSource.markNow().minus(1.minutes) }
         assertTrue(Undo.stack(admin.uuid()).isEmpty(), "expired entries should be dropped")

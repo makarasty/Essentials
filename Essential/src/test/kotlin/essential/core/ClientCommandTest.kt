@@ -15,6 +15,7 @@ import arc.Events
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.database.data.getPlayerData
+import essential.common.permission.Permission
 import essential.common.players
 import essential.common.pluginData
 import essential.common.timeSource
@@ -966,7 +967,10 @@ class ClientCommandTest {
         clientCommand.handleMessage("/setperm ${dummy.first.name} admin", player)
         assertEquals("admin", findPlayerData(dummy.first.uuid())?.permission)
         assertTrue(dummy.first.admin())
-        assertEquals("admin", runBlocking { getPlayerData(dummy.first.uuid())?.permission })
+        assertTrue(
+            waitUntil(10000) { runBlocking { getPlayerData(dummy.first.uuid())?.permission } == "admin" },
+            "the group change should reach the database"
+        )
 
         clientCommand.handleMessage("/setperm ${dummy.first.uuid()} user", player)
         assertEquals("user", findPlayerData(dummy.first.uuid())?.permission)
@@ -1375,5 +1379,40 @@ class ClientCommandTest {
 
         Rtv.reset()
         leavePlayer(dummy.first)
+    }
+
+    @Test
+    fun client_setPermRejectsUnknownGroup() {
+        setPermission("owner", true)
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val before = Permission.groupOf(uuid, target.second.permission)
+
+        clientCommand.handleMessage("/setperm ${target.first.name()} nonexistent", player)
+
+        assertEquals(
+            err("command.setPerm.invalidGroup", "nonexistent", Permission.groups.joinToString(", ")),
+            playerData.lastReceivedMessage
+        )
+        assertEquals(before, Permission.groupOf(uuid, target.second.permission))
+
+        leavePlayer(target.first)
+    }
+
+    @Test
+    fun client_setPermQueuesOfflineTarget() {
+        setPermission("owner", true)
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val name = target.second.name
+        leavePlayer(target.first)
+
+        clientCommand.handleMessage("/setperm $uuid admin", player)
+        assertEquals(log("command.setPerm.queued", uuid), playerData.lastReceivedMessage)
+
+        assertTrue(
+            waitUntil(10000) { playerData.lastReceivedMessage == log("command.setPerm.success", name, "admin") },
+            "the result should follow but was ${playerData.lastReceivedMessage}"
+        )
     }
 }

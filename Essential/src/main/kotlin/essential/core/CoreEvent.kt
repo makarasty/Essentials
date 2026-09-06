@@ -507,6 +507,7 @@ fun serverLoad(event: ServerLoadEvent) {
     if (conf.command.layoutFix) KeyboardLayout.install()
     ServerDescription.start()
     TempBan.start()
+    Undo.start()
 
     Vars.content.blocks().each { two ->
         var buf = 0
@@ -954,6 +955,7 @@ fun playerLeave(event: PlayerLeave) {
         Bundle()["log.player.disconnect", event.player.plainName(), event.player.uuid(), event.player.con.address]
     )
     Rtv.leave(event.player.uuid(), event.player.plainName())
+    Undo.leave(event.player.uuid())
     val data = players.find { e -> e.uuid == event.player.uuid() }
     if (data != null) {
         data.lastPlayedWorldName = Vars.state.map.plainName()
