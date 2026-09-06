@@ -10,6 +10,7 @@ import com.charleskorn.kaml.YamlNode
 import com.charleskorn.kaml.YamlPath
 import com.charleskorn.kaml.YamlScalar
 import essential.common.bundle.Bundle
+import essential.common.command.CommandRegistry
 import essential.common.database.data.PlayerData
 import essential.common.database.table.PlayerTable
 import essential.common.players
@@ -289,6 +290,25 @@ object Permission {
         }
         if (!replaced) entries[YamlScalar("group", YamlPath.root)] = YamlScalar(group, YamlPath.root)
         return YamlMap(entries, YamlPath.root)
+    }
+
+    /**
+     * Report permission nodes that nothing will ever look at.
+     *
+     * In this fork the `e` prefix belongs to the command name, not to the permission:
+     * `/evote` is answered by the node `vote`. A permission file carried over from the
+     * old fork therefore grants nothing at all, and does it silently. Only nodes that
+     * become known once the prefix is dropped are reported, so a node belonging to a
+     * disabled module stays quiet.
+     */
+    fun validate(known: Set<String>) {
+        for (node in main.values.flatMap { it.permission }.toSet()) {
+            if (node == "all" || node in known) continue
+            val stripped = node.removePrefix(CommandRegistry.PREFIX)
+            if (stripped != node && stripped in known) {
+                Log.warn("[Permission] '$node' is not a permission node, nobody gets anything from it. Use '$stripped': the '${CommandRegistry.PREFIX}' prefix is part of the command name, not of the permission.")
+            }
+        }
     }
 
     fun check(data: PlayerData, command: String): Boolean {
