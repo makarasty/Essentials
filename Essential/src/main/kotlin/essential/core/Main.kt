@@ -15,6 +15,7 @@ import essential.common.database.data.getPluginData
 import essential.common.database.data.migrateMapRatingsFromPluginData
 import essential.common.database.data.update
 import essential.common.database.databaseInit
+import essential.common.log.initLogFiles
 import essential.common.log.stopLogWriter
 import essential.common.permission.Permission
 import essential.common.service.fileWatchService
@@ -42,6 +43,7 @@ import kotlin.time.Clock
 class Main : Plugin() {
     companion object {
         const val CONFIG_PATH = "config/config.yaml"
+        @Volatile
         var conf: CoreConfig = reloadConf()
 
         fun reloadConf() : CoreConfig {
@@ -73,6 +75,7 @@ class Main : Plugin() {
         // 기록 및 데이터 폴더 생성
         rootPath.child("log").mkdirs()
         rootPath.child("data").mkdirs()
+        initLogFiles()
 
         // DB 설정
         databaseInit(
