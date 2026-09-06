@@ -1022,6 +1022,11 @@ fun playerIpUnban(eent: PlayerIpUnbanEvent) {
 }
 
 @Event
+fun undoMenuChoose(event: MenuOptionChooseEvent) {
+    Undo.onMenuChoose(event)
+}
+
+@Event
 fun worldLoad(event: WorldLoadEvent) {
     ServerDescription.changed()
     mapStartTime = timeSource.markNow()

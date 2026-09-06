@@ -33,6 +33,7 @@ This fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials) layers a 
 - `feature.playerData`: when the database cannot be reached the player still joins with temporary in-memory data and the default permission group, the real data is loaded in the background as soon as the database answers. Set `allowWithoutData` to false on servers where only registered players may build.
 - World history is only recorded while `command.rollback.enabled` is true.
 - `feature.log`: per-group switches for the log files (`player`, `chat`, `report`, `block`, `tap`, `item`, `config`, `other`), and writing happens on a background thread instead of the main thread.
+- `/undo`: every ban, kick, mute, build restriction, permission or team change an admin makes is pushed onto a per-admin stack of the last five actions. A follow-up menu offers `Undo` (and `Ban` after a kick) for a minute, `/undo [n]` and `/undo list` work in chat and on the console, and entries are reverted by UUID so they still work after the target has left.
 
 ### Deploy
 

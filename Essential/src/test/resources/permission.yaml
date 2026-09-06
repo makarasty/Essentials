@@ -49,6 +49,7 @@ admin:
   - vote.skip
   - vote.cancel
   - unban
+  - undo
 user:
   inheritance: visitor
   chatFormat: "%player.name[orange] > [white]%chat"
