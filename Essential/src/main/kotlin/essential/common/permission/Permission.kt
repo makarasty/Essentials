@@ -27,6 +27,8 @@ object Permission {
     private val userFile: Fi = rootPath.child("permission_user.yaml")
 
     private val bundle = Bundle(Locale.getDefault().toLanguageTag())
+    private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
+    private val userSerializer = MapSerializer(String.serializer(), PermissionData.serializer())
 
     private val comment = """
         #${bundle["permission.wiki"]}
@@ -64,8 +66,6 @@ object Permission {
     }
 
     fun load() {
-        val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
-        
         try {
             if (userFile.exists()) {
                 val raw = userFile.readString()
@@ -78,7 +78,7 @@ object Permission {
                     // Treat comment-only or effectively empty files as empty map
                     mapOf()
                 } else {
-                    yaml.decodeFromString(MapSerializer(String.serializer(), PermissionData.serializer()), raw)
+                    yaml.decodeFromString(userSerializer, raw)
                 }
             } else {
                 user = mapOf()
@@ -138,7 +138,7 @@ object Permission {
                     }
                 } else {
                     player.permission = permissionData.group
-                    player.player.admin(permissionData.admin)
+                    player.player.admin(isAdmin(uuid, permissionData.group))
                     if (permissionData.name.isNotEmpty()) {
                         player.name = permissionData.name
                         player.player.name(permissionData.name)
@@ -155,14 +155,14 @@ object Permission {
         if (u != null) {
             result.name = u.name.ifEmpty { data.player.name() }
             result.group = u.group
-            result.admin = u.admin
+            result.admin = isAdmin(data.uuid, u.group)
             result.isAlert = u.isAlert
             result.alertMessage = u.alertMessage
             result.chatFormat = u.chatFormat
         } else {
             result.name = data.player.name()
             result.group = data.permission
-            result.admin = false
+            result.admin = isAdmin(data.uuid, data.permission)
             result.isAlert = false
             result.alertMessage = ""
             result.chatFormat = ""
@@ -174,6 +174,28 @@ object Permission {
         }
 
         return result
+    }
+
+    fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
+        val entry = user?.get(uuid)
+        return entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true
+    }
+
+    fun groupOf(uuid: String, fallbackGroup: String): String = user?.get(uuid)?.group ?: fallbackGroup
+
+    fun hasUserEntry(uuid: String): Boolean = user?.containsKey(uuid) == true
+
+    fun setGroup(uuid: String, group: String) {
+        val map = user.orEmpty().toMutableMap()
+        val entry = (map[uuid] ?: PermissionData()).also { it.group = group }
+        map[uuid] = entry
+        user = map
+        userFile.writeString(comment + "\n" + yaml.encodeToString(userSerializer, map), false)
+
+        players.find { data -> data.uuid == uuid }?.let { data ->
+            data.permission = group
+            data.player.admin(isAdmin(uuid, group))
+        }
     }
 
     fun check(data: PlayerData, command: String): Boolean {

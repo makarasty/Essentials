@@ -1,14 +1,20 @@
 package essential.core
 
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.createPlayer
+import PluginTest.Companion.joinPlayer
+import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.serverCommand
 import PluginTest.Companion.waitUntil
 import arc.Events
+import arc.util.Log
+import essential.common.bundle.Bundle
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.update
 import essential.common.database.table.AchievementTable
+import essential.common.rootPath
 import kotlinx.coroutines.runBlocking
 import mindustry.game.EventType
 import org.jetbrains.exposed.v1.core.eq
@@ -130,5 +136,82 @@ class ServerCommandTest {
         serverCommand.handleMessage("delete ${target2.second.id}")
         val afterDeleteId2Clean = runBlocking { getPlayerData(target2.first.uuid()) }
         assertNull(afterDeleteId2Clean)
+    }
+
+    @Test
+    fun server_setPermOfflineByUuid() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        leavePlayer(target.first)
+
+        serverCommand.handleMessage("setperm $uuid admin")
+
+        assertEquals("admin", runBlocking { getPlayerData(uuid)?.permission })
+        assertContains(rootPath.child("permission_user.yaml").readString(), uuid)
+
+        val rejoin = createPlayer()
+        rejoin.con.uuid = uuid
+        val data = joinPlayer(rejoin)
+
+        assertEquals("admin", data.permission)
+        assertTrue(rejoin.admin(), "Group admin flag should be applied on join")
+
+        leavePlayer(rejoin)
+    }
+
+    @Test
+    fun server_setPermOfflineByName() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val name = target.first.name()
+        leavePlayer(target.first)
+
+        serverCommand.handleMessage("setperm $name owner")
+
+        assertEquals("owner", runBlocking { getPlayerData(uuid)?.permission })
+    }
+
+    @Test
+    fun server_perm() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+
+        serverCommand.handleMessage("setperm $uuid admin")
+
+        val lines = mutableListOf<String>()
+        val previous = Log.logger
+        Log.logger = Log.LogHandler { level, text ->
+            previous.log(level, text)
+            lines.add(text)
+        }
+        try {
+            serverCommand.handleMessage("perm $uuid")
+        } finally {
+            Log.logger = previous
+        }
+
+        assertTrue(
+            lines.any { it.contains(uuid) && it.contains("admin") && it.contains("true") },
+            "perm output should show the group and admin flag but was $lines"
+        )
+
+        leavePlayer(target.first)
+    }
+
+    @Test
+    fun server_permNotFound() {
+        val lines = mutableListOf<String>()
+        val previous = Log.logger
+        Log.logger = Log.LogHandler { level, text ->
+            previous.log(level, text)
+            lines.add(text)
+        }
+        try {
+            serverCommand.handleMessage("perm nobody-here")
+        } finally {
+            Log.logger = previous
+        }
+
+        assertTrue(lines.any { it.contains(Bundle()["player.not.found"]) }, "perm should report a missing player but was $lines")
     }
 }

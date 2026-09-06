@@ -362,6 +362,15 @@ class PluginTest {
          */
         fun newPlayer(): Pair<Player, PlayerData> {
             val player = createPlayer()
+            return Pair(player, joinPlayer(player))
+        }
+
+        /**
+         * 이미 만들어진 플레이어를 서버에 접속시킴
+         * @param player 플레이어
+         * @return 플레이어 정보
+         */
+        fun joinPlayer(player: Player): PlayerData {
             Events.fire(EventType.PlayerJoin(player))
             var data: PlayerData? = null
             val deadline = System.currentTimeMillis() + 15000
@@ -377,7 +386,7 @@ class PluginTest {
                 sleep(16)
                 data = players.find { it.uuid == player.uuid() }
             }
-            return Pair(player, data ?: fail("Player ${player.uuid()} was not registered within timeout"))
+            return data ?: fail("Player ${player.uuid()} was not registered within timeout")
         }
 
         /**

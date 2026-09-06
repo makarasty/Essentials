@@ -951,9 +951,12 @@ class ClientCommandTest {
         val dummy = newPlayer()
         clientCommand.handleMessage("/setperm ${dummy.first.name} admin", player)
         assertEquals("admin", findPlayerData(dummy.first.uuid())?.permission)
+        assertTrue(dummy.first.admin())
+        assertEquals("admin", runBlocking { getPlayerData(dummy.first.uuid())?.permission })
 
-        clientCommand.handleMessage("/setperm ${dummy.first.name} user", player)
+        clientCommand.handleMessage("/setperm ${dummy.first.uuid()} user", player)
         assertEquals("user", findPlayerData(dummy.first.uuid())?.permission)
+        assertFalse(dummy.first.admin())
 
         leavePlayer(dummy.first)
     }

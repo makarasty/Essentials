@@ -1807,67 +1807,61 @@ class Commands {
         }
     }
 
+    private fun findPermissionTarget(target: String): PlayerData? = runBlocking {
+        findPlayerData(target)
+            ?: findPlayers(target)?.let { player -> findPlayerData(player.uuid()) }
+            ?: getPlayerData(target)
+            ?: getPlayerDataByName(target)
+    }
+
+    private fun setPermissionGroup(data: PlayerData, group: String) {
+        data.permission = group
+        runBlocking { data.update() }
+        Permission.setGroup(data.uuid, group)
+    }
+
     @ClientCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(playerData: PlayerData, arg: Array<out String>) {
-        // todo permission.yml 같이 수정
-        val target = findPlayers(arg[0])
-        if (target != null) {
-            val data = findPlayerData(target.uuid())
-            if (data != null) {
-                data.permission = arg[1]
-                playerData.send("command.setPerm.success", data.name, arg[1])
-            } else {
-                playerData.err(PLAYER_NOT_REGISTERED)
-            }
-        } else {
-            val p = findPlayersByName(arg[1])
-            if (p != null) {
-                scope.launch {
-                    val a = getPlayerData(p.id)
-                    if (a != null) {
-                        a.permission = arg[1]
-                        a.update()
-                        playerData.send("command.setPerm.success", a.name, arg[1])
-                    } else {
-                        playerData.err(PLAYER_NOT_REGISTERED)
-                    }
-                }
-            } else {
-                playerData.err(PLAYER_NOT_FOUND)
-            }
+        val data = findPermissionTarget(arg[0])
+        if (data == null) {
+            playerData.err(PLAYER_NOT_FOUND)
+            return
         }
+        setPermissionGroup(data, arg[1])
+        playerData.send("command.setPerm.success", data.name, arg[1])
     }
 
     @ServerCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(arg: Array<out String>) {
-        // todo permission.yml 같이 수정
-        val target = findPlayers(arg[0])
         val bundle = Bundle()
-        if (target != null) {
-            val data = findPlayerData(target.uuid())
-            if (data != null) {
-                data.permission = arg[1]
-                Log.info(bundle["command.setPerm.success", data.name, arg[1]])
-            } else {
-                Log.warn(bundle[PLAYER_NOT_REGISTERED])
-            }
-        } else {
-            val p = findPlayersByName(arg[1])
-            if (p != null) {
-                scope.launch {
-                    val a = getPlayerData(p.id)
-                    if (a != null) {
-                        a.permission = arg[1]
-                        a.update()
-                        Log.info(bundle["command.setPerm.success", a.name, arg[1]])
-                    } else {
-                        Log.warn(bundle[PLAYER_NOT_REGISTERED])
-                    }
-                }
-            } else {
-                Log.warn(bundle[PLAYER_NOT_FOUND])
-            }
+        val data = findPermissionTarget(arg[0])
+        if (data == null) {
+            Log.warn(bundle[PLAYER_NOT_FOUND])
+            return
         }
+        setPermissionGroup(data, arg[1])
+        Log.info(bundle["command.setPerm.success", data.name, arg[1]])
+    }
+
+    @ServerCommand("perm", "<player>", "Show the player's effective permission group.")
+    fun perm(arg: Array<out String>) {
+        val bundle = Bundle()
+        val data = findPermissionTarget(arg[0])
+        if (data == null) {
+            Log.warn(bundle[PLAYER_NOT_FOUND])
+            return
+        }
+        val source = if (Permission.hasUserEntry(data.uuid)) "command.perm.source.file" else "command.perm.source.database"
+        Log.info(
+            bundle[
+                "command.perm.result",
+                data.name,
+                data.uuid,
+                Permission.groupOf(data.uuid, data.permission),
+                Permission.isAdmin(data.uuid, data.permission),
+                bundle[source]
+            ]
+        )
     }
 
     @ClientCommand("skip", "<wave>", "Start n wave immediately")
