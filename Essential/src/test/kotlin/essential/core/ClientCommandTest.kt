@@ -10,6 +10,7 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.player
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.updateTick
+import PluginTest.Companion.waitUntil
 import arc.Events
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
@@ -925,9 +926,14 @@ class ClientCommandTest {
 
         // Test rollback command with valid player
         clientCommand.handleMessage("/rollback ${dummy.first.name}", player)
+        assertTrue(
+            waitUntil(10000) {
+                playerData.lastReceivedMessage == Bundle()["command.rollback.success", dummy.first.name, 1]
+            },
+            "Rollback should report success but was ${playerData.lastReceivedMessage}"
+        )
         updateTick(64)
         assertNotEquals(Blocks.thoriumWall, world.tile(10, 10).block())
-        assertEquals(Bundle()["command.rollback.success", dummy.first.name, 1], playerData.lastReceivedMessage)
 
         // Test rollback command with non-existent player
         clientCommand.handleMessage("/rollback nonexistentplayer", player)

@@ -1563,104 +1563,106 @@ class Commands {
 
     @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
-        var affectedCount = 0
-        runBlocking {
+        scope.launch {
             WorldHistoryBuffer.flush()
             val history = getAllWorldHistory()
 
-            val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
+            Core.app.post {
+                var affectedCount = 0
+                val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
-            grouped.forEach { (pos, entriesUnsorted) ->
-                val hasPlayerAction = entriesUnsorted.any { it.player.contains(arg[0], ignoreCase = true) }
-                if (!hasPlayerAction) return@forEach
+                grouped.forEach { (pos, entriesUnsorted) ->
+                    val hasPlayerAction = entriesUnsorted.any { it.player.contains(arg[0], ignoreCase = true) }
+                    if (!hasPlayerAction) return@forEach
 
-                val entries = entriesUnsorted.sortedBy { it.time }
+                    val entries = entriesUnsorted.sortedBy { it.time }
 
-                val firstIdx = entries.indexOfFirst { it.player.contains(arg[0], ignoreCase = true) }
-                if (firstIdx == -1) return@forEach
+                    val firstIdx = entries.indexOfFirst { it.player.contains(arg[0], ignoreCase = true) }
+                    if (firstIdx == -1) return@forEach
 
-                val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
+                    val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
 
-                var desiredBlockName: String? = null // null -> air
-                var desiredTeam: Team = Team.derelict
-                var desiredRot = 0
+                    var desiredBlockName: String? = null // null -> air
+                    var desiredTeam: Team = Team.derelict
+                    var desiredRot = 0
 
-                fun applyPrevOccupancyFrom(indexExclusive: Int) {
-                    for (i in indexExclusive downTo 0) {
-                        val e = entries[i]
-                        when (e.action) {
+                    fun applyPrevOccupancyFrom(indexExclusive: Int) {
+                        for (i in indexExclusive downTo 0) {
+                            val e = entries[i]
+                            when (e.action) {
+                                "place" -> {
+                                    desiredBlockName = e.tile
+                                    desiredTeam = Team.all.find { t -> t.name == e.team } ?: Team.derelict
+                                    desiredRot = e.rotate
+                                    return
+                                }
+
+                                "break" -> {
+                                    desiredBlockName = null // air
+                                    desiredTeam = Team.derelict
+                                    desiredRot = 0
+                                    return
+                                }
+                            }
+                        }
+                    }
+
+                    if (firstIdx > 0) {
+                        applyPrevOccupancyFrom(firstIdx - 1)
+                    } else {
+                        val first = entries[firstIdx]
+                        when (first.action) {
                             "place" -> {
-                                desiredBlockName = e.tile
-                                desiredTeam = Team.all.find { t -> t.name == e.team } ?: Team.derelict
-                                desiredRot = e.rotate
-                                return
+                                desiredBlockName = null
                             }
 
                             "break" -> {
-                                desiredBlockName = null // air
-                                desiredTeam = Team.derelict
-                                desiredRot = 0
-                                return
+                                desiredBlockName = first.tile
+                                desiredTeam = Team.all.find { t -> t.name == first.team } ?: Team.derelict
+                                desiredRot = first.rotate
+                            }
+
+                            else -> {
+                                desiredBlockName = targetTile.block().name.takeIf { it != Blocks.air.name }
+                                desiredTeam = targetTile.team()
+                                desiredRot = targetTile.build?.rotation ?: 0
                             }
                         }
                     }
-                }
 
-                if (firstIdx > 0) {
-                    applyPrevOccupancyFrom(firstIdx - 1)
-                } else {
-                    val first = entries[firstIdx]
-                    when (first.action) {
-                        "place" -> {
-                            desiredBlockName = null
-                        }
-
-                        "break" -> {
-                            desiredBlockName = first.tile
-                            desiredTeam = Team.all.find { t -> t.name == first.team } ?: Team.derelict
-                            desiredRot = first.rotate
-                        }
-
-                        else -> {
-                            desiredBlockName = targetTile.block().name.takeIf { it != Blocks.air.name }
-                            desiredTeam = targetTile.team()
-                            desiredRot = targetTile.build?.rotation ?: 0
+                    var desiredConfig: String? = null
+                    for (i in (firstIdx - 1) downTo 0) {
+                        val e = entries[i]
+                        if (e.value != null) {
+                            desiredConfig = e.value
+                            break
                         }
                     }
-                }
 
-                var desiredConfig: String? = null
-                for (i in (firstIdx - 1) downTo 0) {
-                    val e = entries[i]
-                    if (e.value != null) {
-                        desiredConfig = e.value
-                        break
-                    }
-                }
-
-                if (desiredBlockName == null || desiredBlockName == Blocks.air.name) {
-                    targetTile.remove()
-                } else {
-                    val block = Vars.content.block(desiredBlockName)
-                    if (block != null) {
-                        targetTile.setBlock(block, desiredTeam, desiredRot)
-                        if (desiredConfig != null && targetTile.build != null) {
-                            targetTile.build.configure(desiredConfig)
-                        }
-                    } else {
+                    if (desiredBlockName == null || desiredBlockName == Blocks.air.name) {
                         targetTile.remove()
+                    } else {
+                        val block = Vars.content.block(desiredBlockName)
+                        if (block != null) {
+                            targetTile.setBlock(block, desiredTeam, desiredRot)
+                            if (desiredConfig != null && targetTile.build != null) {
+                                targetTile.build.configure(desiredConfig)
+                            }
+                        } else {
+                            targetTile.remove()
+                        }
                     }
+                    affectedCount++
                 }
-                affectedCount++
+
+                for (p in Groups.player) {
+                    Call.worldDataBegin(p.con)
+                    Vars.netServer.sendWorldData(p)
+                }
+
+                playerData.send("command.rollback.success", arg[0], affectedCount)
             }
         }
-
-        for (p in Groups.player) {
-            Call.worldDataBegin(p.con)
-            Vars.netServer.sendWorldData(p)
-        }
-
-        playerData.send("command.rollback.success", arg[0], affectedCount)
     }
 
     @ClientCommand("hub", "<parameter> [ip] [parameters...]", "Create a server to server point.")
@@ -2896,16 +2898,18 @@ class Commands {
 
     @ServerCommand("reload", description = "Reload essential plugin configs.")
     fun reload() {
-        try {
-            runBlocking {
+        scope.launch {
+            try {
                 Permission.load()
+                Core.app.post {
+                    Log.info(Bundle()["config.permission.updated"])
+                    Main.reloadConf()
+                    ModuleRuntime.reloadEnabledConfigurations()
+                    Log.info(Bundle()["config.reloaded"])
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            Log.info(Bundle()["config.permission.updated"])
-            Main.reloadConf()
-            ModuleRuntime.reloadEnabledConfigurations()
-            Log.info(Bundle()["config.reloaded"])
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -2939,12 +2943,10 @@ class Commands {
     fun debug(arg: Array<out String>) {
         if (arg.isNotEmpty()) {
             if (arg[0] == "discord") {
-                for (a in players) {
-                    runBlocking {
+                scope.launch {
+                    for (a in players) {
                         a.discordID = "1"
                         a.update()
-
-                        
                     }
                 }
             }
@@ -2963,7 +2965,7 @@ class Commands {
         }
         val from = arg[0]
         val to = arg[1]
-        runBlocking {
+        scope.launch {
             try {
                 val result = mergePlayerAccounts(from, to)
                 Log.info(result)
@@ -2984,7 +2986,7 @@ class Commands {
         val target = arg[0]
         val idVal = target.toUIntOrNull()
 
-        runBlocking {
+        scope.launch {
             try {
                 val matches = suspendTransaction {
                     PlayerTable.selectAll().where {
@@ -2999,7 +3001,7 @@ class Commands {
 
                 if (matches.isEmpty()) {
                     Log.warn(bundle["command.delete.not.found", target])
-                    return@runBlocking
+                    return@launch
                 }
 
                 if (matches.size > 1) {
@@ -3007,7 +3009,7 @@ class Commands {
                     matches.forEach { player ->
                         Log.info(bundle["command.delete.multiple.format", player.id, player.name, player.uuid, player.exp, player.level, player.discordID ?: "null"])
                     }
-                    return@runBlocking
+                    return@launch
                 }
 
                 val playerToDelete = matches.first()

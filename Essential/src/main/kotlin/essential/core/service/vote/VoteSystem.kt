@@ -14,11 +14,12 @@ import essential.common.database.data.update
 import essential.common.event.CustomEvents
 import essential.common.permission.Permission
 import essential.common.util.findPlayerData
+import essential.core.Main.Companion.scope
 import essential.core.earnEXP
 import essential.core.ModuleRuntime
 import essential.core.VoteData
 import essential.core.VoteType
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.content.Fx
@@ -220,7 +221,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             if (targetPlayer == null) {
                                 Vars.netServer.admins.banPlayerID(targetUUID)
                                 send("command.vote.kick.target.banned", name)
-                                runBlocking {
+                                scope.launch {
                                     val data = getPlayerData(targetUUID)
                                     if (data != null) {
                                         data.isBanned = true

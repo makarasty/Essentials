@@ -375,14 +375,7 @@ class PluginTest {
             var data: PlayerData? = null
             val deadline = System.currentTimeMillis() + 15000
             while (data == null && System.currentTimeMillis() < deadline) {
-                try {
-                    val field = HeadlessApplication::class.java.getDeclaredField("runnables")
-                    field.isAccessible = true
-                    val queue = field.get(Core.app) as TaskQueue
-                    queue.run()
-                } catch (e: Exception) {
-                    // ignore
-                }
+                pumpApp()
                 sleep(16)
                 data = players.find { it.uuid == player.uuid() }
             }
@@ -442,14 +435,29 @@ class PluginTest {
         }
 
         /**
+         * Runs everything queued with Core.app.post, since the headless main loop is stopped in tests.
+         */
+        fun pumpApp() {
+            try {
+                val field = HeadlessApplication::class.java.getDeclaredField("runnables")
+                field.isAccessible = true
+                (field.get(Core.app) as TaskQueue).run()
+            } catch (_: Exception) {
+                // ignore
+            }
+        }
+
+        /**
          * Waits until the given condition becomes true or the timeout elapses.
          */
         fun waitUntil(timeoutMs: Long = 2000, intervalMs: Long = 16, condition: () -> Boolean): Boolean {
             val start = System.currentTimeMillis()
             while (System.currentTimeMillis() - start < timeoutMs) {
+                pumpApp()
                 if (condition()) return true
                 sleep(intervalMs)
             }
+            pumpApp()
             return condition()
         }
 
@@ -466,6 +474,7 @@ class PluginTest {
             val start = System.currentTimeMillis()
             var last = data.lastReceivedMessage
             while (System.currentTimeMillis() - start < timeoutMs) {
+                pumpApp()
                 val msg = data.lastReceivedMessage
                 if (msg != last && predicate(msg)) return msg
                 if (predicate(msg)) return msg

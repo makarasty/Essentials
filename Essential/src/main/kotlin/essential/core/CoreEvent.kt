@@ -26,7 +26,6 @@ import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -695,62 +694,72 @@ fun gameOver(event: GameOverEvent) {
         val mapName = currentMap.plainName()
         val currentCount = gameOverCount
 
-        for (data in players) {
-            val hasVoted = mapRatings.containsKey(data.uuid) || runBlocking { getMapRating(data.uuid, mapName) != null }
-            if (gameOverCount != currentCount) break
-            if (!hasVoted) {
-                val difficultyMenu = Menus.registerMenu { player, select ->
-                    if (gameOverCount != currentCount) {
-                        player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
-                        return@registerMenu
-                    }
+        val voteTargets = players.toList()
 
-                    if (mapRatings.containsKey(data.uuid)) return@registerMenu
+        scope.launch {
+            for (data in voteTargets) {
+                val hasVoted = getMapRating(data.uuid, mapName) != null
+                if (gameOverCount != currentCount) break
 
-                    if (select in 0..4) {
-                        val difficulty = select + 1
-                        val ratingMenu = Menus.registerMenu { player2, select2 ->
-                            if (gameOverCount != currentCount) {
-                                player2.sendMessage(Bundle(player2.locale())["command.map.rate.timeout"])
-                                return@registerMenu
-                            }
+                Core.app.post {
+                    if (gameOverCount != currentCount) return@post
+                    if (hasVoted || mapRatings.containsKey(data.uuid)) return@post
 
-                            if (mapRatings.containsKey(data.uuid)) return@registerMenu
-
-                            if (select2 in 0..4) {
-                                val rating = select2 + 1
-                                runBlocking {
-                                    val mapHash = calculateMapMD5Hash(currentMap)
-                                    updateOrCreateMapRating(mapName, mapHash, data.uuid, difficulty, rating)
-                                    mapRatings[data.uuid] = true
-                                }
-                                data.send("command.map.rate.success", mapName, difficulty, rating)
-                            }
+                    val difficultyMenu = Menus.registerMenu { player, select ->
+                        if (gameOverCount != currentCount) {
+                            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
+                            return@registerMenu
                         }
 
-                        Call.menu(
-                            data.player.con(),
-                            ratingMenu,
-                            Bundle(data.player.locale())["command.map.rate.rating.title"],
-                            Bundle(data.player.locale())["command.map.rate.rating.text", mapName],
-                            arrayOf(
-                                arrayOf("1", "2", "3", "4", "5"),
-                                arrayOf(Bundle(data.player.locale())["command.map.rate.cancel"])
-                            )
-                        )
-                    }
-                }
+                        if (mapRatings.containsKey(data.uuid)) return@registerMenu
 
-                Call.menu(
-                    data.player.con(),
-                    difficultyMenu,
-                    Bundle(data.player.locale())["command.map.rate.difficulty.title"],
-                    Bundle(data.player.locale())["command.map.rate.difficulty.text", mapName],
-                    arrayOf(
-                        arrayOf("1", "2", "3", "4", "5"),
-                        arrayOf(Bundle(data.player.locale())["command.map.rate.cancel"])
+                        if (select in 0..4) {
+                            val difficulty = select + 1
+                            val ratingMenu = Menus.registerMenu { player2, select2 ->
+                                if (gameOverCount != currentCount) {
+                                    player2.sendMessage(Bundle(player2.locale())["command.map.rate.timeout"])
+                                    return@registerMenu
+                                }
+
+                                if (mapRatings.containsKey(data.uuid)) return@registerMenu
+
+                                if (select2 in 0..4) {
+                                    val rating = select2 + 1
+                                    val mapHash = calculateMapMD5Hash(currentMap)
+                                    mapRatings[data.uuid] = true
+                                    scope.launch {
+                                        updateOrCreateMapRating(mapName, mapHash, data.uuid, difficulty, rating)
+                                        Core.app.post {
+                                            data.send("command.map.rate.success", mapName, difficulty, rating)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Call.menu(
+                                data.player.con(),
+                                ratingMenu,
+                                Bundle(data.player.locale())["command.map.rate.rating.title"],
+                                Bundle(data.player.locale())["command.map.rate.rating.text", mapName],
+                                arrayOf(
+                                    arrayOf("1", "2", "3", "4", "5"),
+                                    arrayOf(Bundle(data.player.locale())["command.map.rate.cancel"])
+                                )
+                            )
+                        }
+                    }
+
+                    Call.menu(
+                        data.player.con(),
+                        difficultyMenu,
+                        Bundle(data.player.locale())["command.map.rate.difficulty.title"],
+                        Bundle(data.player.locale())["command.map.rate.difficulty.text", mapName],
+                        arrayOf(
+                            arrayOf("1", "2", "3", "4", "5"),
+                            arrayOf(Bundle(data.player.locale())["command.map.rate.cancel"])
+                        )
                     )
-                )
+                }
             }
         }
     }
@@ -1025,22 +1034,24 @@ fun worldLoad(event: WorldLoadEvent) {
     val currentMapName = Vars.state.map.plainName()
 
     // Load ratings into in-memory cache for quick access during the current session
-    runBlocking {
-        val ratings = getMapRatings(currentMapName)
-        for (rating in ratings) {
-            mapRatings[rating.playerUuid] = true
-        }
-    }
-
     // Migrate ratings from the old storage system if needed
-    val savedRatings = pluginData.data.mapRatings[currentMapName]
-    if (!savedRatings.isNullOrEmpty()) {
-        runBlocking {
+    val savedRatings = pluginData.data.mapRatings[currentMapName]?.toMap()
+    val currentMapHash = if (savedRatings.isNullOrEmpty()) null else calculateMapMD5Hash(Vars.state.map)
+
+    scope.launch {
+        val ratings = getMapRatings(currentMapName)
+        Core.app.post {
+            if (Vars.state.map.plainName() != currentMapName) return@post
+            for (rating in ratings) {
+                mapRatings[rating.playerUuid] = true
+            }
+        }
+
+        if (savedRatings != null && currentMapHash != null) {
             for ((uuid, isUpvote) in savedRatings) {
                 // Only migrate if not already in the database
                 if (getMapRating(uuid, currentMapName) == null) {
-                    val mapHash = calculateMapMD5Hash(Vars.state.map)
-                    updateOrCreateMapRating(currentMapName, mapHash, uuid, 3, if (isUpvote) 5 else 1)
+                    updateOrCreateMapRating(currentMapName, currentMapHash, uuid, 3, if (isUpvote) 5 else 1)
                 }
             }
         }
