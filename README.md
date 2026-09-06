@@ -32,6 +32,29 @@ This fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials) layers a 
 - `feature.description`: live values in the server description. Put placeholders such as `{players}`, `{wave}`, `{map}`, `{playTime}` or `{peace}` into `config desc` (or into `feature.description.template`) and the plugin keeps them up to date, on every change and/or every N seconds.
 - World history is only recorded while `command.rollback.enabled` is true.
 
+### Deploy
+
+Build the fat jar, then copy it onto a local server folder:
+
+```shell
+./gradlew :Essential:shadowJar
+```
+
+```shell
+# Smaller jar without the optional services this server does not use
+./gradlew :Essential:shadowJar -PexcludeModules=web,discord,achievements,bridge
+```
+
+```shell
+python scripts/deploy.py --server /path/to/mindustry-server
+```
+
+The script backs up the installed jar and `config/mods/Essentials` into
+`<server>/essentials-backup-<timestamp>/`, copies the new jar, and adds the
+`rtv` and `votemap` permissions to the `user` group of `permission.yaml` if they
+are missing. Use `--jar` to deploy a jar from another path (default:
+`Essential/build/libs/Essential-all.jar`).
+
 ## Modular builds
 
 Use `-PexcludeModules` to compile an artifact without optional services. The
