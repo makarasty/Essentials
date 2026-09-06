@@ -707,6 +707,7 @@ fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
 
 @Event
 fun gameOver(event: GameOverEvent) {
+    MatchClock.reset()
     ServerDescription.changed()
     gameOverCount++
     if (mapVotes.isNotEmpty()) {
@@ -1064,6 +1065,7 @@ fun undoMenuChoose(event: MenuOptionChooseEvent) {
 
 @Event
 fun worldLoad(event: WorldLoadEvent) {
+    MatchClock.reset()
     ServerDescription.changed()
     mapStartTime = timeSource.markNow()
     isSurrender = false

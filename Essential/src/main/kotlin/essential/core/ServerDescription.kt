@@ -1,6 +1,7 @@
 package essential.core
 
 import arc.Core
+import arc.util.Log
 import arc.util.Timer
 import essential.common.playTime
 import essential.common.uptime
@@ -16,15 +17,23 @@ object ServerDescription {
     val placeholders: MutableMap<String, () -> String> = mutableMapOf(
         "players" to { Groups.player.size().toString() },
         "playerLimit" to { Vars.netServer.admins.playerLimit.toString() },
-        "wave" to { Vars.state.wave.toString() },
+        // A map without waves always reports wave 1, which says nothing; show nothing instead.
+        "wave" to { if (Vars.state.rules.waves) Vars.state.wave.toString() else "" },
         "map" to { Vars.state.map?.plainName() ?: "" },
         "mode" to { Vars.state.rules.mode().name },
         "playTime" to { playTime },
+        "matchTime" to { MatchClock.text },
         "uptime" to { uptime },
+        // Filled in by the protect service; empty when that module is off, so the
+        // placeholder never survives into the server list as literal text.
+        "peace" to { "" },
     )
+
+    private const val DESC_LIMIT = 300
 
     private var timer: Timer.Task? = null
     private var pending = false
+    private var tooLongWarned: String? = null
 
     fun start() {
         timer?.cancel()
@@ -63,9 +72,17 @@ object ServerDescription {
         placeholder.replace(template) { match -> values[match.groupValues[1]]?.invoke() ?: match.value }
 
     fun render() {
+        MatchClock.update()
         val template = template()
         if (template.isBlank()) return
         val text = render(template, placeholders)
+        if (text.length > DESC_LIMIT && text != tooLongWarned) {
+            tooLongWarned = text
+            Log.warn(
+                "[Description] ${text.length} characters, the server list cuts it at $DESC_LIMIT " +
+                    "(100 on an unpatched client). Colour tags count too."
+            )
+        }
         if (text != Administration.Config.desc.string()) Administration.Config.desc.set(text)
     }
 }

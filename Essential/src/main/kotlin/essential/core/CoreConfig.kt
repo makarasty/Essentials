@@ -140,7 +140,9 @@ data class Description(
     @YamlComment("When true the plugin owns the server description and fills placeholders in it")
     val enabled: Boolean = false,
     @YamlComment(
-        "Placeholders: {players} {playerLimit} {wave} {map} {mode} {playTime} {uptime} {peace}",
+        "Placeholders: {players} {playerLimit} {wave} {map} {mode} {playTime} {matchTime} {uptime} {peace}",
+        "{playTime} counts from the map load, {matchTime} from the moment the map is actually",
+        "being played - on PvP that means two teams with a core and a player on them",
         "A `config desc` value that contains a placeholder becomes the template automatically; this field overrides it when set",
         "Vanilla Mindustry cuts the description at 100 characters in the server list, long templates need a build without that limit",
     )
