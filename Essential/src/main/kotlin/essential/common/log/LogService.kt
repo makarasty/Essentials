@@ -25,38 +25,39 @@ private const val QUEUE_CAPACITY = 4096
 private const val MAX_LOG_SIZE = 2048L * 1024L
 private const val MAX_LOG_FILE = 20
 private const val DROP_WARN_INTERVAL = 60000L
+private const val ROTATE_RETRY_INTERVAL = 60000L
 
-private data class LogLine(val type: LogType, val text: String, val time: String, val name: String?)
+private data class LogLine(val type: LogType, val text: String, val time: LocalDateTime, val name: String?)
 
 private val queue = ArrayBlockingQueue<LogLine>(QUEUE_CAPACITY)
 private val logFiles = HashMap<LogType, FileAppender>()
+private val rotateFailed = HashMap<LogType, Long>()
 private val running = AtomicBoolean(false)
+private val stopped = AtomicBoolean(false)
+private val enqueued = AtomicLong()
+private val written = AtomicLong()
 private val dropped = AtomicLong()
+private val reportSeq = AtomicLong()
 private val lastDropWarn = AtomicLong()
 private val writeLock = Any()
 private val timeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH_mm_ss")
+private val reportTimeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH_mm_ss_SSS")
 
+@Volatile
 private var writer: Thread? = null
 
 internal var onLogWritten: ((LogType, String) -> Unit)? = null
 
-fun writeLog(type: LogType, text: String, vararg name: String) {
-    if (!isLogEnabled(type)) return
-
-    val line = LogLine(type, text, timeFormat.format(LocalDateTime.now()), name.firstOrNull())
-    startWriter()
-
-    if (!queue.offer(line)) {
-        val total = dropped.incrementAndGet()
-        val now = System.currentTimeMillis()
-        val last = lastDropWarn.get()
-        if (now - last >= DROP_WARN_INTERVAL && lastDropWarn.compareAndSet(last, now)) {
-            Log.warn("[Essentials] Log queue is full, dropped $total lines")
-        }
+fun initLogFiles() {
+    rootPath.child("log/report").mkdirs()
+    for (type in LogType.entries) {
+        val file = rootPath.child("log/$type.log")
+        if (!file.exists()) file.writeString("")
     }
+    stopped.set(false)
 }
 
-private fun isLogEnabled(type: LogType): Boolean {
+fun isLogEnabled(type: LogType): Boolean {
     val log = Main.conf.feature.log
     return when (type) {
         LogType.Player -> log.player
@@ -65,7 +66,33 @@ private fun isLogEnabled(type: LogType): Boolean {
         LogType.Block -> log.block
         LogType.Tap -> log.tap
         LogType.Deposit, LogType.WithDraw -> log.item
-        else -> log.other
+        LogType.Web -> log.other
+    }
+}
+
+inline fun writeLog(type: LogType, text: () -> String) {
+    if (isLogEnabled(type)) writeLog(type, text())
+}
+
+fun writeLog(type: LogType, text: String, vararg name: String) {
+    if (!isLogEnabled(type)) return
+
+    val line = LogLine(type, text, LocalDateTime.now(), name.firstOrNull())
+    if (stopped.get()) {
+        writeBatch(listOf(line))
+        return
+    }
+    startWriter()
+
+    if (queue.offer(line)) {
+        enqueued.incrementAndGet()
+    } else {
+        val total = dropped.incrementAndGet()
+        val now = System.currentTimeMillis()
+        val last = lastDropWarn.get()
+        if (now - last >= DROP_WARN_INTERVAL && lastDropWarn.compareAndSet(last, now)) {
+            Log.warn("[Essentials] Log queue is full, dropped $total lines")
+        }
     }
 }
 
@@ -83,47 +110,61 @@ private fun startWriter() {
                 break
             }
         }
-
-        val rest = ArrayList<LogLine>()
-        queue.drainTo(rest)
-        if (rest.isNotEmpty()) writeBatch(rest)
-
-        synchronized(writeLock) {
-            logFiles.values.forEach { runCatching { it.close() } }
-            logFiles.clear()
-        }
     }
 }
 
 internal fun stopLogWriter() {
-    if (!running.compareAndSet(true, false)) return
-    writer?.let {
-        it.interrupt()
-        it.join(2000)
+    stopped.set(true)
+    if (running.compareAndSet(true, false)) {
+        writer?.let {
+            it.interrupt()
+            it.join()
+        }
     }
     writer = null
+
+    synchronized(writeLock) {
+        drainQueue(allowRotate = false)
+        logFiles.values.forEach { runCatching { it.close() } }
+        logFiles.clear()
+    }
 }
 
 internal fun flushLog() {
-    val deadline = System.currentTimeMillis() + 3000
-    while (queue.isNotEmpty() && System.currentTimeMillis() < deadline) {
-        Thread.sleep(5)
+    val target = enqueued.get()
+    while (written.get() < target) {
+        val current = writer
+        if (current == null || !current.isAlive) {
+            synchronized(writeLock) { drainQueue(allowRotate = true) }
+            return
+        }
+        Thread.sleep(1)
     }
-    synchronized(writeLock) { }
 }
 
-private fun writeBatch(batch: List<LogLine>) = synchronized(writeLock) {
+private fun drainQueue(allowRotate: Boolean) {
+    val rest = ArrayList<LogLine>()
+    queue.drainTo(rest)
+    if (rest.isNotEmpty()) writeBatch(rest, allowRotate)
+}
+
+private fun writeBatch(batch: List<LogLine>, allowRotate: Boolean = true) = synchronized(writeLock) {
     for (line in batch) {
-        runCatching {
+        try {
             if (line.type == LogType.Report) {
-                rootPath.child("log/report/${line.time}-${line.name}.txt").writeString(line.text)
+                val name = line.name ?: "unknown"
+                rootPath.child("log/report/${reportTimeFormat.format(line.time)}-${reportSeq.incrementAndGet()}-$name.txt")
+                    .writeString(line.text)
             } else {
-                appender(line.type).write("[${line.time}] ${line.text}")
-                rotate(line.type, line.time)
+                val time = timeFormat.format(line.time)
+                appender(line.type).write("[$time] ${line.text}")
+                if (allowRotate) rotate(line.type, time)
             }
             onLogWritten?.invoke(line.type, line.text)
-        }.onFailure {
-            Log.err("[Essentials] Failed to write ${line.type} log", it)
+        } catch (e: Throwable) {
+            Log.err("[Essentials] Failed to write ${line.type} log", e)
+        } finally {
+            written.incrementAndGet()
         }
     }
 }
@@ -135,22 +176,41 @@ private fun rotate(type: LogType, time: String) {
     val current = logFiles[type] ?: return
     if (current.length() <= MAX_LOG_SIZE) return
 
-    current.write("end of file. $time")
+    val now = System.currentTimeMillis()
+    val failedAt = rotateFailed[type]
+    if (failedAt != null && now - failedAt < ROTATE_RETRY_INTERVAL) return
+
+    val source = rootPath.child("log/$type.log")
+    val folder = rootPath.child("log/old/$type")
+    folder.mkdirs()
+    val target = folder.child("$time.log")
+
     current.close()
+    val moved = runCatching {
+        Files.move(
+            Paths.get(source.path()),
+            Paths.get(target.path()),
+            StandardCopyOption.REPLACE_EXISTING
+        )
+    }.isSuccess
+
+    if (!moved) {
+        logFiles[type] = FileAppender(source.file())
+        if (failedAt == null) {
+            Log.warn("[Essentials] Could not rotate the $type log, still writing to it and retrying in a minute")
+        }
+        rotateFailed[type] = now
+        return
+    }
+
     logFiles.remove(type)
+    rotateFailed.remove(type)
+    target.writeString("\nend of file. $time", true)
 
-    val oldFolder = rootPath.child("log/old/$type")
-    oldFolder.mkdirs()
-    Files.move(
-        Paths.get(rootPath.child("log/$type.log").path()),
-        Paths.get(oldFolder.child("$time.log").path()),
-        StandardCopyOption.REPLACE_EXISTING
-    )
-
-    val rotated = oldFolder.file().listFiles { file -> file.name.endsWith(".log") } ?: return
+    val rotated = folder.file().listFiles { file -> file.name.endsWith(".log") } ?: return
     if (rotated.size < MAX_LOG_FILE) return
 
-    ZipOutputStream(FileOutputStream(oldFolder.child("$time.zip").file())).use { zip ->
+    ZipOutputStream(FileOutputStream(folder.child("$time.zip").file())).use { zip ->
         for (file in rotated) {
             zip.putNextEntry(ZipEntry(file.name))
             FileInputStream(file).use { it.copyTo(zip) }

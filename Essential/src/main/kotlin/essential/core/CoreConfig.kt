@@ -83,21 +83,40 @@ data class PermissionFeature(
 /** Feature - log file settings */
 @Serializable
 data class LogFeature(
-    @YamlComment("Join, leave, kick and ban records")
+    @YamlComment(
+        "Join, leave, kick and ban records, written to log/Player.log",
+        "Needed by the bot commands that read the player log",
+    )
     val player: Boolean = true,
-    @YamlComment("Chat messages")
+    @YamlComment(
+        "Chat messages, written to log/Chat.log",
+        "Needed by the bot commands that read the chat log",
+    )
     val chat: Boolean = false,
-    @YamlComment("Player reports")
+    @YamlComment(
+        "Player reports, written to log/report",
+        "Needed by the bot commands that read reports",
+    )
     val report: Boolean = true,
-    @YamlComment("Block place and break records")
+    @YamlComment(
+        "Block place and break records, written to log/Block.log",
+        "Needed by the bot commands that read the block log",
+    )
     val block: Boolean = false,
-    @YamlComment("Block tap records")
+    @YamlComment(
+        "Block tap records, written to log/Tap.log",
+        "Needed by the bot commands that read the tap log",
+    )
     val tap: Boolean = false,
-    @YamlComment("Item deposit and withdraw records")
+    @YamlComment(
+        "Item deposit and withdraw records, written to log/Deposit.log and log/WithDraw.log",
+        "Needed by the bot commands that read the item log",
+    )
     val item: Boolean = false,
-    @YamlComment("Block configuration records")
-    val config: Boolean = false,
-    @YamlComment("Everything else, such as web panel actions")
+    @YamlComment(
+        "Everything else, such as web panel actions, written to log/Web.log",
+        "Needed by the bot commands that read the web log",
+    )
     val other: Boolean = true,
 )
 
