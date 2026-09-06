@@ -385,6 +385,7 @@ class PluginTest {
          * @param player 플레이어
          */
         fun leavePlayer(player: Playerc) {
+            player.unit().takeIf { it.isValid }?.remove()
             NetServer.onDisconnect(player.self(), "Player leaved")
             Events.fire(EventType.PlayerLeave(player.self()))
             player.remove()

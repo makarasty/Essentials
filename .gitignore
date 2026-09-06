@@ -160,3 +160,5 @@ package-lock.json
 /EssentialWeb/src/main/resources/www
 /Essential/scripts/
 /Essential/config/
+/Essential/mods/
+/Essential/locales
