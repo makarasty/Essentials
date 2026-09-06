@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import mindustry.Vars
+import mindustry.gen.Groups
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.r2dbc.update
@@ -178,7 +180,27 @@ object Permission {
 
     fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
         val entry = user?.get(uuid)
-        return entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true
+        return entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)
+    }
+
+    fun isAdminGroup(group: String): Boolean = main[group]?.admin == true
+
+    fun isVanillaAdmin(uuid: String): Boolean =
+        Vars.netServer?.admins?.getInfoOptional(uuid)?.admin == true
+
+    fun syncVanillaAdmin(uuid: String, group: String) {
+        val admins = Vars.netServer?.admins ?: return
+        if (!isAdminGroup(group)) {
+            admins.unAdminPlayer(uuid)
+            return
+        }
+        if (isVanillaAdmin(uuid)) return
+        val usid = Groups.player.find { it.uuid() == uuid }?.usid() ?: admins.getInfoOptional(uuid)?.adminUsid
+        if (usid.isNullOrEmpty()) {
+            Log.info(bundle["permission.vanilla.admin.deferred", uuid])
+            return
+        }
+        admins.adminPlayer(uuid, usid)
     }
 
     fun groupOf(uuid: String, fallbackGroup: String): String = user?.get(uuid)?.group ?: fallbackGroup
@@ -191,6 +213,8 @@ object Permission {
         map[uuid] = entry
         user = map
         userFile.writeString(comment + "\n" + yaml.encodeToString(userSerializer, map), false)
+
+        syncVanillaAdmin(uuid, group)
 
         players.find { data -> data.uuid == uuid }?.let { data ->
             data.permission = group

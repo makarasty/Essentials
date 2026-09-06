@@ -603,4 +603,21 @@ class FeatureTest {
             }
         }
     }
+
+    @Test
+    fun vanillaAdminJoinsIntoAdminGroup() {
+        val target = createPlayer()
+        val uuid = target.uuid()
+        Vars.netServer.admins.adminPlayer(uuid, target.usid())
+
+        try {
+            val data = PluginTest.joinPlayer(target)
+
+            assertEquals(Main.conf.feature.permission.vanillaAdminGroup, data.permission)
+            assertTrue(target.admin(), "A vanilla admin should keep the admin flag after joining")
+        } finally {
+            leavePlayer(target)
+            Vars.netServer.admins.unAdminPlayer(uuid)
+        }
+    }
 }

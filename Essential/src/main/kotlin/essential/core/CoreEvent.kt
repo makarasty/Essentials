@@ -1282,6 +1282,16 @@ fun playerDataLoad(event: CustomEvents.PlayerDataLoad) {
     playerData.lastLoginDate = currentTime
 
     // Set nickname and admin permissions based on configured roles
+    val group = Permission.groupOf(playerData.uuid, playerData.permission)
+    if (Permission.isVanillaAdmin(playerData.uuid) && !Permission.isAdminGroup(group)) {
+        val vanillaGroup = conf.feature.permission.vanillaAdminGroup
+        playerData.permission = vanillaGroup
+        scope.launch { playerData.update() }
+        Permission.setGroup(playerData.uuid, vanillaGroup)
+    } else if (Permission.isAdminGroup(group)) {
+        Permission.syncVanillaAdmin(playerData.uuid, group)
+    }
+
     val permission = Permission[playerData]
     if (permission.name.isNotEmpty()) {
         playerData.player.name(Permission[playerData].name)

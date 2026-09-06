@@ -69,6 +69,15 @@ data class Feature(
     val playerData: PlayerDataConfig = PlayerDataConfig(),
     @YamlComment("Which events are written to the log files")
     val log: LogFeature = LogFeature(),
+    @YamlComment("Permission group settings")
+    val permission: PermissionFeature = PermissionFeature(),
+)
+
+/** Feature - permission group settings */
+@Serializable
+data class PermissionFeature(
+    @YamlComment("Group given on join to a player who is admin in the Mindustry admin list")
+    val vanillaAdminGroup: String = "admin",
 )
 
 /** Feature - log file settings */
