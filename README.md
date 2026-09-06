@@ -32,6 +32,7 @@ This fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials) layers a 
 - `feature.description`: live values in the server description. Put placeholders such as `{players}`, `{wave}`, `{map}`, `{playTime}` or `{peace}` into `config desc` (or into `feature.description.template`) and the plugin keeps them up to date, on every change and/or every N seconds.
 - `feature.playerData`: when the database cannot be reached the player still joins with temporary in-memory data and the default permission group, the real data is loaded in the background as soon as the database answers. Set `allowWithoutData` to false on servers where only registered players may build.
 - World history is only recorded while `command.rollback.enabled` is true.
+- Player arguments go through one lookup everywhere: the ID from `/players` (`#12`), then the same number without `#`, a UUID, an exact name, a unique prefix and finally a unique substring. When several players still match, the command lists the candidates with their IDs instead of silently picking the first one, so `/kick max` no longer hits `maxim`.
 - `feature.log`: per-group switches for the log files (`player`, `chat`, `report`, `block`, `tap`, `item`, `config`, `other`), and writing happens on a background thread instead of the main thread.
 
 ### Deploy
