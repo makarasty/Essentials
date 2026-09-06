@@ -74,6 +74,22 @@ class Trigger {
                 listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
             }
         }
+
+        fun saveMapBackup() {
+            if (!conf.command.rollback.enabled || !conf.command.rollback.mapBackup) return
+
+            val timestamp = System.currentTimeMillis()
+            val backupFile = Vars.saveDirectory.child("rollback_$timestamp.msav")
+            SaveIO.save(backupFile)
+
+            val files = Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
+            val sortedFiles = files.sortedBy { it.lastModified() }
+            if (sortedFiles.size > conf.command.rollback.limit) {
+                for (i in 0 until (sortedFiles.size - conf.command.rollback.limit)) {
+                    sortedFiles[i].delete()
+                }
+            }
+        }
     }
 
     class PingThread: Runnable {
@@ -713,17 +729,7 @@ class Trigger {
             }
 
             if (rollbackCount == 0) {
-                val timestamp = System.currentTimeMillis()
-                val backupFile = Vars.saveDirectory.child("rollback_$timestamp.msav")
-                SaveIO.save(backupFile)
-
-                val files = Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
-                val sortedFiles = files.sortedBy { it.lastModified() }
-                if (sortedFiles.size > conf.command.rollback.limit) {
-                    for (i in 0 until (sortedFiles.size - conf.command.rollback.limit)) {
-                        sortedFiles[i].delete()
-                    }
-                }
+                saveMapBackup()
 
                 rollbackCount = conf.command.rollback.time
             } else {

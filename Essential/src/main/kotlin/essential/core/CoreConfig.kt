@@ -214,6 +214,8 @@ data class Blacklist(
 @Serializable
 data class Rollback(
     val enabled: Boolean = true,
+    @YamlComment("Periodically save a map backup file used by /vote back")
+    val mapBackup: Boolean = true,
     @YamlComment("Maximum rollback time in seconds")
     val time: Int = 300,
     val limit: Int = 10,
