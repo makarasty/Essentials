@@ -482,6 +482,7 @@ fun tap(event: TapEvent) {
 
 @Event
 fun wave(event: WaveEvent) {
+    ServerDescription.changed()
     for (data in players) {
         data.exp += 500
         data.waveClear++
@@ -501,6 +502,7 @@ fun wave(event: WaveEvent) {
 @Event
 fun serverLoad(event: ServerLoadEvent) {
     if (conf.command.layoutFix) KeyboardLayout.install()
+    ServerDescription.start()
 
     Vars.content.blocks().each { two ->
         var buf = 0
@@ -584,6 +586,7 @@ fun serverLoad(event: ServerLoadEvent) {
 
 @Event
 fun gameOver(event: GameOverEvent) {
+    ServerDescription.changed()
     gameOverCount++
     if (mapVotes.isNotEmpty()) {
         val voteCount = HashMap<Map, Int>()
@@ -839,6 +842,7 @@ fun unitCreate(event: UnitCreateEvent) {
 
 @Event
 fun playerJoin(event: PlayerJoin) {
+    ServerDescription.changed()
     writeLog(
         LogType.Player,
         Bundle()["log.joined", event.player.plainName(), event.player.uuid(), event.player.con.address]
@@ -848,6 +852,7 @@ fun playerJoin(event: PlayerJoin) {
 @OptIn(ExperimentalTime::class)
 @Event
 fun playerLeave(event: PlayerLeave) {
+    ServerDescription.changed()
     writeLog(
         LogType.Player,
         Bundle()["log.player.disconnect", event.player.plainName(), event.player.uuid(), event.player.con.address]
@@ -923,6 +928,7 @@ fun playerIpUnban(eent: PlayerIpUnbanEvent) {
 
 @Event
 fun worldLoad(event: WorldLoadEvent) {
+    ServerDescription.changed()
     mapStartTime = timeSource.markNow()
     isSurrender = false
     Rtv.reset()

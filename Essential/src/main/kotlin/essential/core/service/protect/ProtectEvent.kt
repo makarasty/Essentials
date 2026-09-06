@@ -13,6 +13,7 @@ import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.players
 import essential.core.Main.Companion.scope
+import essential.core.ServerDescription
 import essential.core.service.protect.ProtectService.Companion.conf
 import essential.core.service.protect.ProtectService.Companion.pluginData
 import kotlinx.coroutines.flow.toList
@@ -84,6 +85,7 @@ fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
     } else {
         pvpCount = 0
     }
+    ServerDescription.placeholders["peace"] = { if (pvpCount > 0) "${pvpCount / 60}:${"%02d".format(pvpCount % 60)}" else "" }
 }
 
 @Event
@@ -98,6 +100,7 @@ fun runEverySecond() {
                     it.send("event.pvp.peace.end")
                 }
             }
+            ServerDescription.changed()
         }
     }, 0f, 1f)
 }

@@ -63,6 +63,25 @@ data class Feature(
     val count: Boolean = false,
     @YamlComment("Show map vote menu on GameOver")
     val mapVote: Boolean = false,
+    @YamlComment("Server description with live values (server list)")
+    val description: Description = Description(),
+)
+
+/** Feature - server description placeholders */
+@Serializable
+data class Description(
+    @YamlComment("When true the plugin owns the server description and fills placeholders in it")
+    val enabled: Boolean = false,
+    @YamlComment(
+        "Placeholders: {players} {playerLimit} {wave} {map} {mode} {playTime} {uptime} {peace}",
+        "A `config desc` value that contains a placeholder becomes the template automatically; this field overrides it when set",
+        "Vanilla Mindustry cuts the description at 100 characters in the server list, long templates need a build without that limit",
+    )
+    val template: String = "",
+    @YamlComment("Re-render as soon as players join or leave, the wave changes, a map loads or the peace timer ticks")
+    val updateOnChange: Boolean = true,
+    @YamlComment("Also re-render every N seconds; 0 = only on changes (a new `config desc` is then picked up on the next change)")
+    val interval: Int = 30,
 )
 
 /** Feature - AFK settings */

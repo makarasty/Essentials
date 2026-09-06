@@ -29,6 +29,7 @@ This fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials) layers a 
 - Commands typed in a Cyrillic keyboard layout run anyway: `.кем` and `/кем` both execute `/rtv`. Toggle with `command.layoutFix`.
 - `/rtv` (rock the vote): once `feature.vote.rtv.ratio` of the online players voted, the server moves on to the next map.
 - `/votemap <id>`: shortcut for `/vote map <id>` with a default reason.
+- `feature.description`: live values in the server description. Put placeholders such as `{players}`, `{wave}`, `{map}`, `{playTime}` or `{peace}` into `config desc` (or into `feature.description.template`) and the plugin keeps them up to date, on every change and/or every N seconds.
 - World history is only recorded while `command.rollback.enabled` is true.
 
 ## Modular builds
