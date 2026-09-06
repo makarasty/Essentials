@@ -14,6 +14,7 @@ import PluginTest.Companion.waitUntil
 import arc.Events
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
+import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.data.getPlayerData
 import essential.common.players
 import essential.common.pluginData
@@ -103,21 +104,24 @@ class ClientCommandTest {
 
         // Change self name
         clientCommand.handleMessage("/changename ${player.name()} Kieaer", player)
-        sleep(100)
-        assertEquals("Kieaer", playerData.player.name())
+        assertTrue(waitUntil(5000) { playerData.player.name() == "Kieaer" }, "self rename should apply the new name")
 
         // Change other player name
         val registeredUser = newPlayer()
         val randomName = Faker().name().lastName()
         clientCommand.handleMessage("/changename ${registeredUser.first.name()} $randomName", player)
-        sleep(100)
-        assertEquals(randomName, findPlayerData(registeredUser.first.uuid())?.name)
+        assertTrue(
+            waitUntil(5000) { findPlayerData(registeredUser.first.uuid())?.name == randomName },
+            "rename of another online player should apply the new name"
+        )
         leavePlayer(registeredUser.first)
 
         // If target player not found
         clientCommand.handleMessage("/changename yammi eat", player)
-        sleep(100)
-        assertEquals(err("player.not.found"), playerData.lastReceivedMessage)
+        assertTrue(
+            waitUntil(5000) { playerData.lastReceivedMessage == err("player.not.found") },
+            "changename should report a missing player but was ${playerData.lastReceivedMessage}"
+        )
     }
 
     @Test
@@ -1375,5 +1379,74 @@ class ClientCommandTest {
 
         Rtv.reset()
         leavePlayer(dummy.first)
+    }
+
+    @Test
+    fun client_unbanRefusesSubstring() {
+        setPermission("owner", true)
+        val dummy = newPlayer()
+        val uuid = dummy.first.uuid()
+        val name = dummy.first.name()
+        leavePlayer(dummy.first)
+
+        val admins = Vars.netServer.admins
+        admins.banPlayerID(uuid)
+
+        clientCommand.handleMessage("/unban ${name.dropLast(3)}", player)
+        assertTrue(
+            waitUntil(5000) { playerData.lastReceivedMessage == err("player.not.found") },
+            "unban by substring should report a missing player but was ${playerData.lastReceivedMessage}"
+        )
+        assertTrue(admins.isIDBanned(uuid), "a substring must never unban a player")
+
+        clientCommand.handleMessage("/unban $name", player)
+        assertTrue(
+            waitUntil(5000) { !admins.isIDBanned(uuid) },
+            "unban by the exact name should still work"
+        )
+    }
+
+    @Test
+    fun client_infoOfflineTarget() {
+        setPermission("owner", true)
+        val dummy = newPlayer()
+        val name = dummy.first.name()
+        leavePlayer(dummy.first)
+
+        playerData.lastReceivedMessage = "sentinel"
+        clientCommand.handleMessage("/info $name", player)
+        waitUntil(3000) { playerData.lastReceivedMessage != "sentinel" }
+
+        assertEquals(
+            "sentinel",
+            playerData.lastReceivedMessage,
+            "info on an offline target should open the menu instead of reporting an error"
+        )
+    }
+
+    @Test
+    fun client_temporaryPlayerIsNotRegistered() {
+        setPermission("owner", true)
+        val target = createPlayer()
+        target.name("clxtemporary")
+        val data = createTemporaryPlayerData(target)
+        data.temporary = true
+        players.add(data)
+
+        try {
+            clientCommand.handleMessage("/strict clxtemporary", player)
+            assertEquals(err("player.not.registered"), playerData.lastReceivedMessage)
+
+            playerData.lastReceivedMessage = "sentinel"
+            clientCommand.handleMessage("/mute clxtemporary", player)
+            assertTrue(
+                waitUntil(5000) { playerData.lastReceivedMessage == err("player.not.registered") },
+                "mute on temporary data should report a missing account but was ${playerData.lastReceivedMessage}"
+            )
+        } finally {
+            players.remove(data)
+            target.remove()
+            Groups.player.update()
+        }
     }
 }

@@ -150,29 +150,38 @@ class Commands {
     @ClientCommand("changename", "<target> <new_name>", "Change player name")
     fun changeName(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
-            suspendTransaction {
-                suspend fun change(data: PlayerData) {
-                    val exists = PlayerTable.select(PlayerTable.name)
-                        .where { PlayerTable.name eq arg[1] }
-                        .firstOrNull()
-                    if (exists != null) {
-                        data.err("command.changeName.exists", arg[1])
-                    } else {
-                        Events.fire(CustomEvents.PlayerNameChanged(data.name, arg[1], data.uuid))
-                        if (data.uuid == playerData.uuid) {
-                            playerData.send("command.changeName.apply")
-                        } else {
-                            data.send("command.changeName.apply.other", data.name, arg[1])
-                        }
-                        data.name = arg[1]
-                        data.player.name(arg[1])
-                        data.update()
-                        data.send("command.changeName.success", data.name)
-                    }
-                }
+            val data = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+            val self = data.uuid == playerData.uuid
+            val online = data.player.con() != null
+            if (!self && !online && !arg[0].equals(data.uuid, true)) {
+                playerData.err("command.changeName.offline", PlayerLookup.shortName(data.name))
+                return@launch
+            }
 
-                val data = PlayerLookup.offline(arg[0], playerData)
-                if (data != null) change(data)
+            val exists = suspendTransaction {
+                PlayerTable.select(PlayerTable.name)
+                    .where { PlayerTable.name eq arg[1] }
+                    .firstOrNull()
+            }
+            if (exists != null) {
+                playerData.err("command.changeName.exists", arg[1])
+                return@launch
+            }
+
+            val previous = data.name
+            data.name = arg[1]
+            data.update()
+
+            Core.app.post {
+                Events.fire(CustomEvents.PlayerNameChanged(previous, arg[1], data.uuid))
+                if (online) data.player.name(arg[1])
+                if (self) {
+                    playerData.send("command.changeName.apply")
+                } else if (online) {
+                    data.send("command.changeName.apply.other", previous, arg[1])
+                }
+                if (online) data.send("command.changeName.success", arg[1])
+                else playerData.send("command.changeName.success", arg[1])
             }
         }
     }
@@ -586,6 +595,11 @@ class Commands {
                 arrayOf(bundle[ban], bundle["info.button.kick"])
             )
 
+            val offlineControlMenus = arrayOf(
+                arrayOf(bundle[close]),
+                arrayOf(bundle[ban])
+            )
+
             val banMenus = arrayOf(
                 arrayOf(
                     bundle["info.button.tempBan.10min"],
@@ -727,7 +741,7 @@ class Commands {
                     }
 
                     2 -> {
-                        if (targetData != null) {
+                        if (targetData != null && targetData!!.player.con() != null) {
                             val uuid = targetData!!.uuid
                             val label = Undo.label(uuid)
                             targetData!!.player.kick(Packets.KickReason.kick)
@@ -746,6 +760,8 @@ class Commands {
                 val banned = "\n${bundle["info.banned"]}: $isBanned"
                 val menu = if (Permission.check(other, "info.other")) {
                     arrayOf(arrayOf(bundle[close]))
+                } else if (other.player.con() == null) {
+                    offlineControlMenus
                 } else if (!isBanned) {
                     controlMenus
                 } else {
@@ -766,7 +782,10 @@ class Commands {
             if (current != null) {
                 open(current)
             } else {
-                scope.launch { open(PlayerLookup.offline(arg[0], playerData) ?: return@launch) }
+                scope.launch {
+                    val other = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+                    Core.app.post { open(other) }
+                }
             }
         } else {
             playerData.err("command.permission.false")
@@ -1716,6 +1735,22 @@ class Commands {
         if (sender != null) PlayerLookup.offline(target, sender) else PlayerLookup.offline(target)
     }
 
+    private fun withPermissionTarget(target: String, sender: PlayerData, action: (PlayerData) -> kotlin.Unit) {
+        val online = PlayerLookup.findOnline(target)
+        if (online is PlayerLookup.Result.Found) {
+            val data = players.find { it.uuid == online.value.uuid() }
+            if (data == null || data.temporary) sender.err(PLAYER_NOT_REGISTERED) else action(data)
+            return
+        }
+        if (PlayerLookup.ambiguous(online, target, sender)) return
+
+        sender.send("command.setPerm.queued", PlayerLookup.shortName(target))
+        scope.launch {
+            val data = PlayerLookup.offline(target, sender) ?: return@launch
+            Core.app.post { action(data) }
+        }
+    }
+
     private fun setPermissionGroup(data: PlayerData, group: String) {
         data.permission = group
         runBlocking { data.update() }
@@ -1724,11 +1759,12 @@ class Commands {
 
     @ClientCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(playerData: PlayerData, arg: Array<out String>) {
-        val data = findPermissionTarget(arg[0], playerData) ?: return
-        val previous = Permission.groupOf(data.uuid, data.permission)
-        setPermissionGroup(data, arg[1])
-        playerData.send("command.setPerm.success", data.name, arg[1])
-        Undo.record(playerData, "setperm", data.uuid, Undo.label(data.uuid)) { Undo.permission(it, previous) }
+        withPermissionTarget(arg[0], playerData) { data ->
+            val previous = Permission.groupOf(data.uuid, data.permission)
+            setPermissionGroup(data, arg[1])
+            playerData.send("command.setPerm.success", data.name, arg[1])
+            Undo.record(playerData, "setperm", data.uuid, Undo.label(data.uuid)) { Undo.permission(it, previous) }
+        }
     }
 
     @ServerCommand("setperm", "<player> <group>", "Set the player's permission group.")
@@ -2043,7 +2079,8 @@ class Commands {
     fun unban(arg: Array<out String>) {
         val bundle = Bundle()
         scope.launch {
-            val found = PlayerLookup.findOffline(arg[0])
+            val found = PlayerLookup.findExact(arg[0])
+            if (PlayerLookup.ambiguous(found, arg[0], null)) return@launch
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
             TempBan.clearBanExpire(uuid)
 
@@ -2065,7 +2102,8 @@ class Commands {
     @ClientCommand("unban", "<player>", "Unban player")
     fun unban(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
-            val found = PlayerLookup.findOffline(arg[0])
+            val found = PlayerLookup.findExact(arg[0])
+            if (PlayerLookup.ambiguous(found, arg[0], playerData)) return@launch
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
             TempBan.clearBanExpire(uuid)
 
