@@ -1463,103 +1463,113 @@ class Commands {
     @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
-            WorldHistoryBuffer.flush()
-            val history = getAllWorldHistory()
+            try {
+                WorldHistoryBuffer.flush()
+                val history = getAllWorldHistory()
 
-            Core.app.post {
-                var affectedCount = 0
-                val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
+                Core.app.post {
+                    try {
+                        var affectedCount = 0
+                        val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
-                grouped.forEach { (pos, entriesUnsorted) ->
-                    val hasPlayerAction = entriesUnsorted.any { it.player.contains(arg[0], ignoreCase = true) }
-                    if (!hasPlayerAction) return@forEach
+                        grouped.forEach { (pos, entriesUnsorted) ->
+                            val hasPlayerAction = entriesUnsorted.any { it.player.contains(arg[0], ignoreCase = true) }
+                            if (!hasPlayerAction) return@forEach
 
-                    val entries = entriesUnsorted.sortedBy { it.time }
+                            val entries = entriesUnsorted.sortedBy { it.time }
 
-                    val firstIdx = entries.indexOfFirst { it.player.contains(arg[0], ignoreCase = true) }
-                    if (firstIdx == -1) return@forEach
+                            val firstIdx = entries.indexOfFirst { it.player.contains(arg[0], ignoreCase = true) }
+                            if (firstIdx == -1) return@forEach
 
-                    val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
+                            val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
 
-                    var desiredBlockName: String? = null // null -> air
-                    var desiredTeam: Team = Team.derelict
-                    var desiredRot = 0
+                            var desiredBlockName: String? = null // null -> air
+                            var desiredTeam: Team = Team.derelict
+                            var desiredRot = 0
 
-                    fun applyPrevOccupancyFrom(indexExclusive: Int) {
-                        for (i in indexExclusive downTo 0) {
-                            val e = entries[i]
-                            when (e.action) {
-                                "place" -> {
-                                    desiredBlockName = e.tile
-                                    desiredTeam = Team.all.find { t -> t.name == e.team } ?: Team.derelict
-                                    desiredRot = e.rotate
-                                    return
+                            fun applyPrevOccupancyFrom(indexExclusive: Int) {
+                                for (i in indexExclusive downTo 0) {
+                                    val e = entries[i]
+                                    when (e.action) {
+                                        "place" -> {
+                                            desiredBlockName = e.tile
+                                            desiredTeam = Team.all.find { t -> t.name == e.team } ?: Team.derelict
+                                            desiredRot = e.rotate
+                                            return
+                                        }
+
+                                        "break" -> {
+                                            desiredBlockName = null // air
+                                            desiredTeam = Team.derelict
+                                            desiredRot = 0
+                                            return
+                                        }
+                                    }
                                 }
+                            }
 
-                                "break" -> {
-                                    desiredBlockName = null // air
-                                    desiredTeam = Team.derelict
-                                    desiredRot = 0
-                                    return
+                            if (firstIdx > 0) {
+                                applyPrevOccupancyFrom(firstIdx - 1)
+                            } else {
+                                val first = entries[firstIdx]
+                                when (first.action) {
+                                    "place" -> {
+                                        desiredBlockName = null
+                                    }
+
+                                    "break" -> {
+                                        desiredBlockName = first.tile
+                                        desiredTeam = Team.all.find { t -> t.name == first.team } ?: Team.derelict
+                                        desiredRot = first.rotate
+                                    }
+
+                                    else -> {
+                                        desiredBlockName = targetTile.block().name.takeIf { it != Blocks.air.name }
+                                        desiredTeam = targetTile.team()
+                                        desiredRot = targetTile.build?.rotation ?: 0
+                                    }
                                 }
                             }
-                        }
-                    }
 
-                    if (firstIdx > 0) {
-                        applyPrevOccupancyFrom(firstIdx - 1)
-                    } else {
-                        val first = entries[firstIdx]
-                        when (first.action) {
-                            "place" -> {
-                                desiredBlockName = null
+                            var desiredConfig: String? = null
+                            for (i in (firstIdx - 1) downTo 0) {
+                                val e = entries[i]
+                                if (e.value != null) {
+                                    desiredConfig = e.value
+                                    break
+                                }
                             }
 
-                            "break" -> {
-                                desiredBlockName = first.tile
-                                desiredTeam = Team.all.find { t -> t.name == first.team } ?: Team.derelict
-                                desiredRot = first.rotate
+                            if (desiredBlockName == null || desiredBlockName == Blocks.air.name) {
+                                targetTile.remove()
+                            } else {
+                                val block = Vars.content.block(desiredBlockName)
+                                if (block != null) {
+                                    targetTile.setBlock(block, desiredTeam, desiredRot)
+                                    if (desiredConfig != null && targetTile.build != null) {
+                                        targetTile.build.configure(desiredConfig)
+                                    }
+                                } else {
+                                    targetTile.remove()
+                                }
                             }
-
-                            else -> {
-                                desiredBlockName = targetTile.block().name.takeIf { it != Blocks.air.name }
-                                desiredTeam = targetTile.team()
-                                desiredRot = targetTile.build?.rotation ?: 0
-                            }
+                            affectedCount++
                         }
-                    }
 
-                    var desiredConfig: String? = null
-                    for (i in (firstIdx - 1) downTo 0) {
-                        val e = entries[i]
-                        if (e.value != null) {
-                            desiredConfig = e.value
-                            break
+                        for (p in Groups.player) {
+                            Call.worldDataBegin(p.con)
+                            Vars.netServer.sendWorldData(p)
                         }
-                    }
 
-                    if (desiredBlockName == null || desiredBlockName == Blocks.air.name) {
-                        targetTile.remove()
-                    } else {
-                        val block = Vars.content.block(desiredBlockName)
-                        if (block != null) {
-                            targetTile.setBlock(block, desiredTeam, desiredRot)
-                            if (desiredConfig != null && targetTile.build != null) {
-                                targetTile.build.configure(desiredConfig)
-                            }
-                        } else {
-                            targetTile.remove()
-                        }
+                        playerData.send("command.rollback.success", arg[0], affectedCount)
+                    } catch (e: Exception) {
+                        playerData.err("command.rollback.failed")
+                        Log.err("Failed to roll back the actions of ${arg[0]}", e)
                     }
-                    affectedCount++
                 }
-
-                for (p in Groups.player) {
-                    Call.worldDataBegin(p.con)
-                    Vars.netServer.sendWorldData(p)
-                }
-
-                playerData.send("command.rollback.success", arg[0], affectedCount)
+            } catch (e: Exception) {
+                Core.app.post { playerData.err("command.rollback.failed") }
+                Log.err("Failed to roll back the actions of ${arg[0]}", e)
             }
         }
     }
@@ -2866,14 +2876,19 @@ class Commands {
         scope.launch {
             try {
                 Permission.load()
-                Core.app.post {
+            } catch (e: Exception) {
+                Log.err("Failed to reload the permission configuration.", e)
+                return@launch
+            }
+            Core.app.post {
+                try {
                     Log.info(Bundle()["config.permission.updated"])
-                    Main.reloadConf()
+                    Main.conf = Main.reloadConf()
                     ModuleRuntime.reloadEnabledConfigurations()
                     Log.info(Bundle()["config.reloaded"])
+                } catch (e: Exception) {
+                    Log.err("Failed to reload the plugin configuration, keeping the previous one.", e)
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
     }
@@ -2883,7 +2898,13 @@ class Commands {
         val target = PlayerLookup.online(arg[0]) ?: return
 
         scope.launch {
-            val data = loadJoinedPlayerData(target, target.name()).data
+            cancelPlayerDataRetry(target.uuid())
+            val result = loadJoinedPlayerData(target, target.name())
+            if (result.duplicateName) {
+                Log.err("Player data for ${target.plainName()} (${target.uuid()}) has a duplicate name.")
+                return@launch
+            }
+            val data = result.data
             if (data == null) {
                 Log.err("Player data for ${target.plainName()} (${target.uuid()}) could not be loaded.")
                 return@launch

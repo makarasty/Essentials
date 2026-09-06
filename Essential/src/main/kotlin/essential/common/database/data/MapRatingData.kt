@@ -1,10 +1,14 @@
 package essential.common.database.data
 
 import essential.common.database.table.MapRatingTable
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toSet
 import ksp.table.GenerateCode
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.r2dbc.insert
+import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.r2dbc.update
@@ -53,6 +57,19 @@ suspend fun getMapRating(playerUuid: String, mapName: String): MapRatingData? {
             .where { (MapRatingTable.playerUuid eq playerUuid) and (MapRatingTable.mapName eq mapName) }
             .mapToMapRatingDataList()
             .firstOrNull()
+    }
+}
+
+/**
+ * Get the UUIDs of the given players that already rated the map, in a single query
+ */
+suspend fun getRatedPlayerUuids(mapName: String, playerUuids: List<String>): Set<String> {
+    if (playerUuids.isEmpty()) return emptySet()
+    return suspendTransaction {
+        MapRatingTable.select(MapRatingTable.playerUuid)
+            .where { (MapRatingTable.mapName eq mapName) and (MapRatingTable.playerUuid inList playerUuids) }
+            .map { it[MapRatingTable.playerUuid] }
+            .toSet()
     }
 }
 

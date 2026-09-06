@@ -10,42 +10,62 @@ import essential.common.database.data.checkRoutingPermission
 import essential.common.database.data.consumeRoutingPermission
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
+import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.data.getPlayerData
+import essential.common.database.data.setAchievement
 import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.databaseClose
 import essential.common.database.databaseInit
 import essential.common.database.defaultDatabase
 import essential.common.database.table.ServerRoutingTable
+import essential.common.event.CustomEvents
+import essential.common.mapStartTime
 import essential.common.players
 import essential.common.permission.Permission
 import essential.common.pluginData
+import essential.common.rootPath
 import essential.common.systemTimezone
+import essential.common.timeSource
 import essential.core.Main
 import essential.core.connectPacket
+import essential.core.gameOver
+import essential.core.loadJoinedPlayerData
+import essential.core.mapRatings
+import essential.core.playerDataRetries
+import essential.core.service.achievements.AchievementHooks
+import essential.core.swapTemporaryPlayerData
 import essential.core.tap
 import arc.Core
 import arc.Events
 import arc.backend.headless.HeadlessApplication
+import arc.func.Cons
 import arc.util.Log
 import arc.util.TaskQueue
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.game.EventType.ConnectPacketEvent
+import mindustry.game.EventType.GameOverEvent
 import mindustry.game.EventType.PlayerJoin
 import mindustry.game.EventType.TapEvent
 import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
+import mindustry.gen.Groups
 import mindustry.net.Administration
 import mindustry.net.NetConnection
+import mindustry.ui.Menus
 import mindustry.net.Packets
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.insert
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 
@@ -85,6 +105,50 @@ class FeatureTest {
         } finally {
             Log.logger = original
         }
+    }
+
+    private fun captureLogs(block: () -> Unit): List<String> {
+        val original = Log.logger
+        val captured = CopyOnWriteArrayList<String>()
+        Log.logger = Log.LogHandler { level, text ->
+            captured.add(text)
+            println("[$level] $text")
+        }
+        try {
+            block()
+        } finally {
+            Log.logger = original
+        }
+        return captured
+    }
+
+    private fun pumpAppTasksStrict() {
+        val field = HeadlessApplication::class.java.getDeclaredField("runnables")
+        field.isAccessible = true
+        (field.get(Core.app) as TaskQueue).run()
+    }
+
+    /** Pumps the queue for the whole window and returns the first runnable that blew up. */
+    private fun pumpForThrow(timeoutMs: Long): Throwable? {
+        var thrown: Throwable? = null
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                pumpAppTasksStrict()
+            } catch (e: Throwable) {
+                if (thrown == null) thrown = e
+            }
+            Thread.sleep(50)
+        }
+        return thrown
+    }
+
+    private fun withRetryAttempts(attempts: Int) {
+        Main.conf = Main.conf.copy(
+            feature = Main.conf.feature.copy(
+                playerData = Main.conf.feature.playerData.copy(retryAttempts = attempts)
+            )
+        )
     }
 
     private fun pumpAppTasks() {
@@ -509,58 +573,384 @@ class FeatureTest {
 
         withoutLogErrors {
             try {
+                withRetryAttempts(0)
                 breakDatabase()
 
                 val joined = joinPlayer()
                 target = joined
                 assertTrue(
                     awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == true },
-                    "DB ì°ê²°ì´ ìì ëìë ìì ë°ì´í°ë¡ ì ìì´ ìë£ëì´ì¼ í©ëë¤."
+                    "A player joining while the database is down must get temporary data."
                 )
 
-                val data = playerDataOf(joined.uuid())!!
-                assertEquals(Permission.default, data.permission)
-                assertTrue(
-                    allowPlaceBlock(joined),
-                    "ìì ë°ì´í° ìíììë ë¸ë¡ ì¤ì¹ê° íì©ëì´ì¼ í©ëë¤."
-                )
+                val temporary = playerDataOf(joined.uuid())!!
+                assertEquals(Permission.default, temporary.permission)
+                assertTrue(allowPlaceBlock(joined), "Temporary data must still allow building.")
 
                 clientCommand.handleMessage("/help", joined)
                 assertNotEquals(
                     Bundle(joined.locale())["command.data.loading"],
-                    data.lastReceivedMessage,
-                    "ìì ë°ì´í° ìíììë ëªë ¹ì´ê° ëìí´ì¼ í©ëë¤."
+                    temporary.lastReceivedMessage,
+                    "Commands must work while the data is temporary."
                 )
-                assertTrue(data.lastReceivedMessage.isNotEmpty())
+                assertTrue(temporary.lastReceivedMessage.isNotEmpty())
 
-                serverCommand.handleMessage("setperm ${joined.name()} owner")
-                assertEquals("owner", data.permission)
-                data.permission = Permission.default
-
-                data.exp = 1234
-                data.blockPlaceCount = 12
-                data.totalPlayed = 34
+                temporary.blockPlaceCount = 12
+                temporary.blockBreakCount = 7
+                temporary.chatMuted = true
+                temporary.strictMode = true
 
                 restoreDatabase()
 
-                assertTrue(
-                    awaitPumped(40000L) { playerDataOf(joined.uuid())?.temporary == false },
-                    "DB ê° ë³µêµ¬ëë©´ ì¤ì  ë°ì´í°ë¡ êµì²´ëì´ì¼ í©ëë¤."
+                assertFalse(
+                    awaitPumped(15000L) { playerDataOf(joined.uuid())?.temporary == false },
+                    "retryAttempts = 0 must keep the background reload from swapping the data in."
                 )
 
                 serverCommand.handleMessage("reloadplayer ${joined.uuid()}")
-                assertTrue(awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == false })
+                assertTrue(
+                    awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == false },
+                    "reloadplayer must swap the temporary data for the real one."
+                )
 
                 val loaded = playerDataOf(joined.uuid())!!
                 assertNotEquals(0u, loaded.id)
-                assertTrue(loaded.exp >= 1234, "exp: ${loaded.exp}")
-                assertTrue(loaded.blockPlaceCount >= 12, "blockPlaceCount: ${loaded.blockPlaceCount}")
-                assertTrue(loaded.totalPlayed >= 34, "totalPlayed: ${loaded.totalPlayed}")
+                assertEquals(12, loaded.blockPlaceCount)
+                assertEquals(7, loaded.blockBreakCount)
+                assertTrue(loaded.chatMuted, "A mute set on temporary data must survive the swap.")
+                assertTrue(loaded.strictMode, "Strict mode set on temporary data must survive the swap.")
+
+                // A late retry holding the same temporary object must not merge the counters again.
+                val second = runBlocking { getPlayerData(joined.uuid()) }!!
+                swapTemporaryPlayerData(second, temporary)
+                awaitPumped(1000L) { false }
+
+                assertSame(loaded, playerDataOf(joined.uuid()), "A second swap must be a no-op.")
+                assertEquals(12, loaded.blockPlaceCount)
+                assertEquals(7, loaded.blockBreakCount)
             } finally {
                 Main.conf = originalConf
                 if (defaultDatabase == null) restoreDatabase()
                 target?.let { leavePlayer(it) }
             }
+        }
+    }
+
+    @Test
+    fun staleReloadDoesNotEvictTheLivePlayerData() {
+        val p = newPlayer()
+        val joined = p.first
+        val uuid = joined.uuid()
+        val live = playerDataOf(uuid)!!
+
+        try {
+            // The retry started from a temporary object that is no longer the registered one.
+            val orphan = createTemporaryPlayerData(joined).apply { temporary = true }
+            swapTemporaryPlayerData(runBlocking { getPlayerData(uuid) }!!, orphan)
+            awaitPumped(1000L) { false }
+            assertSame(live, playerDataOf(uuid), "A retry started from a stale object must not replace the live data.")
+
+            // The player reconnected while the read was running, so the temporary object holds a dead connection.
+            val ghostCon = TestConnection("127.0.0.1")
+            ghostCon.uuid = uuid
+            val ghost = mindustry.gen.Player.create()
+            ghost.con = ghostCon
+            ghost.name(joined.name())
+            val stale = createTemporaryPlayerData(ghost).apply { temporary = true }
+
+            players.removeIf { it.uuid == uuid }
+            players.add(stale)
+            swapTemporaryPlayerData(runBlocking { getPlayerData(uuid) }!!, stale)
+            awaitPumped(1000L) { false }
+            assertSame(stale, playerDataOf(uuid), "A retry holding a dead connection must not bind the new one.")
+            assertSame(joined, Groups.player.find { it.uuid() == uuid }, "The live player must stay untouched.")
+        } finally {
+            players.removeIf { it.uuid == uuid }
+            players.add(live)
+            leavePlayer(joined)
+        }
+    }
+
+    @Test
+    fun playerDataSwapRunsThePostLoadSteps() {
+        val originalConf = Main.conf
+        var target: mindustry.gen.Player? = null
+        val ended = AtomicReference<PlayerData?>(null)
+        val listener = Cons<CustomEvents.PlayerDataLoadEnd> { ended.set(it.playerData) }
+        Events.on(CustomEvents.PlayerDataLoadEnd::class.java, listener)
+
+        withoutLogErrors {
+            try {
+                withRetryAttempts(0)
+                breakDatabase()
+
+                val joined = joinPlayer()
+                target = joined
+                assertTrue(awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == true })
+
+                restoreDatabase()
+                ended.set(null)
+
+                serverCommand.handleMessage("reloadplayer ${joined.uuid()}")
+                assertTrue(
+                    awaitPumped(10000L) {
+                        val data = ended.get()
+                        data != null && data.uuid == joined.uuid() && !data.temporary
+                    },
+                    "The swap must run the same post load steps as a join, up to PlayerDataLoadEnd."
+                )
+
+                val loaded = playerDataOf(joined.uuid())!!
+                assertEquals(
+                    Clock.System.now().toLocalDateTime(systemTimezone).date,
+                    loaded.lastLoginDate.date,
+                    "The swap must record the login date."
+                )
+            } finally {
+                Events.remove(CustomEvents.PlayerDataLoadEnd::class.java, listener)
+                Main.conf = originalConf
+                if (defaultDatabase == null) restoreDatabase()
+                target?.let { leavePlayer(it) }
+            }
+        }
+    }
+
+    @Test
+    fun playerDataRetryJobIsCancelled() {
+        val originalConf = Main.conf
+        var target: mindustry.gen.Player? = null
+
+        withoutLogErrors {
+            try {
+                withRetryAttempts(30)
+                breakDatabase()
+
+                val joined = joinPlayer()
+                target = joined
+                assertTrue(awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == true })
+                assertNotNull(playerDataRetries[joined.uuid()], "The background reload job must be tracked.")
+
+                restoreDatabase()
+                serverCommand.handleMessage("reloadplayer ${joined.uuid()}")
+                assertTrue(
+                    awaitPumped(10000L) { playerDataRetries[joined.uuid()] == null },
+                    "reloadplayer must cancel the background reload job."
+                )
+
+                breakDatabase()
+                val second = joinPlayer()
+                assertTrue(awaitPumped(10000L) { playerDataOf(second.uuid())?.temporary == true })
+                assertNotNull(playerDataRetries[second.uuid()])
+                restoreDatabase()
+
+                leavePlayer(second)
+                assertNull(playerDataRetries[second.uuid()], "Leaving must cancel the background reload job.")
+            } finally {
+                Main.conf = originalConf
+                if (defaultDatabase == null) restoreDatabase()
+                target?.let { leavePlayer(it) }
+            }
+        }
+    }
+
+    @Test
+    fun playerDataLoadGivesUpWhenTheDatabaseHangs() {
+        val originalConf = Main.conf
+        val target = createPlayer()
+
+        withoutLogErrors {
+            try {
+                Main.conf = originalConf.copy(
+                    feature = originalConf.feature.copy(
+                        playerData = originalConf.feature.playerData.copy(loadTimeout = 1)
+                    )
+                )
+
+                val started = System.currentTimeMillis()
+                val result = runBlocking {
+                    loadJoinedPlayerData(target, target.name()) { _, _ -> awaitCancellation() }
+                }
+                val elapsed = System.currentTimeMillis() - started
+
+                assertNull(result.data, "A hanging read must time out instead of pinning the thread.")
+                assertFalse(result.duplicateName)
+                assertTrue(elapsed < 10000L, "The read should have been abandoned after the timeout, took $elapsed ms.")
+            } finally {
+                Main.conf = originalConf
+                leavePlayer(target)
+            }
+        }
+    }
+
+    @Test
+    fun duplicateNameStopsTheReloadInsteadOfRetryingForever() {
+        val originalConf = Main.conf
+        val existing = newPlayer()
+        var target: mindustry.gen.Player? = null
+
+        withoutLogErrors {
+            try {
+                withRetryAttempts(30)
+                breakDatabase()
+
+                val duplicate = createPlayer()
+                duplicate.name(existing.first.name())
+                target = duplicate
+                Events.fire(PlayerJoin(duplicate))
+                assertTrue(awaitPumped(10000L) { playerDataOf(duplicate.uuid())?.temporary == true })
+
+                restoreDatabase()
+
+                assertTrue(
+                    awaitPumped(25000L) { playerDataRetries[duplicate.uuid()] == null },
+                    "A duplicate name must end the background reload instead of retrying forever."
+                )
+                assertEquals(
+                    true,
+                    playerDataOf(duplicate.uuid())?.temporary,
+                    "A duplicate name must never be turned into real player data."
+                )
+
+                val logs = captureLogs {
+                    serverCommand.handleMessage("reloadplayer ${duplicate.uuid()}")
+                    awaitPumped(10000L) { false }
+                }
+                assertTrue(
+                    logs.any { it.contains("duplicate name") },
+                    "reloadplayer must report a duplicate name, got: $logs"
+                )
+            } finally {
+                Main.conf = originalConf
+                if (defaultDatabase == null) restoreDatabase()
+                target?.let { leavePlayer(it) }
+                leavePlayer(existing.first)
+            }
+        }
+    }
+
+    @Test
+    fun reloadKeepsTheOldConfigWhenTheYamlIsBroken() {
+        val configFile = rootPath.child(Main.CONFIG_PATH)
+        val original = if (configFile.exists()) configFile.readString() else null
+        val before = Main.conf
+
+        withoutLogErrors {
+            try {
+                configFile.writeString("plugin:\n  - broken: [\n", false)
+
+                serverCommand.handleMessage("reload")
+                val thrown = pumpForThrow(5000L)
+
+                assertNull(thrown, "A broken config must not unwind the main loop: $thrown")
+                assertSame(before, Main.conf, "A broken config must leave the loaded one in place.")
+            } finally {
+                if (original != null) configFile.writeString(original, false) else configFile.delete()
+                Main.conf = before
+            }
+        }
+    }
+
+    @Test
+    fun rollbackRepliesWhenTheUndoFails() {
+        val p = newPlayer()
+        setPermission(p.first, "owner", true)
+        val ghost = mindustry.gen.Player.create()
+        ghost.add()
+        Groups.player.update()
+
+        withoutLogErrors {
+            try {
+                clientCommand.handleMessage("/rollback ${p.first.name()}", p.first)
+                val thrown = pumpForThrow(5000L)
+
+                assertNull(thrown, "A failing rollback must not unwind the main loop: $thrown")
+                assertTrue(
+                    p.second.lastReceivedMessage.contains(Bundle(p.first.locale())["command.rollback.failed"]),
+                    "A failing rollback must tell the admin, got: ${p.second.lastReceivedMessage}"
+                )
+            } finally {
+                ghost.remove()
+                Groups.player.update()
+                leavePlayer(p.first)
+            }
+        }
+    }
+
+    @Test
+    fun achievementsAreLoadedOffTheMainThreadAndSkippedForTemporaryData() {
+        val p = newPlayer()
+        val data = p.second
+
+        try {
+            runBlocking { setAchievement(data, "builder") }
+            data.achievementStatus.clear()
+
+            Events.fire(CustomEvents.PlayerDataLoad(data))
+            assertFalse(
+                data.achievementStatus.contains("builder"),
+                "The achievement load must not block the main thread."
+            )
+            assertTrue(
+                awaitPumped(10000L) { data.achievementStatus.contains("builder") },
+                "The achievement load must still finish and post its result back."
+            )
+
+            withoutLogErrors {
+                breakDatabase()
+                val temporary = createTemporaryPlayerData(p.first).apply { temporary = true }
+                AchievementHooks.processPlayerDataLoad(temporary)
+                awaitPumped(1000L) { false }
+                assertTrue(
+                    temporary.achievementStatus.isEmpty(),
+                    "Temporary data has no row to read achievements for."
+                )
+                restoreDatabase()
+            }
+        } finally {
+            if (defaultDatabase == null) restoreDatabase()
+            leavePlayer(p.first)
+        }
+    }
+
+    @Test
+    fun gameOverSkipsTheRatingMenuForPlayersWhoLeft() {
+        val originalConf = Main.conf
+        val originalStart = mapStartTime
+        val originalInfinite = Vars.state.rules.infiniteResources
+        val p = newPlayer()
+        val uuid = p.first.uuid()
+        val snapshot = players.toList()
+
+        try {
+            Main.conf = originalConf.copy(feature = originalConf.feature.copy(mapVote = true))
+            Vars.state.rules.infiniteResources = true
+            mapStartTime = timeSource.markNow() - 10.minutes
+            mapRatings.remove(uuid)
+
+            // The player is gone but their data has not been unregistered yet.
+            players.clear()
+            players.add(p.second)
+            p.first.remove()
+            Groups.player.update()
+
+            val menusBefore = Menus.registerMenu { _, _ -> }
+            gameOver(GameOverEvent(Team.crux))
+            awaitPumped(5000L) { false }
+            val menusAfter = Menus.registerMenu { _, _ -> }
+
+            assertEquals(
+                1,
+                menusAfter - menusBefore,
+                "No rating menu should be built for a player who already left."
+            )
+        } finally {
+            Vars.state.rules.infiniteResources = originalInfinite
+            mapStartTime = originalStart
+            Main.conf = originalConf
+            players.clear()
+            players.addAll(snapshot)
+            players.removeIf { it.uuid == uuid }
+            mapRatings.remove(uuid)
         }
     }
 
@@ -588,6 +978,23 @@ class FeatureTest {
                 assertFalse(
                     allowPlaceBlock(joined),
                     "allowWithoutData ê° false ë©´ ë¸ë¡ ì¤ì¹ê° ê±°ë¶ëì´ì¼ í©ëë¤."
+                )
+
+                // The filter must be deciding on allowWithoutData, not on some other rule.
+                Main.conf = Main.conf.copy(
+                    feature = Main.conf.feature.copy(
+                        playerData = Main.conf.feature.playerData.copy(allowWithoutData = true)
+                    )
+                )
+                assertNull(playerDataOf(joined.uuid()))
+                assertTrue(
+                    allowPlaceBlock(joined),
+                    "Without player data the filter must fall through to allowWithoutData."
+                )
+                Main.conf = Main.conf.copy(
+                    feature = Main.conf.feature.copy(
+                        playerData = Main.conf.feature.playerData.copy(allowWithoutData = false)
+                    )
                 )
 
                 restoreDatabase()
