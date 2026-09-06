@@ -24,6 +24,7 @@ import essential.common.util.findPlayerData
 import essential.core.Commands.WorldEditSelection
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -62,6 +63,7 @@ import java.text.NumberFormat
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.Pattern
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
@@ -78,6 +80,9 @@ val mapVotes = HashMap<String, Map>()
 
 /** Map rating list (UUID -> Boolean) - true for upvote, false for downvote */
 val mapRatings = HashMap<String, Boolean>()
+
+/** Background player data reload jobs (UUID -> Job) */
+val playerDataRetries = ConcurrentHashMap<String, Job>()
 
 /** PvP spectator player list */
 var pvpSpecters = mutableListOf<String>()
@@ -588,10 +593,14 @@ suspend fun readJoinedPlayerData(player: Playerc, name: String): JoinedPlayerDat
     return JoinedPlayerData(newData, false)
 }
 
-suspend fun loadJoinedPlayerData(player: Playerc, name: String): JoinedPlayerData {
+suspend fun loadJoinedPlayerData(
+    player: Playerc,
+    name: String,
+    read: suspend (Playerc, String) -> JoinedPlayerData = ::readJoinedPlayerData
+): JoinedPlayerData {
     return try {
         withTimeoutOrNull(conf.feature.playerData.loadTimeout.seconds) {
-            readJoinedPlayerData(player, name)
+            read(player, name)
         } ?: JoinedPlayerData(null, false).also {
             Log.err("Player data load timed out for ${player.plainName()} (${player.uuid()})")
         }
@@ -624,18 +633,38 @@ fun isPlayerOnline(player: Playerc): Boolean {
     return con != null && !con.hasDisconnected
 }
 
+private fun isCurrentConnection(player: Playerc): Boolean {
+    val con = player.con() ?: return false
+    if (con.hasDisconnected) return false
+    return Groups.player.find { p -> p.uuid() == player.uuid() }?.con() === con
+}
+
+private fun kickDuplicateName(player: Playerc) {
+    val con = player.con() ?: return
+    val locale = player.locale()
+    Core.app.post { Call.kick(con, Bundle(locale)["event.player.name.duplicate"]) }
+}
+
+fun cancelPlayerDataRetry(uuid: String) {
+    playerDataRetries.remove(uuid)?.cancel()
+}
+
 fun retryPlayerDataLoad(player: Playerc, name: String, temporary: PlayerData, published: Boolean) {
-    scope.launch {
-        while (isPlayerOnline(player)) {
+    val uuid = player.uuid()
+    cancelPlayerDataRetry(uuid)
+    val job = scope.launch {
+        var remaining = conf.feature.playerData.retryAttempts
+        while (remaining > 0 && isPlayerOnline(player)) {
             delay(10.seconds)
             if (!isPlayerOnline(player)) return@launch
+            remaining--
 
-            val data = try {
-                readJoinedPlayerData(player, name).data
-            } catch (e: Exception) {
-                Log.err("Failed to reload player data for ${player.plainName()} (${player.uuid()})", e)
-                null
-            } ?: continue
+            val result = loadJoinedPlayerData(player, name)
+            if (result.duplicateName) {
+                kickDuplicateName(player)
+                return@launch
+            }
+            val data = result.data ?: continue
 
             if (published) {
                 swapTemporaryPlayerData(data, temporary)
@@ -643,14 +672,15 @@ fun retryPlayerDataLoad(player: Playerc, name: String, temporary: PlayerData, pu
                 data.player = player
                 firePlayerDataLoad(data)
             }
-            Log.info("Player data for ${player.plainName()} (${player.uuid()}) has been loaded.")
+            Log.info("Player data for ${player.plainName()} ($uuid) has been loaded.")
             return@launch
         }
     }
+    playerDataRetries[uuid] = job
+    job.invokeOnCompletion { playerDataRetries.remove(uuid, job) }
 }
 
-suspend fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
-    data.player = temporary.player
+fun mergeTemporaryPlayerData(temporary: PlayerData, data: PlayerData) {
     data.exp += temporary.exp
     data.currentExp += temporary.currentExp
     data.blockPlaceCount += temporary.blockPlaceCount
@@ -658,16 +688,22 @@ suspend fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
     data.totalPlayed += temporary.totalPlayed
     data.currentPlayTime += temporary.currentPlayTime
     data.attendanceDays += temporary.attendanceDays
-    data.isConnected = true
+    data.chatMuted = data.chatMuted || temporary.chatMuted
+    data.strictMode = data.strictMode || temporary.strictMode
+    data.isBanned = data.isBanned || temporary.isBanned
+    if (temporary.banExpireDate != null) data.banExpireDate = temporary.banExpireDate
+}
 
+fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
     Core.app.post {
-        players.removeIf { it.uuid == data.uuid }
-        players.add(data)
-        val permission = Permission[data]
-        data.player.name(if (permission.name.isNotEmpty()) permission.name else data.name)
-        data.player.admin(permission.admin)
+        if (players.find { it.uuid == data.uuid } !== temporary) return@post
+        if (!isCurrentConnection(temporary.player)) return@post
+
+        mergeTemporaryPlayerData(temporary, data)
+        data.player = temporary.player
+        attachPlayerData(data, false)
+        if (players.find { it.uuid == data.uuid } === data) scope.launch { data.update() }
     }
-    data.update()
 }
 
 @Event
@@ -695,16 +731,17 @@ fun gameOver(event: GameOverEvent) {
         val mapName = currentMap.plainName()
         val currentCount = gameOverCount
 
-        val voteTargets = players.toList()
+        val voteTargets = players.filter { !mapRatings.containsKey(it.uuid) }
 
-        scope.launch {
+        if (voteTargets.isNotEmpty()) scope.launch {
+            val rated = getRatedPlayerUuids(mapName, voteTargets.map { it.uuid })
+            if (gameOverCount != currentCount) return@launch
+
             for (data in voteTargets) {
-                val hasVoted = getMapRating(data.uuid, mapName) != null
-                if (gameOverCount != currentCount) break
-
                 Core.app.post {
                     if (gameOverCount != currentCount) return@post
-                    if (hasVoted || mapRatings.containsKey(data.uuid)) return@post
+                    if (rated.contains(data.uuid) || mapRatings.containsKey(data.uuid)) return@post
+                    val con = Groups.player.find { p -> p.uuid() == data.uuid }?.con() ?: return@post
 
                     val difficultyMenu = Menus.registerMenu { player, select ->
                         if (gameOverCount != currentCount) {
@@ -751,7 +788,7 @@ fun gameOver(event: GameOverEvent) {
                     }
 
                     Call.menu(
-                        data.player.con(),
+                        con,
                         difficultyMenu,
                         Bundle(data.player.locale())["command.map.rate.difficulty.title"],
                         Bundle(data.player.locale())["command.map.rate.difficulty.text", mapName],
@@ -954,6 +991,7 @@ fun playerLeave(event: PlayerLeave) {
         Bundle()["log.player.disconnect", event.player.plainName(), event.player.uuid(), event.player.con.address]
     )
     Rtv.leave(event.player.uuid(), event.player.plainName())
+    cancelPlayerDataRetry(event.player.uuid())
     val data = players.find { e -> e.uuid == event.player.uuid() }
     if (data != null) {
         data.lastPlayedWorldName = Vars.state.map.plainName()
@@ -1266,10 +1304,13 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
     }
 }
 
-@OptIn(ExperimentalTime::class)
 @Event
 fun playerDataLoad(event: CustomEvents.PlayerDataLoad) {
-    val playerData = event.playerData
+    attachPlayerData(event.playerData, true)
+}
+
+@OptIn(ExperimentalTime::class)
+fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     val entity = Groups.player.find { p -> p.uuid() == playerData.uuid }
     if (entity == null || entity.con() == null || entity.con().hasDisconnected) return
     playerData.player = entity
@@ -1301,23 +1342,25 @@ fun playerDataLoad(event: CustomEvents.PlayerDataLoad) {
     }
     playerData.player.admin(Permission[playerData].admin)
 
-    // Load the Message of the Day (MOTD) based on the player's language
-    val motd = readMotd(player.locale())
+    if (announce) {
+        // Load the Message of the Day (MOTD) based on the player's language
+        val motd = readMotd(player.locale())
 
-    // If the MOTD exceeds 10 lines, display it as a full-screen message
-    if (motd != null) {
-        val count = motd.split("\r\n|\r|\n").toTypedArray().size
-        if (count > 10) Call.infoMessage(player.con(), motd) else message.appendLine(motd)
-    }
+        // If the MOTD exceeds 10 lines, display it as a full-screen message
+        if (motd != null) {
+            val count = motd.split("\r\n|\r|\n").toTypedArray().size
+            if (count > 10) Call.infoMessage(player.con(), motd) else message.appendLine(motd)
+        }
 
-    // If configured to display a specific message on player join
-    if (permission.isAlert) {
-        if (permission.alertMessage.isEmpty()) {
-            players.forEach { data ->
-                data.send("event.player.joined", player.con())
+        // If configured to display a specific message on player join
+        if (permission.isAlert) {
+            if (permission.alertMessage.isEmpty()) {
+                players.forEach { data ->
+                    data.send("event.player.joined", player.con())
+                }
+            } else {
+                Call.sendMessage(permission.alertMessage)
             }
-        } else {
-            Call.sendMessage(permission.alertMessage)
         }
     }
 

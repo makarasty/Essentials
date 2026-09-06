@@ -109,7 +109,10 @@ data class PlayerData(
     var temporary = false
 
     suspend fun update(): Boolean {
-        if (temporary) return false
+        if (temporary) {
+            Log.warn("Player data of $name ($uuid) is temporary, the changes are kept in memory only.")
+            return false
+        }
         return updateRow()
     }
 

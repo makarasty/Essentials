@@ -111,6 +111,8 @@ data class PlayerDataConfig(
     val allowWithoutData: Boolean = true,
     @YamlComment("Seconds to wait for the player data to load")
     val loadTimeout: Int = 5,
+    @YamlComment("How many times the background reload retries before giving up")
+    val retryAttempts: Int = 30,
 )
 
 /** Feature - server description placeholders */

@@ -1,6 +1,8 @@
 package essential.core.service.achievements
 
+import arc.Core
 import arc.Events
+import arc.util.Log
 import arc.util.Timer
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
@@ -14,6 +16,8 @@ import essential.common.util.findPlayerData
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.monthsUntil
 import kotlinx.datetime.toLocalDateTime
+import essential.core.Main.Companion.scope
+import kotlinx.coroutines.launch
 import ksp.event.Event
 import mindustry.Vars.state
 import mindustry.content.Planets
@@ -23,7 +27,6 @@ import mindustry.gen.Groups
 import mindustry.world.blocks.power.PowerGraph
 import java.util.*
 import kotlin.time.Clock
-import kotlinx.coroutines.runBlocking
 
 private var isNoMiningFailed = false
 private var isNoPowerFailed = false
@@ -35,20 +38,31 @@ private var isDuoTurretFailed = false
 /** Executes achievement initialization after the core player-data load flow. */
 object AchievementHooks {
     fun processPlayerDataLoad(playerData: PlayerData) {
-        runBlocking {
-            getPlayerAchievements(playerData).forEach { achievement ->
-                playerData.achievementStatus.add(achievement.achievementName)
-            }
-        }
+        if (playerData.temporary) return
 
-        for (achievement in Achievement.entries) {
-            if (achievement.isHidden) continue
-            try {
-                if (achievement.success(playerData)) {
-                    achievement.set(playerData)
-                }
+        scope.launch {
+            val completed = try {
+                getPlayerAchievements(playerData).map { it.achievementName }
             } catch (e: Exception) {
-                arc.util.Log.err("Failed to evaluate achievement ${achievement.name} for ${playerData.name}", e)
+                Log.err("Failed to load achievements for ${playerData.name}", e)
+                return@launch
+            }
+
+            Core.app.post {
+                completed.forEach { name ->
+                    if (!playerData.achievementStatus.contains(name)) playerData.achievementStatus.add(name)
+                }
+
+                for (achievement in Achievement.entries) {
+                    if (achievement.isHidden) continue
+                    try {
+                        if (achievement.success(playerData)) {
+                            achievement.set(playerData)
+                        }
+                    } catch (e: Exception) {
+                        Log.err("Failed to evaluate achievement ${achievement.name} for ${playerData.name}", e)
+                    }
+                }
             }
         }
     }
