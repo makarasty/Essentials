@@ -520,23 +520,35 @@ fun serverLoad(event: ServerLoadEvent) {
         blockExp[two.name] = buf
     }
 
+    /**
+     * Suppress a chat message.
+     *
+     * The vanilla anti-spam filter runs before this one and has already written the text
+     * into the player's info. Without clearing it, the next attempt at the same line is
+     * answered with "You may not send the same message twice", which explains nothing.
+     */
+    fun dropped(player: Player): String? {
+        player.info?.lastSentMessage = null
+        return null
+    }
+
     Vars.netServer.admins.addChatFilter(Administration.ChatFilter { player, message ->
         writeLog(LogType.Chat) { "${player.plainName()}: $message" }
         return@ChatFilter if (!message.startsWith("/")) {
             val data = findPlayerData(player.uuid())
             if (data != null) {
-                if (!data.chatMuted) {
-                    if (isGlobalMute) {
-                        if (Permission.check(data, "chat.admin")) {
-                            message
-                        } else {
-                            null
-                        }
-                    } else {
-                        message
+                when {
+                    data.chatMuted -> {
+                        data.err("event.chat.muted")
+                        dropped(player)
                     }
-                } else {
-                    message
+
+                    isGlobalMute && !Permission.check(data, "chat.admin") -> {
+                        data.err("event.chat.disabled")
+                        dropped(player)
+                    }
+
+                    else -> message
                 }
             } else {
                 message
