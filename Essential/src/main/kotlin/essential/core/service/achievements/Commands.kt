@@ -3,7 +3,7 @@ package essential.core.service.achievements
 import arc.util.Strings
 import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
-import essential.common.players
+import essential.common.util.PlayerLookup
 import ksp.command.ClientCommand
 import ksp.command.ServerCommand
 import java.util.*
@@ -62,13 +62,7 @@ class Commands {
             return
         }
 
-        val playerName = args[0]
-        val player = players.find { it.name.equals(playerName, ignoreCase = true) }
-
-        if (player == null) {
-            println("Player not found: $playerName")
-            return
-        }
+        val player = PlayerLookup.onlineData(args[0]) ?: return
 
         // Set the achievement
         player.status["record.map.provider"] = "1"
@@ -87,13 +81,7 @@ class Commands {
             return
         }
 
-        val playerName = args[0]
-        val player = players.find { it.name.equals(playerName, ignoreCase = true) }
-
-        if (player == null) {
-            println("Player not found: $playerName")
-            return
-        }
+        val player = PlayerLookup.onlineData(args[0]) ?: return
 
         // Set the achievement
         player.status["record.feedback.provider"] = "1"
@@ -118,13 +106,7 @@ class Commands {
             return
         }
 
-        val playerName = args[0]
-        val player = players.find { it.name.equals(playerName, ignoreCase = true) }
-
-        if (player == null) {
-            playerData.err("Player not found: $playerName")
-            return
-        }
+        val player = PlayerLookup.onlineData(args[0], playerData) ?: return
 
         // Set the achievement
         player.status["record.map.provider"] = "1"
@@ -149,13 +131,7 @@ class Commands {
             return
         }
 
-        val playerName = args[0]
-        val player = players.find { it.name.equals(playerName, ignoreCase = true) }
-
-        if (player == null) {
-            playerData.err("Player not found: $playerName")
-            return
-        }
+        val player = PlayerLookup.onlineData(args[0], playerData) ?: return
 
         // Set the achievement
         player.status["record.feedback.provider"] = "1"

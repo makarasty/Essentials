@@ -617,7 +617,10 @@ class ClientCommandTest {
 
         // Test info command with not exist player
         clientCommand.handleMessage("/info nonexistentplayer", player)
-        assertEquals(err("player.not.found"), playerData.lastReceivedMessage)
+        assertTrue(
+            waitUntil(2000) { playerData.lastReceivedMessage == err("player.not.found") },
+            "info should report a missing player but was ${playerData.lastReceivedMessage}"
+        )
     }
 
     @Test

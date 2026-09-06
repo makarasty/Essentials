@@ -22,10 +22,9 @@ import essential.common.event.CustomEvents
 import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.permission.Permission
+import essential.common.util.PlayerLookup
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
-import essential.common.util.findPlayers
-import essential.common.util.findPlayersByName
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.delay
@@ -172,22 +171,8 @@ class Commands {
                     }
                 }
 
-                val target = findPlayers(arg[0])
-                if (target != null) {
-                    val data = findPlayerData(target.uuid())
-                    if (data != null) {
-                        change(data)
-                    } else {
-                        playerData.err(PLAYER_NOT_REGISTERED)
-                    }
-                } else {
-                    val offline = getPlayerData(arg[0])
-                    if (offline != null) {
-                        change(offline)
-                    } else {
-                        playerData.err(PLAYER_NOT_FOUND)
-                    }
-                }
+                val data = PlayerLookup.offline(arg[0], playerData)
+                if (data != null) change(data)
             }
         }
     }
@@ -349,27 +334,7 @@ class Commands {
 
                 if (exp != null) {
                     if (arg.size == 3) {
-                        val target = findPlayers(arg[2])
-                        if (target != null) {
-                            val data = findPlayerData(target.uuid())
-                            if (data != null) {
-                                set(data)
-                            } else {
-                                playerData.err(PLAYER_NOT_REGISTERED)
-                                return
-                            }
-                        } else {
-                            val p = findPlayersByName(arg[2])
-                            if (p != null) {
-                                val a = getPlayerData(p.id)
-                                if (a != null) {
-                                    set(a)
-                                }
-                            } else {
-                                playerData.err(PLAYER_NOT_FOUND)
-                                return
-                            }
-                        }
+                        set(PlayerLookup.offline(arg[2], playerData) ?: return)
                     } else {
                         set(playerData)
                     }
@@ -389,20 +354,12 @@ class Commands {
 
                 "hide" -> {
                     if (arg.size == 2) {
-                        val target = findPlayers(arg[1])
-                        if (target != null) {
-                            val other = findPlayerData(target.uuid())
-                            if (other != null) {
-                                other.hideRanking = !other.hideRanking
-                                scope.launch { other.update() }
-                                val msg = if (other.hideRanking) "hide" else "unhide"
-                                playerData.send("command.exp.ranking.$msg")
-                                return@launch
-                            }
-                        } else {
-                            playerData.err(PLAYER_NOT_FOUND)
-                            return@launch
-                        }
+                        val other = PlayerLookup.offline(arg[1], playerData) ?: return@launch
+                        other.hideRanking = !other.hideRanking
+                        scope.launch { other.update() }
+                        val msg = if (other.hideRanking) "hide" else "unhide"
+                        playerData.send("command.exp.ranking.$msg")
+                        return@launch
                     }
 
                     playerData.hideRanking = !playerData.hideRanking
@@ -585,7 +542,6 @@ class Commands {
             val infoMenu = Menus.registerMenu { _, _ -> }
             Call.menu(playerData.player.con(), infoMenu, bundle["info.title"], show(playerData), arrayOf(arrayOf(bundle[close])))
         } else if (Permission.check(playerData, "info.other")) {
-            val target = findPlayers(arg[0])
             var targetData: PlayerData? = null
             var isBanned = false
 
@@ -767,62 +723,26 @@ class Commands {
                 }
             }
 
-            // todo 특정 플레이어 조회 안됨
-            if (target != null) {
-                isBanned =
-                    (Vars.netServer.admins.isIDBanned(target.uuid()) || Vars.netServer.admins.isIPBanned(target.con().address))
+            scope.launch {
+                val other = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+                val info = Vars.netServer.admins.getInfo(other.uuid)
+                isBanned = Vars.netServer.admins.isIDBanned(other.uuid) || Vars.netServer.admins.isIPBanned(info.lastIP)
                 val banned = "\n${bundle["info.banned"]}: $isBanned"
-                val other = findPlayerData(target.uuid())
-                if (other != null) {
-                    val menu = if (Permission.check(other, "info.other")) {
-                        arrayOf(arrayOf(bundle[close]))
-                    } else if (!isBanned) {
-                        controlMenus
-                    } else {
-                        unbanControlMenus
-                    }
-                    targetData = other
-                    Call.menu(
-                        playerData.player.con(),
-                        mainMenu,
-                        bundle["info.admin.title"],
-                        show(other) + banned + lineBreak,
-                        menu
-                    )
+                val menu = if (Permission.check(other, "info.other")) {
+                    arrayOf(arrayOf(bundle[close]))
+                } else if (!isBanned) {
+                    controlMenus
                 } else {
-                    playerData.err(PLAYER_NOT_FOUND)
+                    unbanControlMenus
                 }
-            } else {
-                val p = findPlayersByName(arg[0])
-                if (p != null) {
-                    scope.launch {
-                        isBanned =
-                            (Vars.netServer.admins.isIDBanned(p.id) || Vars.netServer.admins.isIPBanned(p.lastIP))
-                        val banned = "\n${bundle["info.banned"]}: $isBanned"
-                        val other = getPlayerData(p.id)
-                        if (other != null) {
-                            val menu = if (Permission.check(other, "info.other")) {
-                                arrayOf(arrayOf(bundle[close]))
-                            } else if (!isBanned) {
-                                controlMenus
-                            } else {
-                                unbanControlMenus
-                            }
-                            targetData = other
-                            Call.menu(
-                                playerData.player.con(),
-                                mainMenu,
-                                bundle["info.admin.title"],
-                                show(other) + banned + lineBreak,
-                                menu
-                            )
-                        } else {
-                            playerData.err(PLAYER_NOT_REGISTERED)
-                        }
-                    }
-                } else {
-                    playerData.err(PLAYER_NOT_FOUND)
-                }
+                targetData = other
+                Call.menu(
+                    playerData.player.con(),
+                    mainMenu,
+                    bundle["info.admin.title"],
+                    show(other) + banned + lineBreak,
+                    menu
+                )
             }
         } else {
             playerData.err("command.permission.false")
@@ -874,10 +794,8 @@ class Commands {
             playerData.send("command.kill.self")
         } else {
             if (Permission.check(playerData, "kill.other")) {
-                val other = findPlayers(arg[0])
-                if (other == null) {
-                    playerData.err(PLAYER_NOT_FOUND)
-                } else {
+                val other = PlayerLookup.online(arg[0], playerData)
+                if (other != null) {
                     other.unit().kill()
                     playerData.send("command.kill.done", other.plainName())
                 }
@@ -889,10 +807,8 @@ class Commands {
 
     @ServerCommand("kill", "<player>", "Kill player's unit")
     fun kill(arg: Array<out String>) {
-        val other = findPlayers(arg[0])
-        if (other == null) {
-            Log.err(Bundle()[PLAYER_NOT_FOUND])
-        } else {
+        val other = PlayerLookup.online(arg[0])
+        if (other != null) {
             other.unit().kill()
             Log.info(Bundle()["command.kill.done", other.plainName()])
         }
@@ -1272,64 +1188,22 @@ class Commands {
 
     @ClientCommand("mute", "<player>", "Mute player")
     fun mute(playerData: PlayerData, arg: Array<out String>) {
-        val other = findPlayers(arg[0])
         scope.launch {
-            if (other != null) {
-                val target = findPlayerData(other.uuid())
-                if (target != null) {
-                    target.chatMuted = true
-                    target.update()
-                    playerData.send("command.mute", target.name)
-                } else {
-                    playerData.err(PLAYER_NOT_FOUND)
-                }
-            } else {
-                val p = findPlayersByName(arg[0])
-                if (p != null) {
-                    val a = getPlayerData(p.id)
-                    if (a != null) {
-                        a.chatMuted = true
-                        a.update()
-                        playerData.send("command.mute", a.name)
-                    } else {
-                        playerData.err(PLAYER_NOT_REGISTERED)
-                    }
-                } else {
-                    playerData.err(PLAYER_NOT_FOUND)
-                }
-            }
+            val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+            target.chatMuted = true
+            target.update()
+            playerData.send("command.mute", target.name)
         }
     }
 
     @ServerCommand("mute", "<player>", "Mute player")
     fun mute(arg: Array<out String>) {
-        val other = findPlayers(arg[0])
         val bundle = Bundle()
         scope.launch {
-            if (other != null) {
-                val target = findPlayerData(other.uuid())
-                if (target != null) {
-                    target.chatMuted = true
-                    target.update()
-                    Log.info(bundle["command.mute", target.name])
-                } else {
-                    Log.err(bundle[PLAYER_NOT_FOUND])
-                }
-            } else {
-                val p = findPlayersByName(arg[0])
-                if (p != null) {
-                    val a = getPlayerData(p.id)
-                    if (a != null) {
-                        a.chatMuted = true
-                        a.update()
-                        Log.info(bundle["command.mute", a.name])
-                    } else {
-                        Log.err(bundle[PLAYER_NOT_REGISTERED])
-                    }
-                } else {
-                    Log.err(bundle[PLAYER_NOT_FOUND])
-                }
-            }
+            val target = PlayerLookup.offline(arg[0]) ?: return@launch
+            target.chatMuted = true
+            target.update()
+            Log.info(bundle["command.mute", target.name])
         }
     }
 
@@ -1351,11 +1225,14 @@ class Commands {
         val buffer = Mathf.ceil(players.size.toFloat() / 6)
         val pages = if (buffer > 1.0) buffer - 1 else 0
         val title = bundle["command.page.server"]
+        val showUuid = Permission.check(playerData, "info.other")
 
         for (page in 0..pages) {
             val build = StringBuilder()
             for (a in 6 * page until (6 * (page + 1)).coerceAtMost(players.size)) {
-                build.append("ID: [gray]${players[a].entityId} ${players[a].player.coloredName()}\n")
+                val data = players[a]
+                val uuid = if (showUuid) " [gray]${data.uuid.take(8)}[]" else ""
+                build.append("[gray]${data.entityId}[] ${PlayerLookup.shortName(data.player.plainName())}$uuid\n")
             }
 
             val options = arrayOf(
@@ -1809,11 +1686,8 @@ class Commands {
         }
     }
 
-    private fun findPermissionTarget(target: String): PlayerData? = runBlocking {
-        findPlayerData(target)
-            ?: findPlayers(target)?.let { player -> findPlayerData(player.uuid()) }
-            ?: getPlayerData(target)
-            ?: getPlayerDataByName(target)
+    private fun findPermissionTarget(target: String, sender: PlayerData?): PlayerData? = runBlocking {
+        if (sender != null) PlayerLookup.offline(target, sender) else PlayerLookup.offline(target)
     }
 
     private fun setPermissionGroup(data: PlayerData, group: String) {
@@ -1824,11 +1698,7 @@ class Commands {
 
     @ClientCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(playerData: PlayerData, arg: Array<out String>) {
-        val data = findPermissionTarget(arg[0])
-        if (data == null) {
-            playerData.err(PLAYER_NOT_FOUND)
-            return
-        }
+        val data = findPermissionTarget(arg[0], playerData) ?: return
         setPermissionGroup(data, arg[1])
         playerData.send("command.setPerm.success", data.name, arg[1])
     }
@@ -1836,11 +1706,7 @@ class Commands {
     @ServerCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(arg: Array<out String>) {
         val bundle = Bundle()
-        val data = findPermissionTarget(arg[0])
-        if (data == null) {
-            Log.warn(bundle[PLAYER_NOT_FOUND])
-            return
-        }
+        val data = findPermissionTarget(arg[0], null) ?: return
         setPermissionGroup(data, arg[1])
         Log.info(bundle["command.setPerm.success", data.name, arg[1]])
     }
@@ -1848,11 +1714,7 @@ class Commands {
     @ServerCommand("perm", "<player>", "Show the player's effective permission group.")
     fun perm(arg: Array<out String>) {
         val bundle = Bundle()
-        val data = findPermissionTarget(arg[0])
-        if (data == null) {
-            Log.warn(bundle[PLAYER_NOT_FOUND])
-            return
-        }
+        val data = findPermissionTarget(arg[0], null) ?: return
         val source = if (Permission.hasUserEntry(data.uuid)) "command.perm.source.file" else "command.perm.source.database"
         Log.info(
             bundle[
@@ -2017,37 +1879,21 @@ class Commands {
 
     @ClientCommand("strict", "<player>", "Set whether the target player can build or not.")
     fun strict(playerData: PlayerData, arg: Array<out String>) {
-        val other = findPlayers(arg[0])
-        if (other != null) {
-            val target = findPlayerData(other.uuid())
-            if (target != null) {
-                target.strictMode = !target.strictMode
-                scope.launch { target.update() }
-                val undo = if (target.strictMode) ".undo" else ""
-                playerData.send("command.strict$undo", target.name)
-            } else {
-                playerData.err(PLAYER_NOT_FOUND)
-            }
-        } else {
-            playerData.err(PLAYER_NOT_FOUND)
-        }
+        val target = PlayerLookup.onlineData(arg[0], playerData) ?: return
+        target.strictMode = !target.strictMode
+        scope.launch { target.update() }
+        val undo = if (target.strictMode) ".undo" else ""
+        playerData.send("command.strict$undo", target.name)
     }
 
     @ServerCommand("strict", "<player>", "Set whether the target player can build or not.")
     fun strict(arg: Array<out String>) {
         val bundle = Bundle()
-        val other = findPlayers(arg[0])
-        if (other != null) {
-            val target = findPlayerData(other.uuid())
-            if (target != null) {
-                target.strictMode = !target.strictMode
-                scope.launch { target.update() }
-                val undo = if (target.strictMode) ".undo" else ""
-                Log.info(bundle["command.strict$undo", target.name])
-            } else {
-                Log.err(bundle[PLAYER_NOT_FOUND])
-            }
-        }
+        val target = PlayerLookup.onlineData(arg[0]) ?: return
+        target.strictMode = !target.strictMode
+        scope.launch { target.update() }
+        val undo = if (target.strictMode) ".undo" else ""
+        Log.info(bundle["command.strict$undo", target.name])
     }
 
     @ClientCommand("t", "<message...>", "Send a meaage only to your teammates.")
@@ -2076,24 +1922,14 @@ class Commands {
         if (arg.size == 1) {
             playerData.player.team(team)
         } else if (Permission.check(playerData, "team.other")) {
-            val other = findPlayers(arg[1])
-            if (other != null) {
-                other.team(team)
-            } else {
-                playerData.err(PLAYER_NOT_FOUND)
-            }
+            PlayerLookup.online(arg[1], playerData)?.team(team)
         }
     }
 
     @ServerCommand("team", "<team> <name>", "Set player team")
     fun team(arg: Array<out String>) {
         val team = selectTeam(arg[0])
-        val other = findPlayers(arg[1])
-        if (other != null) {
-            other.team(team)
-        } else {
-            Log.err(Bundle()[PLAYER_NOT_FOUND])
-        }
+        PlayerLookup.online(arg[1])?.team(team)
     }
 
     // todo tempban client -> server
@@ -2101,27 +1937,21 @@ class Commands {
     @ServerCommand("tempban", "<player> <time> [reason]", "Ban the player for aa certain peroid of time")
     fun tempBan(arg: Array<out String>) {
         val bundle = Bundle()
-        val other = findPlayers(arg[0])
+        val minute = arg[1].toIntOrNull()
 
-        if (other == null) {
-            Log.err(bundle[PLAYER_NOT_FOUND])
-        } else {
-            val d = findPlayerData(other.uuid())
-            if (d == null) {
-                Log.info(bundle["command.tempBan.not.registered"])
-                other.kick(Packets.KickReason.banned)
-            } else {
-                val minute = arg[1].toIntOrNull()
-                val reason = if (arg.size > 2) arg[2] else null
+        if (minute == null) {
+            Log.warn(bundle["command.tempBan.not.number"])
+            return
+        }
 
-                if (minute != null) {
-                    d.banExpireDate = Clock.System.now().plus(minute.minutes).toLocalDateTime(systemTimezone)
-                    scope.launch { d.update() }
-                    other.kick(reason ?: bundle["command.tempBan.banned", d.name, "Server", d.banExpireDate.toString()])
-                } else {
-                    Log.err(bundle["command.tempBan.not.number"])
-                }
-            }
+        scope.launch {
+            val target = PlayerLookup.offline(arg[0]) ?: return@launch
+            val reason = if (arg.size > 2) arg[2] else null
+
+            target.banExpireDate = Clock.System.now().plus(minute.minutes).toLocalDateTime(systemTimezone)
+            target.update()
+            Groups.player.find { it.uuid() == target.uuid }
+                ?.kick(reason ?: bundle["command.tempBan.banned", target.name, "Server", target.banExpireDate.toString()])
         }
     }
 
@@ -2134,16 +1964,12 @@ class Commands {
 
     @ClientCommand("tp", "<player>", "Teleport to other players")
     fun tp(playerData: PlayerData, arg: Array<out String>) {
-        val other = findPlayers(arg[0])
+        val other = PlayerLookup.online(arg[0], playerData) ?: return
 
-        if (other == null) {
-            playerData.err(PLAYER_NOT_FOUND)
-        } else {
-            playerData.player.unit()?.x(other.x)
-            playerData.player.unit()?.y(other.y)
-            Call.setPosition(playerData.player.con(), other.x, other.y)
-            Call.setCameraPosition(playerData.player.con(), other.x, other.y)
-        }
+        playerData.player.unit()?.x(other.x)
+        playerData.player.unit()?.y(other.y)
+        Call.setPosition(playerData.player.con(), other.x, other.y)
+        Call.setCameraPosition(playerData.player.con(), other.x, other.y)
     }
 
     @ClientCommand("track", description = "Display the mouse positions of players.")
@@ -2155,77 +1981,40 @@ class Commands {
 
     @ClientCommand("unban", "<player>", "Unban player")
     fun unban(playerData: PlayerData, arg: Array<out String>) {
-        if (!Vars.netServer.admins.unbanPlayerID(arg[0])) {
-            if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
-                playerData.err(PLAYER_NOT_FOUND)
+        scope.launch {
+            val found = PlayerLookup.findOffline(arg[0])
+            val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
+
+            if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
+                if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
+                    playerData.err(PLAYER_NOT_FOUND)
+                } else {
+                    playerData.send("command.unban.ip", arg[0])
+                }
             } else {
-                playerData.send("command.unban.ip", arg[0])
+                playerData.send("command.unban.id", uuid)
             }
-        } else {
-            playerData.send("command.unban.id", arg[0])
         }
     }
 
     @ClientCommand("unmute", "<player>", "Unmute player")
     fun unmute(playerData: PlayerData, arg: Array<out String>) {
-        val other = findPlayers(arg[0])
         scope.launch {
-            if (other != null) {
-                val target = findPlayerData(other.uuid())
-                if (target != null) {
-                    target.chatMuted = false
-                    target.update()
-                    playerData.send("command.unmute", target.name)
-                } else {
-                    playerData.err(PLAYER_NOT_FOUND)
-                }
-            } else {
-                val p = findPlayersByName(arg[0])
-                if (p != null) {
-                    val a = getPlayerData(p.id)
-                    if (a != null) {
-                        a.chatMuted = false
-                        a.update()
-                        playerData.send("command.unmute", a.name)
-                    } else {
-                        playerData.err(PLAYER_NOT_REGISTERED)
-                    }
-                } else {
-                    playerData.err(PLAYER_NOT_FOUND)
-                }
-            }
+            val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+            target.chatMuted = false
+            target.update()
+            playerData.send("command.unmute", target.name)
         }
     }
 
     @ServerCommand("unmute", "<player>", "Unmute player")
     fun unmute(arg: Array<out String>) {
         val bundle = Bundle()
-        val other = findPlayers(arg[0])
         scope.launch {
-            if (other != null) {
-                val target = findPlayerData(other.uuid())
-                if (target != null) {
-                    target.chatMuted = false
-                    target.update()
-                    Log.info(bundle["command.unmute", target.name])
-                } else {
-                    Log.warn(bundle[PLAYER_NOT_FOUND])
-                }
-            } else {
-                val p = findPlayersByName(arg[0])
-                if (p != null) {
-                    val a = getPlayerData(p.id)
-                    if (a != null) {
-                        a.chatMuted = false
-                        a.update()
-                        Log.info(bundle["command.unmute", a.name])
-                    } else {
-                        Log.warn(bundle[PLAYER_NOT_REGISTERED])
-                    }
-                } else {
-                    Log.warn(bundle[PLAYER_NOT_FOUND])
-                }
-            }
+            val target = PlayerLookup.offline(arg[0]) ?: return@launch
+            target.chatMuted = false
+            target.update()
+            Log.info(bundle["command.unmute", target.name])
         }
     }
 
@@ -2323,7 +2112,7 @@ class Commands {
                     playerData.err(noReason)
                     return
                 }
-                val target = findPlayers(arg[1])
+                val target = PlayerLookup.online(arg[1], playerData)
                 if (target != null) {
                     val targetData = players.find { it.uuid == target.uuid() }
                     if (targetData != null && Permission.check(targetData, "kick.admin")) {
@@ -2338,8 +2127,6 @@ class Commands {
                         )
                         start(voteData)
                     }
-                } else {
-                    playerData.err(PLAYER_NOT_FOUND)
                 }
             }
 
@@ -2506,18 +2293,11 @@ class Commands {
 
     @ClientCommand("votekick", "<player>", "Start kick voting")
     fun votekick(playerData: PlayerData, arg: Array<out String>) {
-        if (arg[0].contains("#")) {
-            val target = players.find { e ->
-                e.uuid == Groups.player.find { p -> p.id() == arg[0].substring(1).toInt() }.uuid()
-            }
-            if (target != null) {
-                if (Permission.check(target, "kick.admin")) {
-                    playerData.err("command.vote.kick.target.admin")
-                } else {
-                    val array = arrayOf("kick", target.name, "Kick")
-                    vote(playerData, array)
-                }
-            }
+        val target = PlayerLookup.onlineData(arg[0], playerData) ?: return
+        if (Permission.check(target, "kick.admin")) {
+            playerData.err("command.vote.kick.target.admin")
+        } else {
+            vote(playerData, arrayOf("kick", "#${target.entityId}", "Kick"))
         }
     }
 
@@ -2915,11 +2695,7 @@ class Commands {
 
     @ServerCommand("reloadplayer", "<uuid/name>", "Reload the player data of an online player.")
     fun reloadPlayer(arg: Array<out String>) {
-        val target = Groups.player.find { it.uuid() == arg[0] } ?: findPlayers(arg[0])
-        if (target == null) {
-            Log.warn(Bundle()[PLAYER_NOT_FOUND])
-            return
-        }
+        val target = PlayerLookup.online(arg[0]) ?: return
 
         scope.launch {
             val data = loadJoinedPlayerData(target, target.name()).data
