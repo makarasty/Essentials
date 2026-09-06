@@ -120,11 +120,10 @@ var maxDps: Float? = null
 @Event
 fun withdraw(event: WithdrawEvent) {
     if (event.tile != null && event.player.unit().item() != null && event.player.name != null) {
-        writeLog(
-            LogType.WithDraw,
+        writeLog(LogType.WithDraw) {
             Bundle()["log.withdraw", event.player.plainName(), event.player.unit()
                 .item().name, event.amount, event.tile.block.name, event.tile.tileX(), event.tile.tileY()]
-        )
+        }
         addLog(
             TileLog(
                 System.currentTimeMillis(),
@@ -144,11 +143,10 @@ fun withdraw(event: WithdrawEvent) {
 @Event
 fun deposit(event: DepositEvent) {
     if (event.tile != null && event.player.unit().item() != null && event.player.name != null) {
-        writeLog(
-            LogType.Deposit,
+        writeLog(LogType.Deposit) {
             Bundle()["log.deposit", event.player.plainName(), event.player.unit()
                 .item().name, event.amount, checkValidBlock(event.tile.tile), event.tile.tileX(), event.tile.tileY()]
-        )
+        }
         addLog(
             TileLog(
                 System.currentTimeMillis(),
@@ -201,7 +199,7 @@ fun config(event: ConfigEvent) {
 
 @Event
 fun tap(event: TapEvent) {
-    writeLog(LogType.Tap, Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)])
+    writeLog(LogType.Tap) { Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)] }
     addLog(
         TileLog(
             System.currentTimeMillis(),
@@ -517,7 +515,7 @@ fun serverLoad(event: ServerLoadEvent) {
     }
 
     Vars.netServer.admins.addChatFilter(Administration.ChatFilter { player, message ->
-        writeLog(LogType.Chat, "${player.plainName()}: $message")
+        writeLog(LogType.Chat) { "${player.plainName()}: $message" }
         return@ChatFilter if (!message.startsWith("/")) {
             val data = findPlayerData(player.uuid())
             if (data != null) {
@@ -810,10 +808,9 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
             if (tile != null) {
                 val block = tile.block()
                 if (!event.breaking) {
-                    writeLog(
-                        LogType.Block,
+                    writeLog(LogType.Block) {
                         Bundle()["log.block.place", target.name, checkValidBlock(tile), tile.x, tile.y]
-                    )
+                    }
 
                     val lastBlock = WorldHistoryBuffer.getLastBlock(tile.x, tile.y)
                     if (!Vars.state.rules.infiniteResources &&
@@ -843,10 +840,9 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                         Log.info("${player.name} placed ${tile.block().name} to ${tile.x},${tile.y}")
                     }
                 } else {
-                    writeLog(
-                        LogType.Block,
+                    writeLog(LogType.Block) {
                         Bundle()["log.block.break", target.name, checkValidBlock(tile), tile.x, tile.y]
-                    )
+                    }
                     addLog(
                         TileLog(
                             System.currentTimeMillis(),
@@ -875,10 +871,9 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
 @Event
 fun buildSelect(event: BuildSelectEvent) {
     if (event.builder is Playerc && event.builder.buildPlan() != null && event.tile != null && event.tile.block() !== Blocks.air && event.breaking) {
-        writeLog(
-            LogType.Block,
+        writeLog(LogType.Block) {
             Bundle()["log.block.remove", (event.builder as Playerc).plainName(), checkValidBlock(event.tile), event.tile.x, event.tile.y]
-        )
+        }
         addLog(
             TileLog(
                 System.currentTimeMillis(),
