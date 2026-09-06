@@ -75,22 +75,23 @@ fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
         Server.ServerConnectFilter { s -> !Vars.netServer.admins.bannedIPs.contains(s) }
     Vars.platform.net.connectFilter = filter
 
-    if (conf.pvp.peace.enabled) {
+    if (conf.pvp.peace.enabled && Vars.state.rules.pvp) {
         originalBlockMultiplier = Vars.state.rules.blockDamageMultiplier
         originalUnitMultiplier = Vars.state.rules.unitDamageMultiplier
         Vars.state.rules.blockDamageMultiplier = 0f
         Vars.state.rules.unitDamageMultiplier = 0f
         pvpCount = conf.pvp.peace.time
+    } else {
+        pvpCount = 0
     }
 }
 
 @Event
 fun runEverySecond() {
     Timer.schedule({
-        if (conf.pvp.peace.enabled && Vars.state.rules.pvp && Vars.state.isPlaying) {
-            if (pvpCount > 0) {
-                pvpCount--
-            } else if (pvpCount == 0) {
+        if (conf.pvp.peace.enabled && Vars.state.rules.pvp && Vars.state.isPlaying && pvpCount > 0) {
+            pvpCount--
+            if (pvpCount == 0) {
                 Vars.state.rules.blockDamageMultiplier = originalBlockMultiplier
                 Vars.state.rules.unitDamageMultiplier = originalUnitMultiplier
                 players.forEach {
