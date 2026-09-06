@@ -294,6 +294,8 @@ class CommandProcessor(
                             // Player has no stored data yet (e.g. new device under password auth);
                             // still allow authentication commands using a temporary data object.
                             command(createTemporaryPlayerData(player), args)
+                        } else {
+                            player.sendMessage(Bundle(player.locale())["command.data.loading"])
                         }
                     }
                 }

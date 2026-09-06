@@ -1,12 +1,20 @@
 import PluginTest.Companion.clientCommand
+import PluginTest.Companion.createPlayer
+import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.player
+import PluginTest.Companion.serverCommand
 import PluginTest.Companion.setPermission
 import essential.common.database.data.checkRoutingPermission
 import essential.common.database.data.consumeRoutingPermission
+import essential.common.bundle.Bundle
+import essential.common.database.data.PlayerData
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.plugin.WarpBlock
+import essential.common.database.databaseClose
+import essential.common.database.databaseInit
+import essential.common.database.defaultDatabase
 import essential.common.database.table.ServerRoutingTable
 import essential.common.players
 import essential.common.permission.Permission
@@ -15,14 +23,21 @@ import essential.common.systemTimezone
 import essential.core.Main
 import essential.core.connectPacket
 import essential.core.tap
+import arc.Core
 import arc.Events
+import arc.backend.headless.HeadlessApplication
+import arc.util.Log
+import arc.util.TaskQueue
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
+import mindustry.content.Blocks
 import mindustry.game.EventType.ConnectPacketEvent
+import mindustry.game.EventType.PlayerJoin
 import mindustry.game.EventType.TapEvent
 import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
+import mindustry.net.Administration
 import mindustry.net.NetConnection
 import mindustry.net.Packets
 import org.jetbrains.exposed.v1.core.eq
@@ -60,6 +75,68 @@ class FeatureTest {
             Thread.sleep(intervalMs)
         }
         return condition()
+    }
+
+    private fun <T> withoutLogErrors(block: () -> T): T {
+        val original = Log.logger
+        Log.logger = Log.LogHandler { level, text -> println("[$level] $text") }
+        try {
+            return block()
+        } finally {
+            Log.logger = original
+        }
+    }
+
+    private fun pumpAppTasks() {
+        try {
+            val field = HeadlessApplication::class.java.getDeclaredField("runnables")
+            field.isAccessible = true
+            (field.get(Core.app) as TaskQueue).run()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun awaitPumped(timeoutMs: Long, condition: () -> Boolean): Boolean {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            pumpAppTasks()
+            if (condition()) return true
+            Thread.sleep(50)
+        }
+        pumpAppTasks()
+        return condition()
+    }
+
+    private fun breakDatabase() {
+        databaseClose()
+    }
+
+    private fun restoreDatabase() {
+        runBlocking {
+            databaseInit(
+                Main.conf.plugin.database.url,
+                Main.conf.plugin.database.username,
+                Main.conf.plugin.database.password
+            )
+        }
+    }
+
+    private fun joinPlayer(): mindustry.gen.Player {
+        val newPlayer = createPlayer()
+        Events.fire(PlayerJoin(newPlayer))
+        return newPlayer
+    }
+
+    private fun playerDataOf(uuid: String): PlayerData? = players.find { it.uuid == uuid }
+
+    private fun allowPlaceBlock(target: mindustry.gen.Player): Boolean {
+        val tile = PluginTest.randomTile()
+        val action = Administration.PlayerAction()
+        action.player = target
+        action.type = Administration.ActionType.placeBlock
+        action.tile = tile
+        action.block = Blocks.copperWall
+        return Vars.netServer.admins.actionFilters.all { it.allow(action) }
     }
 
     private fun makeConnectPacket(name: String, uuid: String): Packets.ConnectPacket {
@@ -422,6 +499,108 @@ class FeatureTest {
         } finally {
             pluginData.data.warpBlock.clear()
             pluginData.data.warpBlock.addAll(originalWarpBlocks)
+        }
+    }
+
+    @Test
+    fun playerDataTemporaryWhenDatabaseUnavailable() {
+        val originalConf = Main.conf
+        var target: mindustry.gen.Player? = null
+
+        withoutLogErrors {
+            try {
+                breakDatabase()
+
+                val joined = joinPlayer()
+                target = joined
+                assertTrue(
+                    awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == true },
+                    "DB ì°ê²°ì´ ìì ëìë ìì ë°ì´í°ë¡ ì ìì´ ìë£ëì´ì¼ í©ëë¤."
+                )
+
+                val data = playerDataOf(joined.uuid())!!
+                assertEquals(Permission.default, data.permission)
+                assertTrue(
+                    allowPlaceBlock(joined),
+                    "ìì ë°ì´í° ìíììë ë¸ë¡ ì¤ì¹ê° íì©ëì´ì¼ í©ëë¤."
+                )
+
+                clientCommand.handleMessage("/help", joined)
+                assertNotEquals(
+                    Bundle(joined.locale())["command.data.loading"],
+                    data.lastReceivedMessage,
+                    "ìì ë°ì´í° ìíììë ëªë ¹ì´ê° ëìí´ì¼ í©ëë¤."
+                )
+                assertTrue(data.lastReceivedMessage.isNotEmpty())
+
+                serverCommand.handleMessage("setperm ${joined.name()} owner")
+                assertEquals("owner", data.permission)
+                data.permission = Permission.default
+
+                data.exp = 1234
+                data.blockPlaceCount = 12
+                data.totalPlayed = 34
+
+                restoreDatabase()
+
+                assertTrue(
+                    awaitPumped(40000L) { playerDataOf(joined.uuid())?.temporary == false },
+                    "DB ê° ë³µêµ¬ëë©´ ì¤ì  ë°ì´í°ë¡ êµì²´ëì´ì¼ í©ëë¤."
+                )
+
+                serverCommand.handleMessage("reloadplayer ${joined.uuid()}")
+                assertTrue(awaitPumped(10000L) { playerDataOf(joined.uuid())?.temporary == false })
+
+                val loaded = playerDataOf(joined.uuid())!!
+                assertNotEquals(0u, loaded.id)
+                assertTrue(loaded.exp >= 1234, "exp: ${loaded.exp}")
+                assertTrue(loaded.blockPlaceCount >= 12, "blockPlaceCount: ${loaded.blockPlaceCount}")
+                assertTrue(loaded.totalPlayed >= 34, "totalPlayed: ${loaded.totalPlayed}")
+            } finally {
+                Main.conf = originalConf
+                if (defaultDatabase == null) restoreDatabase()
+                target?.let { leavePlayer(it) }
+            }
+        }
+    }
+
+    @Test
+    fun playerDataDeniedWhenAllowWithoutDataDisabled() {
+        val originalConf = Main.conf
+        var target: mindustry.gen.Player? = null
+
+        withoutLogErrors {
+            try {
+                Main.conf = originalConf.copy(
+                    feature = originalConf.feature.copy(
+                        playerData = originalConf.feature.playerData.copy(allowWithoutData = false)
+                    )
+                )
+                breakDatabase()
+
+                val joined = joinPlayer()
+                target = joined
+                awaitPumped(3000L) { false }
+                assertNull(
+                    playerDataOf(joined.uuid()),
+                    "allowWithoutData ê° false ë©´ ìì ë°ì´í°ê° ë±ë¡ëì§ ììì¼ í©ëë¤."
+                )
+                assertFalse(
+                    allowPlaceBlock(joined),
+                    "allowWithoutData ê° false ë©´ ë¸ë¡ ì¤ì¹ê° ê±°ë¶ëì´ì¼ í©ëë¤."
+                )
+
+                restoreDatabase()
+
+                assertTrue(
+                    awaitPumped(40000L) { playerDataOf(joined.uuid()) != null },
+                    "DB ê° ë³µêµ¬ëë©´ ì¤ì  ë°ì´í°ê° ë±ë¡ëì´ì¼ í©ëë¤."
+                )
+            } finally {
+                Main.conf = originalConf
+                if (defaultDatabase == null) restoreDatabase()
+                target?.let { leavePlayer(it) }
+            }
         }
     }
 }

@@ -24,8 +24,10 @@ import essential.common.util.findPlayerData
 import essential.core.Commands.WorldEditSelection
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
@@ -64,6 +66,7 @@ import java.util.*
 import java.util.regex.Pattern
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
@@ -544,45 +547,127 @@ fun serverLoad(event: ServerLoadEvent) {
             it.player.admin(false)
 
             val player = it.player
-            val uuid = player.uuid()
             val name = player.name
             val locale = player.locale()
             val con = player.con
 
             scope.launch {
-                val data = getPlayerData(uuid)
+                val result = loadJoinedPlayerData(player, name)
 
-                if (data == null) {
-                    val nameExists = suspendTransaction {
-                        PlayerTable.select(PlayerTable.name).where { PlayerTable.name eq name }.empty().not()
+                when {
+                    result.duplicateName -> Core.app.post {
+                        Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
                     }
-                    if (!nameExists) {
-                        val newData = createPlayerData(player)
-                        newData.permission = "user"
-                        newData.player = player
-                        Core.app.post {
-                            val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
-                            if (activePlayer != null) {
-                                Events.fire(CustomEvents.PlayerDataLoad(newData))
-                            }
-                        }
-                    } else {
-                        Core.app.post {
-                            Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
-                        }
+
+                    result.data != null -> {
+                        result.data.player = player
+                        firePlayerDataLoad(result.data)
                     }
-                } else {
-                    data.player = player
-                    Core.app.post {
-                        val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
-                        if (activePlayer != null) {
-                            Events.fire(CustomEvents.PlayerDataLoad(data))
-                        }
-                    }
+
+                    else -> useTemporaryPlayerData(player, name)
                 }
             }
         }.also { listener -> eventListeners[PlayerJoin::class.java] = listener })
     }
+}
+
+class JoinedPlayerData(val data: PlayerData?, val duplicateName: Boolean)
+
+suspend fun readJoinedPlayerData(player: Playerc, name: String): JoinedPlayerData {
+    val data = getPlayerData(player.uuid())
+    if (data != null) return JoinedPlayerData(data, false)
+
+    val nameExists = suspendTransaction {
+        PlayerTable.select(PlayerTable.name).where { PlayerTable.name eq name }.empty().not()
+    }
+    if (nameExists) return JoinedPlayerData(null, true)
+
+    val newData = createPlayerData(player)
+    newData.permission = "user"
+    newData.update()
+    return JoinedPlayerData(newData, false)
+}
+
+suspend fun loadJoinedPlayerData(player: Playerc, name: String): JoinedPlayerData {
+    return try {
+        withTimeoutOrNull(conf.feature.playerData.loadTimeout.seconds) {
+            readJoinedPlayerData(player, name)
+        } ?: JoinedPlayerData(null, false).also {
+            Log.err("Player data load timed out for ${player.plainName()} (${player.uuid()})")
+        }
+    } catch (e: Exception) {
+        Log.err("Failed to load player data for ${player.plainName()} (${player.uuid()})", e)
+        JoinedPlayerData(null, false)
+    }
+}
+
+fun firePlayerDataLoad(data: PlayerData) {
+    Core.app.post {
+        val activePlayer = Groups.player.find { p -> p.uuid() == data.uuid }
+        if (activePlayer != null) {
+            Events.fire(CustomEvents.PlayerDataLoad(data))
+        }
+    }
+}
+
+fun useTemporaryPlayerData(player: Playerc, name: String) {
+    val temporary = createTemporaryPlayerData(player)
+    temporary.temporary = true
+    temporary.permission = Permission.default
+    val published = conf.feature.playerData.allowWithoutData
+    if (published) firePlayerDataLoad(temporary)
+    retryPlayerDataLoad(player, name, temporary, published)
+}
+
+fun isPlayerOnline(player: Playerc): Boolean {
+    val con = player.con()
+    return con != null && !con.hasDisconnected
+}
+
+fun retryPlayerDataLoad(player: Playerc, name: String, temporary: PlayerData, published: Boolean) {
+    scope.launch {
+        while (isPlayerOnline(player)) {
+            delay(10.seconds)
+            if (!isPlayerOnline(player)) return@launch
+
+            val data = try {
+                readJoinedPlayerData(player, name).data
+            } catch (e: Exception) {
+                Log.err("Failed to reload player data for ${player.plainName()} (${player.uuid()})", e)
+                null
+            } ?: continue
+
+            if (published) {
+                swapTemporaryPlayerData(data, temporary)
+            } else {
+                data.player = player
+                firePlayerDataLoad(data)
+            }
+            Log.info("Player data for ${player.plainName()} (${player.uuid()}) has been loaded.")
+            return@launch
+        }
+    }
+}
+
+suspend fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
+    data.player = temporary.player
+    data.exp += temporary.exp
+    data.currentExp += temporary.currentExp
+    data.blockPlaceCount += temporary.blockPlaceCount
+    data.blockBreakCount += temporary.blockBreakCount
+    data.totalPlayed += temporary.totalPlayed
+    data.currentPlayTime += temporary.currentPlayTime
+    data.attendanceDays += temporary.attendanceDays
+    data.isConnected = true
+
+    Core.app.post {
+        players.removeIf { it.uuid == data.uuid }
+        players.add(data)
+        val permission = Permission[data]
+        data.player.name(if (permission.name.isNotEmpty()) permission.name else data.name)
+        data.player.admin(permission.admin)
+    }
+    data.update()
 }
 
 @Event
@@ -1076,23 +1161,28 @@ fun connectPacket(event: ConnectPacketEvent) {
 
 @Event
 fun playerConnect(event: PlayerConnect) {
-    if (conf.ban.useDatabase) {
-        val isBanned = runBlocking { checkPlayerBannedByIpOrUuid(event.player.uuid(), event.player.ip()) }
-        if (isBanned) {
-            event.player.kick(Packets.KickReason.banned)
-            return
-        }
-    }
+    val player = event.player
 
-    val playerData = runBlocking { getPlayerDataSync(event.player.uuid()) }
-    if (playerData != null && playerData.banExpireDate != null) {
-        val now = Clock.System.now().toLocalDateTime(systemTimezone)
-        if (playerData.banExpireDate!! > now) {
-            event.player.con.kick(Bundle(event.player.locale())["command.tempBan.banned", playerData.name, "Admin", playerData.banExpireDate.toString()])
-            return
-        } else {
-            playerData.banExpireDate = null
-            scope.launch { playerData.update() }
+    scope.launch {
+        try {
+            if (conf.ban.useDatabase && checkPlayerBannedByIpOrUuid(player.uuid(), player.ip())) {
+                Core.app.post { player.kick(Packets.KickReason.banned) }
+                return@launch
+            }
+
+            val playerData = getPlayerDataSync(player.uuid())
+            val banExpireDate = playerData?.banExpireDate
+            if (banExpireDate != null) {
+                if (banExpireDate > Clock.System.now().toLocalDateTime(systemTimezone)) {
+                    val reason = Bundle(player.locale())["command.tempBan.banned", playerData.name, "Admin", banExpireDate.toString()]
+                    Core.app.post { player.con.kick(reason) }
+                } else {
+                    playerData.banExpireDate = null
+                    playerData.update()
+                }
+            }
+        } catch (e: Exception) {
+            Log.err("Failed to check the ban state of ${player.plainName()} (${player.uuid()})", e)
         }
     }
 

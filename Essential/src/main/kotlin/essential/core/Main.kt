@@ -154,7 +154,8 @@ class Main : Plugin() {
                         }
                     }
                 }
-                return false
+                if (isHub != null && isHub == state.map.name()) return false
+                return conf.feature.playerData.allowWithoutData
             }
         }.also { listener -> actionFilter = listener })
 

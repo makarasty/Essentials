@@ -2909,6 +2909,32 @@ class Commands {
         }
     }
 
+    @ServerCommand("reloadplayer", "<uuid/name>", "Reload the player data of an online player.")
+    fun reloadPlayer(arg: Array<out String>) {
+        val target = Groups.player.find { it.uuid() == arg[0] } ?: findPlayers(arg[0])
+        if (target == null) {
+            Log.warn(Bundle()[PLAYER_NOT_FOUND])
+            return
+        }
+
+        scope.launch {
+            val data = loadJoinedPlayerData(target, target.name()).data
+            if (data == null) {
+                Log.err("Player data for ${target.plainName()} (${target.uuid()}) could not be loaded.")
+                return@launch
+            }
+
+            val current = findPlayerData(target.uuid())
+            if (current != null && current.temporary) {
+                swapTemporaryPlayerData(data, current)
+            } else {
+                data.player = target
+                firePlayerDataLoad(data)
+            }
+            Log.info("Player data for ${target.plainName()} (${target.uuid()}) has been reloaded.")
+        }
+    }
+
     @ServerCommand("debug", "[parameter...]", "Debug any commands")
     fun debug(arg: Array<out String>) {
         if (arg.isNotEmpty()) {

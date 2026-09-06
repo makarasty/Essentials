@@ -9,6 +9,7 @@ import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
 import essential.common.players
 import essential.common.util.findPlayerData
+import essential.core.Main
 import essential.core.service.protect.ProtectConfig.AuthType
 import essential.core.service.protect.generated.registerGeneratedClientCommands
 import essential.core.service.protect.generated.registerGeneratedEventHandlers
@@ -62,8 +63,10 @@ class ProtectService : Plugin() {
                     }
                 }
                 return@addActionFilter true
-            } else {
+            } else if (conf.account.enabled) {
                 return@addActionFilter false
+            } else {
+                return@addActionFilter Main.conf.feature.playerData.allowWithoutData
             }
         }
 

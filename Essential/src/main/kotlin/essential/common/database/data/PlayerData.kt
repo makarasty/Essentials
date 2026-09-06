@@ -2,6 +2,7 @@ package essential.common.database.data
 
 import arc.util.Log
 import essential.common.bundle.Bundle
+import essential.common.database.data.update as updateRow
 import essential.common.database.table.AchievementTable
 import essential.common.database.table.ContributionTable
 import essential.common.database.table.PlayerTable
@@ -104,6 +105,13 @@ data class PlayerData(
     var achievementStatus = mutableListOf<String>()
 
     var animatedName = false
+
+    var temporary = false
+
+    suspend fun update(): Boolean {
+        if (temporary) return false
+        return updateRow()
+    }
 
     var player: Playerc = Player.create()
     val status = mutableMapOf<String, String>()

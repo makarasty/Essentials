@@ -65,6 +65,8 @@ data class Feature(
     val mapVote: Boolean = false,
     @YamlComment("Server description with live values (server list)")
     val description: Description = Description(),
+    @YamlComment("Behaviour when player data cannot be loaded")
+    val playerData: PlayerDataConfig = PlayerDataConfig(),
     @YamlComment("Which events are written to the log files")
     val log: LogFeature = LogFeature(),
 )
@@ -88,6 +90,18 @@ data class LogFeature(
     val config: Boolean = false,
     @YamlComment("Everything else, such as web panel actions")
     val other: Boolean = true,
+)
+
+/** Feature - player data loading */
+@Serializable
+data class PlayerDataConfig(
+    @YamlComment(
+        "When the player data could not be loaded, let the player build and use commands with the default group.",
+        "Set false on servers where only registered players may build.",
+    )
+    val allowWithoutData: Boolean = true,
+    @YamlComment("Seconds to wait for the player data to load")
+    val loadTimeout: Int = 5,
 )
 
 /** Feature - server description placeholders */

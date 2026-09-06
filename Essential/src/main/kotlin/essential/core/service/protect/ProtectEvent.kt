@@ -14,6 +14,9 @@ import essential.common.log.writeLog
 import essential.common.players
 import essential.core.Main.Companion.scope
 import essential.core.ServerDescription
+import essential.core.firePlayerDataLoad
+import essential.core.loadJoinedPlayerData
+import essential.core.useTemporaryPlayerData
 import essential.core.service.protect.ProtectService.Companion.conf
 import essential.core.service.protect.ProtectService.Companion.pluginData
 import kotlinx.coroutines.flow.toList
@@ -155,48 +158,36 @@ fun playerJoin(e: EventType.PlayerJoin) {
     val con = player.con
 
     scope.launch {
-        val data: PlayerData? = getPlayerData(uuid)
-        if (data != null) {
-            data.player = player
-        }
         if (conf.account.getAuthType() == ProtectConfig.AuthType.None || !conf.account.enabled) {
-            if (data == null) {
-                val exists = suspendTransaction {
-                    !PlayerTable
-                        .select(PlayerTable.name)
-                        .where { PlayerTable.name eq plainName }
-                        .empty()
-                }
-
-                if (!exists) {
-                    try {
-                        val newData = createPlayerData(player)
-                        newData.permission = "user"
-                        newData.update()
-                        arc.Core.app.post {
-                            val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
-                            if (activePlayer != null) {
-                                Events.fire(CustomEvents.PlayerDataLoad(newData))
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.err("Failed to create player data", e)
-                    }
-                } else {
+            val result = loadJoinedPlayerData(player, plainName)
+            when {
+                result.duplicateName -> {
                     val reason = Bundle(locale)["event.player.name.duplicate"]
                     arc.Core.app.post {
                         con.kick(reason, 0L)
                     }
                 }
-            } else {
-                arc.Core.app.post {
-                    val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
-                    if (activePlayer != null) {
-                        Events.fire(CustomEvents.PlayerDataLoad(data))
-                    }
+
+                result.data != null -> {
+                    result.data.player = player
+                    firePlayerDataLoad(result.data)
                 }
+
+                else -> useTemporaryPlayerData(player, plainName)
             }
-        } else if (conf.account.getAuthType() == ProtectConfig.AuthType.Discord) {
+            return@launch
+        }
+
+        val data: PlayerData? = try {
+            getPlayerData(uuid)
+        } catch (e: Exception) {
+            Log.err("Failed to load player data for $plainName ($uuid)", e)
+            null
+        }
+        if (data != null) {
+            data.player = player
+        }
+        if (conf.account.getAuthType() == ProtectConfig.AuthType.Discord) {
             if (data == null) {
                 val exists = suspendTransaction {
                     !PlayerTable
