@@ -5,7 +5,9 @@ import PluginTest.Companion.joinPlayer
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import essential.common.database.data.PlayerData
+import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.table.PlayerTable
+import essential.common.players
 import kotlinx.coroutines.runBlocking
 import mindustry.gen.Groups
 import mindustry.gen.Player
@@ -18,6 +20,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -139,8 +142,8 @@ class PlayerLookupTest {
                 val result = ambiguous(PlayerLookup.findOffline("offlinecandidate"))
                 assertEquals(2, result.candidates.size)
                 assertTrue(
-                    result.candidates.any { it.startsWith("offlinecandidate_one (") },
-                    "candidate list ${result.candidates} should show the name and the last login date"
+                    result.candidates.any { it == "offlinecandidate_one (offline-)" },
+                    "candidate list ${result.candidates} should show the name and the uuid prefix"
                 )
 
                 assertTrue(PlayerLookup.findOffline("offlinecandidate_three") is PlayerLookup.Result.NotFound)
@@ -151,6 +154,94 @@ class PlayerLookupTest {
                     }
                 }
             }
+        }
+    }
+
+    private fun withRows(vararg rows: Pair<String, String>, body: suspend () -> Unit) {
+        runBlocking {
+            suspendTransaction {
+                rows.forEach { (rowName, rowUuid) ->
+                    PlayerTable.insert {
+                        it[name] = rowName
+                        it[uuid] = rowUuid
+                    }
+                }
+            }
+            try {
+                body()
+            } finally {
+                suspendTransaction {
+                    rows.forEach { (_, rowUuid) -> PlayerTable.deleteWhere { PlayerTable.uuid eq rowUuid } }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun lookup_exactOfflineNameBeatsOnlineFuzzyMatch() {
+        join("qlxmaxwell")
+
+        withRows("qlxmax" to "qlx-exact-offline") {
+            assertEquals("qlx-exact-offline", found(PlayerLookup.findOffline("qlxmax")).uuid)
+            assertEquals("qlxmaxwell", found(PlayerLookup.findOffline("qlxmaxw")).name)
+        }
+    }
+
+    @Test
+    fun lookup_offlineColoredNameIsFoundByPlainQuery() {
+        withRows("Q[red]lxcolor[]" to "qlx-color-offline") {
+            assertEquals("qlx-color-offline", found(PlayerLookup.findOffline("qlxcolor")).uuid)
+        }
+    }
+
+    @Test
+    fun lookup_ambiguousOfflineShowsUuidAndKeepsFullNames() {
+        val long = "qlxambiguous_first_candidate_with_a_very_long_name"
+
+        withRows(long to "qlx-ambiguous-one", "qlxambiguous_second" to "qlx-ambiguous-two") {
+            val result = ambiguous(PlayerLookup.findOffline("qlxambiguous"))
+
+            assertTrue(result.offline, "offline candidates should be flagged as offline")
+            assertTrue(
+                result.candidates.contains("$long (qlx-ambi)"),
+                "candidate list ${result.candidates} should keep the full name and show the uuid prefix"
+            )
+            assertTrue(
+                result.candidates.contains("qlxambiguous_second (qlx-ambi)"),
+                "candidate list ${result.candidates} should contain the second account"
+            )
+        }
+    }
+
+    @Test
+    fun lookup_exactRefusesPrefixAndSubstring() {
+        withRows("qlxexactonly" to "qlx-exact-only") {
+            assertTrue(PlayerLookup.findExact("qlxexact") is PlayerLookup.Result.NotFound)
+            assertTrue(PlayerLookup.findExact("xactonl") is PlayerLookup.Result.NotFound)
+            assertEquals("qlx-exact-only", found(PlayerLookup.findExact("qlxexactonly")).uuid)
+            assertEquals("qlx-exact-only", found(PlayerLookup.findExact("qlx-exact-only")).uuid)
+        }
+    }
+
+    @Test
+    fun lookup_onlineTemporaryDataIsNotRegistered() {
+        val player = createPlayer()
+        player.name("qlxtemporary")
+        val data = createTemporaryPlayerData(player)
+        data.temporary = true
+        players.add(data)
+
+        try {
+            assertEquals(player.uuid(), found(PlayerLookup.findOnline("qlxtemporary")).uuid())
+            assertNull(PlayerLookup.onlineData("qlxtemporary"))
+            runBlocking {
+                assertTrue(found(PlayerLookup.findOffline("qlxtemporary")).temporary)
+                assertNull(PlayerLookup.offline("qlxtemporary"))
+            }
+        } finally {
+            players.remove(data)
+            player.remove()
+            Groups.player.update()
         }
     }
 }
