@@ -15,6 +15,7 @@ import essential.common.database.data.getPluginData
 import essential.common.database.data.migrateMapRatingsFromPluginData
 import essential.common.database.data.update
 import essential.common.database.databaseInit
+import essential.common.log.stopLogWriter
 import essential.common.permission.Permission
 import essential.common.service.fileWatchService
 import essential.core.generated.registerGeneratedClientCommands
@@ -161,6 +162,7 @@ class Main : Plugin() {
             override fun dispose() {
                 runBlocking {
                     WorldHistoryBuffer.stop()
+                    stopLogWriter()
                     players.forEach { data ->
                         try {
                             data.isConnected = false

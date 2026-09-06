@@ -31,6 +31,7 @@ This fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials) layers a 
 - `/votemap <id>`: shortcut for `/vote map <id>` with a default reason.
 - `feature.description`: live values in the server description. Put placeholders such as `{players}`, `{wave}`, `{map}`, `{playTime}` or `{peace}` into `config desc` (or into `feature.description.template`) and the plugin keeps them up to date, on every change and/or every N seconds.
 - World history is only recorded while `command.rollback.enabled` is true.
+- `feature.log`: per-group switches for the log files (`player`, `chat`, `report`, `block`, `tap`, `item`, `config`, `other`), and writing happens on a background thread instead of the main thread.
 
 ### Deploy
 

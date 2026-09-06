@@ -65,6 +65,29 @@ data class Feature(
     val mapVote: Boolean = false,
     @YamlComment("Server description with live values (server list)")
     val description: Description = Description(),
+    @YamlComment("Which events are written to the log files")
+    val log: LogFeature = LogFeature(),
+)
+
+/** Feature - log file settings */
+@Serializable
+data class LogFeature(
+    @YamlComment("Join, leave, kick and ban records")
+    val player: Boolean = true,
+    @YamlComment("Chat messages")
+    val chat: Boolean = false,
+    @YamlComment("Player reports")
+    val report: Boolean = true,
+    @YamlComment("Block place and break records")
+    val block: Boolean = false,
+    @YamlComment("Block tap records")
+    val tap: Boolean = false,
+    @YamlComment("Item deposit and withdraw records")
+    val item: Boolean = false,
+    @YamlComment("Block configuration records")
+    val config: Boolean = false,
+    @YamlComment("Everything else, such as web panel actions")
+    val other: Boolean = true,
 )
 
 /** Feature - server description placeholders */
