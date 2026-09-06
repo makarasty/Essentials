@@ -18,7 +18,9 @@ object FlywayMigration {
 
             "mysql" -> {
                 val (host, port, database) = parseR2dbcUrl(r2dbcUrl, "mysql://", "3306")
-                Triple("jdbc:mysql://$host:$port/$database", user, pass)
+                // MariaDB Connector/J is the JDBC driver shipped in the jar and it speaks the
+                // MySQL protocol; jdbc:mysql:// would need a driver that is not bundled.
+                Triple("jdbc:mariadb://$host:$port/$database", user, pass)
             }
 
             "mariadb" -> {

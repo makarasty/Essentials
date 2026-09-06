@@ -255,7 +255,14 @@ private suspend fun upgradeLegacyDatabase() {
             Paths.get("config/mods/Essentials/data/database.mv.db").toFile(),
             rootPath.child("data/database.mv.db").file(),
         )
-        val found = candidates.firstOrNull { it.exists() }
+        // The file on disk only says something about an H2 setup. A server moved to
+        // MySQL keeps its old .mv.db lying around, and treating that as "legacy version 3"
+        // sends H2 migration scripts into the new database.
+        val found = if (defaultDatabase?.config?.explicitDialect is H2Dialect) {
+            candidates.firstOrNull { it.exists() }
+        } else {
+            null
+        }
         currentVersion = try {
             getPluginData()?.databaseVersion
         } catch (_: Throwable) {
