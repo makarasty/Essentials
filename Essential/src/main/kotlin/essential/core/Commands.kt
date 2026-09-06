@@ -2096,6 +2096,7 @@ class Commands {
     @ServerCommand("unban", "<player>", "Unban player")
     fun unban(arg: Array<out String>) {
         val bundle = Bundle()
+        Log.info(bundle["command.unban.queued", arg[0]])
         scope.launch {
             val found = PlayerLookup.findExact(arg[0])
             if (PlayerLookup.ambiguous(found, arg[0], null)) return@launch
