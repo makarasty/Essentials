@@ -164,6 +164,11 @@ data class Module(
     val achievement: Boolean = false,
     val bridge: Boolean = false,
     val chat: Boolean = true,
+    @YamlComment(
+        "Per-game contribution score from mining, factory builds, item and power output, damage dealt and lost units.",
+        "Every second the scorer walks all buildings on the map, so the cost grows with the base, not with the player count.",
+        "The score is written to the database once per game and is read by /contribution. Weights live in config_contribution.yaml.",
+    )
     val contribution: Boolean = true,
     val discord: Boolean = false,
     val protect: Boolean = false,
