@@ -105,9 +105,10 @@ internal fun normalizedMotdLocale(rawLocale: String): String? {
 
 internal fun readMotd(rawLocale: String): String? {
     val motdDirectory = rootPath.child("motd")
-    val localizedFile = normalizedMotdLocale(rawLocale)?.let { motdDirectory.child("$it.txt") }
-    val file = localizedFile?.takeIf { it.exists() } ?: motdDirectory.child("en.txt")
-    return file.takeIf { it.exists() }?.readString()
+    val tag = normalizedMotdLocale(rawLocale)
+    val candidates = listOfNotNull(tag, tag?.substringBefore('-')).distinct() + "en"
+    val file = candidates.map { motdDirectory.child("$it.txt") }.firstOrNull { it.exists() }
+    return file?.readString()
 }
 
 var dpsBlocks = 0f

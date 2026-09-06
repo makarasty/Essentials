@@ -36,6 +36,13 @@ import mindustry.net.WorldReloader
 import java.util.*
 import kotlin.time.Duration.Companion.minutes
 
+
+private val yesWords = setOf("y", "yes", "так", "+")
+private val noWords = setOf("n", "no", "ні", "-")
+
+private fun isYes(message: String) = message.trim().lowercase() in yesWords
+private fun isNo(message: String) = message.trim().lowercase() in noWords
+
 class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var count = 60
     private var voted = ArrayList<String>()
@@ -90,7 +97,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 val data = findPlayerData(player.uuid())
                 if (data != null) {
                     val isAdmin = Permission.check(data, "vote.pass")
-                    if (isVoting && message.equals("y", true) && !voted.contains(player.uuid())) {
+                    if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
                         if (voteData.starter != data) {
                             if (Vars.state.rules.pvp && voteData.team == player.team()) {
                                 voted.add(player.uuid())
@@ -101,10 +108,10 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             isAdminVote = true
                         }
                         data.send("command.vote.voted")
-                    } else if (isVoting && message.equals("n", true) && isAdmin) {
+                    } else if (isVoting && isNo(message) && isAdmin) {
                         isCanceled = true
                     }
-                    if (isVoting && message.contains("y", true) && !voted.contains(player.uuid())) {
+                    if (isVoting && (isYes(message) || isNo(message))) {
                         return@ChatFilter null
                     } else {
                         return@ChatFilter message
