@@ -1323,4 +1323,40 @@ class ClientCommandTest {
         // Verify delete was successful - tile should be air
         assertEquals(Blocks.air, world.tile(15, 15).block())
     }
+
+    @Test
+    fun client_votemap() {
+        setPermission("owner", true)
+
+        clientCommand.handleMessage("/votemap 9999", player)
+        assertEquals(err("command.vote.map.not.exists"), playerData.lastReceivedMessage)
+    }
+
+    @Test
+    fun client_rtv() {
+        setPermission("owner", true)
+        val dummy = newPlayer()
+        Rtv.reset()
+        val required = Rtv.required
+        assertTrue(required >= 2)
+
+        clientCommand.handleMessage("/rtv", player)
+        assertEquals(log("command.rtv.voted", player.plainName(), 1, required), playerData.lastReceivedMessage)
+        assertEquals(1, Rtv.count)
+
+        clientCommand.handleMessage("/rtv", player)
+        assertEquals(err("command.rtv.cooldown"), playerData.lastReceivedMessage)
+        assertEquals(1, Rtv.count)
+
+        var winner: Team? = null
+        Events.on(GameOverEvent::class.java) { winner = it.winner }
+        players.filter { it.uuid != playerData.uuid }.forEach { if (winner == null) Rtv.vote(it) }
+
+        assertEquals(Vars.state.rules.waveTeam, winner)
+        assertEquals(0, Rtv.count)
+        assertEquals(log("command.rtv.done"), playerData.lastReceivedMessage)
+
+        Rtv.reset()
+        leavePlayer(dummy.first)
+    }
 }

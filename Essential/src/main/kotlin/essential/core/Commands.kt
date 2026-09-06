@@ -11,6 +11,7 @@ import com.github.lalyos.jfiglet.FigletFont
 import essential.*
 import essential.common.*
 import essential.common.bundle.Bundle
+import essential.common.command.CommandRegistry
 import essential.common.database.WorldHistoryBuffer
 import essential.common.database.data.*
 import essential.common.database.data.plugin.WarpCount
@@ -495,8 +496,9 @@ class Commands {
         val temp = ArrayList<String>()
         for (a in 0 until Vars.netServer.clientCommands.commandList.size) {
             val command = Vars.netServer.clientCommands.commandList[a]
-            if (Permission.check(playerData, command.text)) {
-                val key = "command.description." + command.text.lowercase()
+            val name = CommandRegistry.canonical(command.text)
+            if (Permission.check(playerData, name)) {
+                val key = "command.description." + name.lowercase()
                 val description = if (playerData.bundle.resource.containsKey(key)) {
                     playerData.bundle[key]
                 } else {
@@ -2059,6 +2061,16 @@ class Commands {
                 o.sendMessage("[#" + playerData.player.team().color.toString() + "]<T>[] ${playerData.player.coloredName()} [orange]>[white] ${arg[0]}")
             }
         }
+    }
+
+    @ClientCommand("votemap", "<id>", "Start a vote to change to the map with the given ID (see /maps)")
+    fun voteMap(playerData: PlayerData, arg: Array<out String>) {
+        vote(playerData, arrayOf("map", arg[0], playerData.bundle["command.votemap.reason"]))
+    }
+
+    @ClientCommand("rtv", "", "Vote to move on to the next map")
+    fun rtv(playerData: PlayerData) {
+        Rtv.vote(playerData)
     }
 
     @ClientCommand("team", "<team> [name]", "Set player team")

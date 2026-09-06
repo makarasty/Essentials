@@ -500,6 +500,8 @@ fun wave(event: WaveEvent) {
 
 @Event
 fun serverLoad(event: ServerLoadEvent) {
+    if (conf.command.layoutFix) KeyboardLayout.install()
+
     Vars.content.blocks().each { two ->
         var buf = 0
         two.requirements.forEach { item ->
@@ -850,6 +852,7 @@ fun playerLeave(event: PlayerLeave) {
         LogType.Player,
         Bundle()["log.player.disconnect", event.player.plainName(), event.player.uuid(), event.player.con.address]
     )
+    Rtv.leave(event.player.uuid(), event.player.plainName())
     val data = players.find { e -> e.uuid == event.player.uuid() }
     if (data != null) {
         data.lastPlayedWorldName = Vars.state.map.plainName()
@@ -885,6 +888,11 @@ fun playerLeave(event: PlayerLeave) {
 
 
 @Event
+fun playerChat(event: PlayerChatEvent) {
+    if (conf.command.layoutFix) KeyboardLayout.remember(event.player, event.message)
+}
+
+@Event
 fun playerBan(event: PlayerBanEvent) {
     writeLog(
         LogType.Player,
@@ -917,6 +925,7 @@ fun playerIpUnban(eent: PlayerIpUnbanEvent) {
 fun worldLoad(event: WorldLoadEvent) {
     mapStartTime = timeSource.markNow()
     isSurrender = false
+    Rtv.reset()
     isCheated = false
     mapRatings.clear()
 
@@ -1371,6 +1380,7 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
 }
 
 private fun addLog(log: TileLog) {
+    if (!conf.command.rollback.enabled) return
     WorldHistoryBuffer.enqueue(
         time = log.time,
         player = log.player,

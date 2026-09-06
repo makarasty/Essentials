@@ -159,6 +159,7 @@ class CommandProcessor(
             .addImport("essential.common.bundle", "Bundle")
             .addImport("essential.common.database.data", "PlayerData")
             .addImport("essential.common.database.data", "createTemporaryPlayerData")
+            .addImport("essential.common.command", "CommandRegistry")
             .addFunction(generateRegisterClientCommandsFunction(functions))
 
         val fileSpec = builder.build()
@@ -277,7 +278,7 @@ class CommandProcessor(
                     val command = clientCommands[i]
                     val annotation = annotations[i]
 
-                    handler.register<Playerc>(annotation.name, annotation.parameter, annotation.description) { args, player ->
+                    handler.register<Playerc>(CommandRegistry.resolve(handler, annotation.name), annotation.parameter, annotation.description) { args, player ->
                         val data = findPlayerData(player.uuid())
                         if (data != null) {
                             if (Permission.check(data, annotation.name)) {

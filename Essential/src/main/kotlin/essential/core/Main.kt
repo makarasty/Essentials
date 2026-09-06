@@ -7,6 +7,7 @@ import arc.util.CommandHandler
 import arc.util.Http
 import arc.util.Log
 import essential.common.*
+import essential.common.command.CommandRegistry
 import essential.common.config.Config
 import essential.common.database.WorldHistoryBuffer
 import essential.common.database.data.createPluginData
@@ -189,30 +190,14 @@ class Main : Plugin() {
 
 
     override fun registerClientCommands(handler: CommandHandler) {
-        val commandClass = Class.forName($$"arc.util.CommandHandler$Command")
-        val runnerField = commandClass.getDeclaredField("runner")
-        runnerField.isAccessible = true
-
-        val vote = Vars.netServer.clientCommands.commandList.find { command -> command.text.equals("vote", true) }
-        val votekick = Vars.netServer.clientCommands.commandList.find { command -> command.text.equals("votekick", true) }
-
         registerGeneratedClientCommands(handler)
         removeBannedCommands(handler)
 
-        if (!conf.feature.vote.enabled && vote != null) {
-            val voteRunner = runnerField.get(vote)
-            handler.register(vote.text, vote.paramText, vote.description, voteRunner as CommandHandler.CommandRunner<*>)
-
-            if (conf.feature.vote.enableVotekick && votekick != null) {
-                val votekickRunner = runnerField.get(votekick)
-                handler.register(votekick.text, votekick.paramText, votekick.description, votekickRunner as CommandHandler.CommandRunner<*>)
-            } else {
-                handler.removeCommand("votekick")
-            }
-        } else {
-            if (!conf.feature.vote.enableVotekick) {
-                handler.removeCommand("votekick")
-            }
+        if (!conf.feature.vote.enabled) {
+            handler.removeCommand(CommandRegistry.registered("vote"))
+        }
+        if (!conf.feature.vote.enableVotekick) {
+            handler.removeCommand(CommandRegistry.registered("votekick"))
         }
 
         ModuleRuntime.registerClientCommands(handler)

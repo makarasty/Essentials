@@ -64,6 +64,8 @@ user:
   - motd
   - players
   - report
+  - rtv
+  - votemap
   - status
   - time
   - tp

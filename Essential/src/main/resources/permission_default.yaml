@@ -58,6 +58,7 @@ user:
     - pm
     - ranking
     - report
+    - rtv
     - status
     - time
     - tp
@@ -71,6 +72,7 @@ user:
     - vote.map
     - vote.random
     - vote.skip
+    - votemap
 visitor:
   default: true
   permission:

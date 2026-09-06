@@ -81,6 +81,19 @@ data class Vote(
     val enabled: Boolean = true,
     @YamlComment("Enable vote kick feature")
     val enableVotekick: Boolean = false,
+    @YamlComment("/rtv: players vote to move on to the next map")
+    val rtv: RockTheVote = RockTheVote(),
+)
+
+/** Feature - /rtv settings */
+@Serializable
+data class RockTheVote(
+    @YamlComment("Share of the online players that must vote (0.6 = 60%)")
+    val ratio: Double = 0.6,
+    @YamlComment("Seconds a player has to wait between /rtv uses")
+    val cooldown: Int = 12,
+    @YamlComment("Seconds until an unfinished vote expires")
+    val timeout: Int = 60,
 )
 
 /** Feature - Unit limit settings */
@@ -145,6 +158,8 @@ data class Command(
     val skip: Skip = Skip(),
     @YamlComment("Rollback command configuration")
     val rollback: Rollback = Rollback(),
+    @YamlComment("Run commands typed in a Cyrillic keyboard layout without switching (/rtv typed as .kem)")
+    val layoutFix: Boolean = true,
 )
 
 /** Command - Wave skip settings */

@@ -34,7 +34,8 @@ fun findPlayers(name: String): Playerc? {
         }
         return Groups.player.find { p -> p.id() == name.toInt() }
     } else {
-        return Groups.player.find { p -> p.plainName().contains(name, true) }
+        return Groups.player.find { p -> p.plainName().equals(name, true) }
+            ?: Groups.player.find { p -> p.plainName().contains(name, true) }
     }
 }
 

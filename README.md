@@ -21,6 +21,16 @@ For example, if libraries such as kotlin, ktor, flyway, exposed, slf4j, etc. are
 ## Installation
 Put this plugin in the ``<server folder location>/config/mods`` folder.
 
+## About this fork
+
+This fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials) layers a few server-specific additions on top of upstream:
+
+- Vanilla client commands are never overwritten. When a plugin command name is already taken (`/vote`, `/votekick`, `/help`, `/t`), the plugin registers its version under an `e` prefix (`/evote`, `/evotekick`, `/ehelp`, `/et`) and the vanilla command keeps working. Permission and translation keys keep the original name; `feature.vote.enabled` and `enableVotekick` only add or remove the plugin's own commands.
+- Commands typed in a Cyrillic keyboard layout run anyway: `.кем` and `/кем` both execute `/rtv`. Toggle with `command.layoutFix`.
+- `/rtv` (rock the vote): once `feature.vote.rtv.ratio` of the online players voted, the server moves on to the next map.
+- `/votemap <id>`: shortcut for `/vote map <id>` with a default reason.
+- World history is only recorded while `command.rollback.enabled` is true.
+
 ## Modular builds
 
 Use `-PexcludeModules` to compile an artifact without optional services. The
@@ -89,6 +99,7 @@ packaged in that artifact.
 | reg          | &lt;id&gt; &lt;password&gt; &lt;password_repeat&gt;                     | Register account                                                                 |
 | report       | &lt;player&gt; &lt;reason...&gt;                                        | Report a player                                                                  |
 | rollback     | &lt;player&gt;                                                          | Undo all actions taken by the player.                                            |
+| rtv          |                                                                         | Vote to move on to the next map                                                  |
 | setitem      | &lt;item&gt; &lt;amount&gt; [team]                                      | Set item to team core                                                            |
 | setperm      | &lt;player&gt; &lt;group&gt;                                            | Set the player's permission group.                                               |
 | skip         | &lt;wave&gt;                                                            | Start n wave immediately                                                         |
@@ -105,6 +116,7 @@ packaged in that artifact.
 | url          | &lt;command&gt;                                                         | Opens a URL contained in a specific command.                                     |
 | vote         | &lt;kick/map/gg/skip/back/random&gt; [player/amount/world] [reason]     | Start voting                                                                     |
 | votekick     | &lt;player&gt;                                                          | Start kick voting                                                                |
+| votemap      | &lt;id&gt;                                                              | Start a vote to change to the map with the given ID                              |
 | weather      | &lt;weather&gt; &lt;seconds&gt;                                         | Adds a weather effect to the map.                                                |
 | ws           | [args...]                                                               | WorldEdit selection and block manipulation                                       |
 
