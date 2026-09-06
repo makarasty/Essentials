@@ -45,7 +45,7 @@ object TempBan {
     }
 
     suspend fun setBanExpire(uuid: String, expire: LocalDateTime) {
-        val data = findPlayerData(uuid) ?: getPlayerData(uuid)
+        val data = findPlayerData(uuid)?.takeIf { !it.temporary } ?: getPlayerData(uuid)
         if (data != null) {
             data.banExpireDate = expire
             data.update()

@@ -10,18 +10,22 @@ import PluginTest.Companion.waitUntil
 import arc.Events
 import arc.util.Log
 import essential.common.bundle.Bundle
+import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.update
 import essential.common.database.table.AchievementTable
 import essential.common.permission.Permission
+import essential.common.players
 import essential.common.pluginData
 import essential.common.rootPath
+import essential.common.util.PlayerLookup
 import essential.common.systemTimezone
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
 import mindustry.game.EventType
+import mindustry.gen.Groups
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
@@ -341,7 +345,7 @@ class ServerCommandTest {
         try {
             serverCommand.handleMessage("setperm $uuid admin")
             assertTrue(
-                lines.any { it == bundle["command.setPerm.queued", uuid] },
+                lines.any { it == bundle["command.setPerm.queued", PlayerLookup.shortName(uuid)] },
                 "the queued line must be printed before the command returns but was $lines"
             )
             assertTrue(
@@ -438,5 +442,33 @@ class ServerCommandTest {
 
         assertFalse(admins.isIDBanned(uuid), "the scheduler should lift an expired ban without a player row")
         assertFalse(pluginData.data.tempBans.containsKey(uuid), "the scheduler should drop the stored expiry")
+    }
+
+    @Test
+    fun server_tempBanOnlineTemporaryPlayer() {
+        val target = createPlayer()
+        target.name("slxtemporary")
+        val data = createTemporaryPlayerData(target)
+        data.temporary = true
+        players.add(data)
+
+        val uuid = target.uuid()
+        val admins = Vars.netServer.admins
+
+        try {
+            serverCommand.handleMessage("tempban slxtemporary 10 test reason")
+
+            assertTrue(admins.isIDBanned(uuid), "an online player without an account should still get a vanilla ban")
+            assertTrue(
+                waitUntil(10000) { pluginData.data.tempBans.containsKey(uuid) },
+                "the expiry of an online player without an account should be kept in the plugin data"
+            )
+        } finally {
+            admins.unbanPlayerID(uuid)
+            runBlocking { TempBan.clearBanExpire(uuid) }
+            players.remove(data)
+            target.remove()
+            Groups.player.update()
+        }
     }
 }

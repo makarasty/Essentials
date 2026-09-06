@@ -438,13 +438,14 @@ class PluginTest {
          * Runs everything queued with Core.app.post, since the headless main loop is stopped in tests.
          */
         fun pumpApp() {
-            try {
+            val queue = try {
                 val field = HeadlessApplication::class.java.getDeclaredField("runnables")
                 field.isAccessible = true
-                (field.get(Core.app) as TaskQueue).run()
+                field.get(Core.app) as TaskQueue
             } catch (_: Exception) {
-                // ignore
+                return
             }
+            queue.run()
         }
 
         /**

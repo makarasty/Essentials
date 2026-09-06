@@ -173,19 +173,28 @@ class Commands {
 
     @ClientCommand(name = "report", parameter = "<player> <reason...>", description = "Report a player")
     fun report(playerData: PlayerData, arg: Array<out String>) {
-        val player = playerData.player
+        val online = PlayerLookup.findOnline(arg[0])
+        if (online is PlayerLookup.Result.Found) {
+            submitReport(playerData, online.value.uuid(), arg[1])
+            return
+        }
+        if (PlayerLookup.ambiguous(online, arg[0], playerData)) return
 
         scope.launch {
             val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
-            val reason = arg[1]
-            val infos: PlayerInfo = Vars.netServer.admins.getInfo(target.uuid)
-            val name = infos.plainLastName()
-            val date = currentTime()
-            val text: String = Bundle()["command.report.texts", name, player.plainName(), reason, infos.lastName, infos.names, infos.id, infos.lastIP, infos.ips]
-            writeLog(LogType.Report, date + text, name)
-            Log.info(Bundle()["command.report.received", player.plainName(), name, reason])
-            playerData.send("command.report.done", name)
-            Events.fire(PlayerReported(player.plainName(), name, reason))
+            Core.app.post { submitReport(playerData, target.uuid, arg[1]) }
         }
+    }
+
+    private fun submitReport(playerData: PlayerData, uuid: String, reason: String) {
+        val player = playerData.player
+        val infos: PlayerInfo = Vars.netServer.admins.getInfo(uuid)
+        val name = infos.plainLastName()
+        val date = currentTime()
+        val text: String = Bundle()["command.report.texts", name, player.plainName(), reason, infos.lastName, infos.names, infos.id, infos.lastIP, infos.ips]
+        writeLog(LogType.Report, date + text, name)
+        Log.info(Bundle()["command.report.received", player.plainName(), name, reason])
+        playerData.send("command.report.done", name)
+        Events.fire(PlayerReported(player.plainName(), name, reason))
     }
 }
