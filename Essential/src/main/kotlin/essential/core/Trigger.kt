@@ -646,7 +646,10 @@ class Trigger {
                 if (it.animatedName) {
                     val name = it.name.replace("\\[(.*?)]".toRegex(), "")
                     it.player.name(rainbow(name))
-                } else if (!it.status.containsKey("router")) {
+                } else if (conf.feature.name.restoreStored && !it.status.containsKey("router")) {
+                    // Off by default: this used to overwrite the player's nickname every
+                    // second with whatever the database remembered, and no amount of
+                    // reconnecting or config reloading could win against it.
                     it.player.name(it.name)
                 }
 

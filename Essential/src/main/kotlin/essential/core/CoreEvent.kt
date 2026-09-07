@@ -1357,10 +1357,13 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     }
 
     val permission = Permission[playerData]
-    if (permission.name.isNotEmpty()) {
-        playerData.player.name(Permission[playerData].name)
-    } else {
-        playerData.player.name(playerData.name)
+    val assignedName = Permission.assignedName(playerData.uuid)
+    when {
+        // A name written into permission_user.yaml is a deliberate choice, always applied.
+        assignedName != null -> playerData.player.name(assignedName)
+        conf.feature.name.restoreStored -> playerData.player.name(playerData.name)
+        // Otherwise the player keeps the nickname they joined with and the record follows it.
+        else -> playerData.name = player.name()
     }
     playerData.player.admin(Permission[playerData].admin)
 

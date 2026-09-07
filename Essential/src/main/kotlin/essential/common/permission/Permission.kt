@@ -221,6 +221,9 @@ object Permission {
         admins.adminPlayer(uuid, usid)
     }
 
+    /** The name permission_user.yaml assigns to this player, or null when it assigns none. */
+    fun assignedName(uuid: String): String? = user?.get(uuid)?.name?.takeIf { it.isNotEmpty() }
+
     fun groupOf(uuid: String, fallbackGroup: String): String = user?.get(uuid)?.group ?: fallbackGroup
 
     fun hasUserEntry(uuid: String): Boolean = user?.containsKey(uuid) == true

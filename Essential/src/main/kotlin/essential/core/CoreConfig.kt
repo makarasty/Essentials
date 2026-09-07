@@ -71,6 +71,19 @@ data class Feature(
     val log: LogFeature = LogFeature(),
     @YamlComment("Permission group settings")
     val permission: PermissionFeature = PermissionFeature(),
+    @YamlComment("Player name handling")
+    val name: PlayerName = PlayerName(),
+)
+
+/** Feature - player name handling */
+@Serializable
+data class PlayerName(
+    @YamlComment(
+        "Force the name stored in the database back onto the player, once a second.",
+        "Off by default: whoever joins keeps the nickname they joined with, and the stored",
+        "one follows it. A name written into permission_user.yaml is applied either way.",
+    )
+    val restoreStored: Boolean = false,
 )
 
 /** Feature - permission group settings */
