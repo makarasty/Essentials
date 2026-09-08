@@ -301,8 +301,11 @@ class Trigger {
 
                                     var alive = false
                                     var alivePlayer = 0
+                                    // A hostname that stopped resolving must not take the thread down,
+                                    // and the lookup does not depend on which host we are comparing to.
+                                    val address = runCatching { InetAddress.getByName(value.ip).hostAddress }.getOrNull()
                                     serverInfo.forEach {
-                                        if ((it.address == value.ip || it.address == InetAddress.getByName(value.ip).hostAddress) && it.port == value.port) {
+                                        if ((it.address == value.ip || (address != null && it.address == address)) && it.port == value.port) {
                                             alive = true
                                             alivePlayer = it.players
                                         }
