@@ -189,7 +189,7 @@ class Trigger {
                                                 for (px in 0..2) {
                                                     for (py in 0..4) {
                                                         Vars.world.tile(tile.x + 4 + px, tile.y + py)
-                                                            .setBlock(Blocks.air)
+                                                            ?.setBlock(Blocks.air)
                                                     }
                                                 }
                                             }
@@ -212,13 +212,21 @@ class Trigger {
                             while (iterator.hasNext()) {
                                 val value = iterator.next()
                                 if (Vars.state.map.name() == value.mapName) {
-                                    val tile = Vars.world.tile(value.x, value.y)
-                                    if (tile.block() == Blocks.air) {
-                                        iterator.remove()
+                                    // Out of bounds means the loaded map is a different one that
+                                    // happens to share this name, not that the block was broken.
+                                    // Six servers share one plugin_data row, so removing here would
+                                    // wipe another server's warp blocks.
+                                    val tile = Vars.world.tile(value.x, value.y) ?: continue
+                                    // A non-air block with no building is either scenery or a block
+                                    // being replaced right now, and setBlock assigns the block before
+                                    // it assigns the building. Neither is proof the entry is stale.
+                                    val build = tile.build
+                                    if (build == null) {
+                                        if (tile.block() == Blocks.air) iterator.remove()
                                     } else {
                                         var margin = 0f
                                         var isDup = false
-                                        val x = tile.build.getX()
+                                        val x = build.getX()
 
                                         when (value.size) {
                                             1 -> margin = 8f
@@ -242,7 +250,7 @@ class Trigger {
                                             7 -> margin = 32f
                                         }
 
-                                        var y = tile.build.getY() + if (isDup) margin - 8 else margin
+                                        var y = build.getY() + if (isDup) margin - 8 else margin
 
                                         var alive = false
                                         var alivePlayer = 0
@@ -289,7 +297,7 @@ class Trigger {
 
                                         if (isDup) margin -= 4
                                         Groups.player.forEach { a ->
-                                            memory.add(a to Triple(value.description, x, tile.build.getY() - margin))
+                                            memory.add(a to Triple(value.description, x, build.getY() - margin))
                                         }
                                     }
                                 }
@@ -357,12 +365,10 @@ class Trigger {
                                                 for (px in 0..2) {
                                                     for (py in 0..4) {
                                                         Core.app.post {
-                                                            Call.setTile(
-                                                                Vars.world.tile(
-                                                                    value.tile.x + px,
-                                                                    value.tile.y + py
-                                                                ), Blocks.air, Team.sharded, 0
-                                                            )
+                                                            Vars.world.tile(
+                                                                value.tile.x + px,
+                                                                value.tile.y + py
+                                                            )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
                                                         }
                                                     }
                                                 }
@@ -372,12 +378,10 @@ class Trigger {
                                                 for (px in 0..5) {
                                                     for (py in 0..4) {
                                                         Core.app.post {
-                                                            Call.setTile(
-                                                                Vars.world.tile(
-                                                                    value.tile.x + 4 + px,
-                                                                    value.tile.y + py
-                                                                ), Blocks.air, Team.sharded, 0
-                                                            )
+                                                            Vars.world.tile(
+                                                                value.tile.x + 4 + px,
+                                                                value.tile.y + py
+                                                            )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
                                                         }
                                                     }
                                                 }
