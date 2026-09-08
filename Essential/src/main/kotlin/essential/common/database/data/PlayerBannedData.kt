@@ -2,6 +2,7 @@ package essential.common.database.data
 
 import arc.util.Log
 import essential.common.database.table.PlayerBannedTable
+import essential.common.util.escapeLike
 import mindustry.gen.Playerc
 import mindustry.net.Administration
 import org.jetbrains.exposed.v1.core.*
@@ -45,7 +46,7 @@ suspend fun removeBanInfoByIP(ip: String) {
         PlayerBannedTable.deleteWhere {
             PlayerBannedTable.ips
                 .castTo(TextColumnType())
-                .like("%\"$ip\"%")
+                .like(LikePattern("%\"${ip.escapeLike()}\"%", '\\'))
         }
     }
 }
@@ -62,12 +63,12 @@ suspend fun checkPlayerBanned(uuid: String, ip: String, name: String): Boolean {
             val nameCond =
                 PlayerBannedTable.names
                     .castTo(TextColumnType())
-                    .like("%\"$name\"%")
+                    .like(LikePattern("%\"${name.escapeLike()}\"%", '\\'))
 
             val ipCond =
                 PlayerBannedTable.ips
                     .castTo(TextColumnType())
-                    .like("%\"$ip\"%")
+                    .like(LikePattern("%\"${ip.escapeLike()}\"%", '\\'))
 
             PlayerBannedTable
                 .selectAll()
@@ -88,7 +89,7 @@ suspend fun checkPlayerBannedByIpOrUuid(uuid: String, ip: String): Boolean {
             val ipCond =
                 PlayerBannedTable.ips
                     .castTo(TextColumnType())
-                    .like("%\"$ip\"%")
+                    .like(LikePattern("%\"${ip.escapeLike()}\"%", '\\'))
 
             PlayerBannedTable
                 .selectAll()

@@ -120,6 +120,7 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
         )
 
         SchemaUtils.create(*tablesToCreate.toTypedArray())
+
         SchemaUtils.addMissingColumnsStatements(*tablesToCreate.toTypedArray())
             .filter { statement -> listOf("CONSTRAINT", "INDEX").none { statement.contains(it, ignoreCase = true) } }
             .forEach { statement ->
@@ -128,9 +129,30 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
             }
     }
 
+    reshapeMapRatingIndex()
+
     val currentDbVersion = runFlywayMigration(databaseType, r2dbcUrl, user, pass)
     if (currentDbVersion != null) {
         currentDbVersion.toUByteOrNull()?.let { updatePluginVersion(it) }
+    }
+}
+
+/**
+ * Map ratings used to carry a unique index on player_uuid alone, which meant one rating per
+ * player for all maps; the table now declares (player_uuid, map_name). SchemaUtils only
+ * creates indexes for new tables, so an existing database gets the swap here. Every statement
+ * runs in its own transaction: on PostgreSQL a failed statement poisons the transaction it is
+ * in, and both statements are allowed to fail - the old index may be gone already, the new
+ * one may already exist.
+ */
+private suspend fun reshapeMapRatingIndex() {
+    val dropOld = when (defaultDatabase?.config?.explicitDialect) {
+        is MysqlDialect -> "ALTER TABLE map_ratings DROP INDEX map_ratings_player_uuid_unique"
+        else -> "ALTER TABLE map_ratings DROP CONSTRAINT IF EXISTS map_ratings_player_uuid_unique"
+    }
+    val createNew = "CREATE UNIQUE INDEX map_ratings_player_uuid_map_name_unique ON map_ratings (player_uuid, map_name)"
+    for (statement in listOf(dropOld, createNew)) {
+        runCatching { suspendTransaction { exec(statement) } }
     }
 }
 

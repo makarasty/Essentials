@@ -140,7 +140,7 @@ object PlayerLookup {
     }
 
     private suspend fun offlineRows(text: String): Pair<List<PlayerData>, Boolean> {
-        val pattern = text.lowercase().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        val pattern = text.lowercase().escapeLike()
         val matched = suspendTransaction {
             PlayerTable.selectAll().where {
                 (PlayerTable.uuid eq text) or (PlayerTable.name.lowerCase() like LikePattern("%$pattern%", '\\'))

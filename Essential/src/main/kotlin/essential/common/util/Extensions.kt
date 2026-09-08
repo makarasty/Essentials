@@ -39,3 +39,6 @@ fun Duration.toHString(): String {
 /** Extension property to allow Groups.build.size and Groups.unit.size */
 val <T : mindustry.gen.Entityc> mindustry.entities.EntityGroup<T>.size: Int
     get() = this.size()
+
+/** Escape the LIKE wildcards so a value with `%` or `_` in it matches only itself; pair with `LikePattern(..., '\\')`. */
+fun String.escapeLike(): String = replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

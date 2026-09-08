@@ -233,7 +233,7 @@ object Undo {
 
     private fun update(uuid: String, edit: (PlayerData) -> Unit) {
         scope.launch {
-            val data = findPlayerData(uuid) ?: getPlayerData(uuid) ?: return@launch
+            val data = findPlayerData(uuid)?.takeIf { !it.temporary } ?: getPlayerData(uuid) ?: return@launch
             edit(data)
             data.update()
         }
