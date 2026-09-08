@@ -44,6 +44,22 @@ private val noWords = setOf("n", "no", "ні", "-")
 private fun isYes(message: String) = message.trim().lowercase() in yesWords
 private fun isNo(message: String) = message.trim().lowercase() in noWords
 
+/**
+ * The save a passed `vote back` restores: the newest file of whichever family is in use.
+ *
+ * A rollback vote is a request to undo something recent, so both families are ordered the same way.
+ * Arc's `Seq.min` keeps the smallest value and reads the timestamp through a float, which cannot
+ * hold an epoch millisecond exactly, so neither is used here.
+ */
+internal fun findVoteBackSave(): Fi? {
+    val saves = if (Core.settings.getBool("autosave")) {
+        Vars.saveDirectory.findAll { f: Fi -> f.name().startsWith("auto_") }
+    } else {
+        Vars.saveDirectory.findAll { f: Fi -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
+    }
+    return saves.maxByOrNull { it.lastModified() }
+}
+
 class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var count = 60
     private var voted = ArrayList<String>()
@@ -307,15 +323,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
                         VoteType.Back -> {
                             isSurrender = true
-                            val savePath: Fi? = if (Core.settings.getBool("autosave")) {
-                                Vars.saveDirectory.findAll { f: Fi ->
-                                    f.name().startsWith("auto_")
-                                }.min { obj: Fi -> obj.lastModified().toFloat() }
-                            } else {
-                                Vars.saveDirectory.findAll { f ->
-                                    f.name().startsWith("rollback_") && f.name().endsWith(".msav")
-                                }.maxByOrNull { it.lastModified() }
-                            }
+                            val savePath: Fi? = findVoteBackSave()
 
                             if (savePath != null && savePath.exists()) {
                                 try {
