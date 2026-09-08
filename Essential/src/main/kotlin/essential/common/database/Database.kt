@@ -267,6 +267,26 @@ private suspend fun updatePluginVersion(version: UByte) {
     }
 }
 
+/**
+ * The legacy upgrade scripts to try for one version step, most specific first.
+ *
+ * The generic `v<n>.sql` is the MySQL-flavoured script, so it is the correct fallback for MySQL and
+ * MariaDB, which ship no suffixed file of their own. An `_h2` entry in the middle of this list used
+ * to win instead, which fed H2-only syntax - `CURRENT_TIMESTAMP(9)`, `ADD COLUMN IF NOT EXISTS`,
+ * `DROP CONSTRAINT IF EXISTS` - to every other engine and left `v<n>.sql` unreachable.
+ */
+internal fun legacySqlCandidates(version: UByte, dialect: DatabaseDialect?): List<String> {
+    val suffix = when (dialect) {
+        is H2Dialect -> "_h2"
+        is PostgreSQLDialect -> "_postgres"
+        // MariaDBDialect is a MysqlDialect, so it has to be matched first.
+        is MariaDBDialect -> "_mariadb"
+        is MysqlDialect -> "_mysql"
+        else -> ""
+    }
+    return listOf("v$version$suffix.sql", "v$version.sql").distinct()
+}
+
 private const val LEGACY_BASELINE_VERSION: UByte = 5u
 
 private suspend fun upgradeLegacyDatabase() {
@@ -313,14 +333,7 @@ private suspend fun upgradeLegacyDatabase() {
 
             for (v in (currentVersion.toUInt() + 1u)..LEGACY_BASELINE_VERSION.toUInt()) {
                 val version = v.toUByte()
-                val dialectSuffix = when (defaultDatabase!!.config.explicitDialect) {
-                    is H2Dialect -> "_h2"
-                    is PostgreSQLDialect -> "_postgres"
-                    is MariaDBDialect -> "_mariadb"
-                    is MysqlDialect -> "_mysql"
-                    else -> ""
-                }
-                val sqlFiles = listOf("v${version}${dialectSuffix}.sql", "v${version}_h2.sql", "v${version}.sql")
+                val sqlFiles = legacySqlCandidates(version, defaultDatabase!!.config.explicitDialect)
 
                 for (sqlFile in sqlFiles) {
                     val inputStream = Main::class.java.classLoader.getResourceAsStream("sql/$sqlFile")
