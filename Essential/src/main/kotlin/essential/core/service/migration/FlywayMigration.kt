@@ -42,8 +42,11 @@ object FlywayMigration {
                 .baselineVersion("5")
                 .load()
             flyway.migrate()
-            val currentVersion = flyway.info().current()?.version?.version ?: "5"
-            Log.info(bundle["database.upgrade.upToDate", currentVersion])
+            // Report what Flyway actually has rather than the baseline constant: with
+            // baselineOnMigrate(true) an absent version means it baselined or found nothing to do,
+            // and calling that "5" is what let a failed legacy upgrade look finished.
+            val currentVersion = flyway.info().current()?.version?.version
+            Log.info(bundle["database.upgrade.upToDate", currentVersion ?: "none"])
             currentVersion
         } catch (e: Exception) {
             Log.err("Flyway migration failed: ${e.message}", e)

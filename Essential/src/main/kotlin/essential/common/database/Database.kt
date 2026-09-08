@@ -131,10 +131,13 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     reshapeMapRatingIndex()
 
-    val currentDbVersion = runFlywayMigration(databaseType, r2dbcUrl, user, pass)
-    if (currentDbVersion != null) {
-        currentDbVersion.toUByteOrNull()?.let { updatePluginVersion(it) }
-    }
+    // Flyway keeps its own history table and knows nothing about plugin_data.database_version.
+    // With baselineVersion("5") its answer here is the constant 5 whether it migrated anything,
+    // baselined an untouched schema, or found a schema another server had already baselined, so
+    // feeding it into updatePluginVersion marked a legacy upgrade that had just aborted as done and
+    // every later start skipped the legacy path. plugin_data.database_version is now written only by
+    // the legacy upgrade, and only when it reaches its end.
+    runFlywayMigration(databaseType, r2dbcUrl, user, pass)
 }
 
 /**
@@ -287,7 +290,7 @@ internal fun legacySqlCandidates(version: UByte, dialect: DatabaseDialect?): Lis
     return listOf("v$version$suffix.sql", "v$version.sql").distinct()
 }
 
-private const val LEGACY_BASELINE_VERSION: UByte = 5u
+internal const val LEGACY_BASELINE_VERSION: UByte = 5u
 
 private suspend fun upgradeLegacyDatabase() {
     try {
@@ -325,6 +328,15 @@ private suspend fun upgradeLegacyDatabase() {
         }
 
         if (currentVersion == null) {
+            return
+        }
+
+        // Zero is not a legacy version: the only thing that ever wrote it is createPluginData(), on a
+        // database this build had just created at the current shape. The legacy scripts start at v4
+        // and rename tables that such a database does not have, so running them would fail on every
+        // start. Stamp the baseline instead.
+        if (currentVersion == 0u.toUByte()) {
+            updatePluginVersion(LEGACY_BASELINE_VERSION)
             return
         }
 
@@ -375,6 +387,9 @@ private suspend fun upgradeLegacyDatabase() {
             Log.info(bundle["database.upgrade.end"])
         }
     } catch (e: Exception) {
+        // The version column is deliberately left where it was: an upgrade that did not reach its end
+        // has to be retried on the next start, on this server and on every other one sharing the row.
+        Log.warn("Legacy database upgrade did not finish, plugin_data.database_version was left unchanged: ${e.message}")
         e.printStackTrace()
     }
 }

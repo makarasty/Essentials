@@ -1,5 +1,6 @@
 package essential.common.database.data
 
+import essential.common.database.LEGACY_BASELINE_VERSION
 import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.data.plugin.WarpCount
 import essential.common.database.data.plugin.WarpTotal
@@ -55,7 +56,10 @@ suspend fun createPluginData(): PluginData {
         // This only narrows the race, it doesn't close it - there's no unique constraint or lock backing it.
         getPluginData() ?: run {
             PluginTable.insert {
-                it[PluginTable.databaseVersion] = 0u
+                // A row created here belongs to a schema SchemaUtils just built at the current shape,
+                // so it starts at the baseline. Zero sent the next start into the legacy upgrade path,
+                // whose scripts rename tables this database never had.
+                it[PluginTable.databaseVersion] = LEGACY_BASELINE_VERSION
                 it[PluginTable.hubMapName] = null
                 it[PluginTable.data] = Json.encodeToString(displayData)
             }
