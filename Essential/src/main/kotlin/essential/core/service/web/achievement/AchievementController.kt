@@ -6,6 +6,7 @@ import essential.common.players
 import essential.common.util.toHString
 import essential.core.service.achievements.Achievement
 import essential.core.service.web.auth.UserSession
+import essential.core.service.web.onGameThread
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
@@ -81,22 +82,22 @@ class AchievementController {
             fallback
         }
 
-        val achievements = Achievement.entries.mapNotNull { ach ->
+        // Hide secret achievements until unlocked
+        val visible = Achievement.entries.filter { !it.isHidden || completed.contains(it.name.lowercase()) }
+
+        // Progress comes out of live player data, whose map and list the game thread mutates while an
+        // achievement is awarded, so it is read there rather than from Netty's worker thread.
+        val progress = onGameThread {
+            visible.filterNot { completed.contains(it.name.lowercase()) }
+                .associateWith { ach -> runCatching { ach.current(data) }.getOrDefault(0) }
+        }
+
+        val achievements = visible.map { ach ->
             val key = ach.name.lowercase()
             val isDone = completed.contains(key)
-            // Hide secret achievements until unlocked
-            if (ach.isHidden && !isDone) return@mapNotNull null
 
             val target = ach.value()
-            val current = if (isDone) {
-                target
-            } else {
-                try {
-                    ach.current(data)
-                } catch (e: Exception) {
-                    0
-                }
-            }
+            val current = if (isDone) target else progress[ach] ?: 0
             AchievementInfo(
                 name = ach.name,
                 title = localized("achievement", key, ach.name),
