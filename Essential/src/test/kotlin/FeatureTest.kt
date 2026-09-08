@@ -1024,6 +1024,11 @@ class FeatureTest {
 
             assertEquals(Main.conf.feature.permission.vanillaAdminGroup, data.permission)
             assertTrue(target.admin(), "A vanilla admin should keep the admin flag after joining")
+            assertFalse(
+                Permission.hasUserEntry(uuid),
+                "Joining as a vanilla admin must not write a permission_user.yaml entry: that file is " +
+                    "per-server and masks the group column all six servers share"
+            )
         } finally {
             leavePlayer(target)
             Vars.netServer.admins.unAdminPlayer(uuid)

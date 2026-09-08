@@ -1381,7 +1381,13 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         val vanillaGroup = conf.feature.permission.vanillaAdminGroup
         playerData.permission = vanillaGroup
         scope.launch { playerData.update() }
-        Permission.setGroup(playerData.uuid, vanillaGroup)
+        // setGroup writes a permission_user.yaml entry, and that per-server file masks the shared
+        // database column, so every vanilla admin who joined minted a mask nobody asked for. The two
+        // lines above already carry the group. What is left of setGroup that belongs here is
+        // syncVanillaAdmin: on this branch the player is already a vanilla admin, so it is a no-op
+        // except in the one case that matters, an operator who configured vanillaAdminGroup to a group
+        // that is not an admin group and expects the vanilla flag to be taken away.
+        Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup)
     } else if (Permission.isAdminGroup(group)) {
         Permission.syncVanillaAdmin(playerData.uuid, group)
     }
