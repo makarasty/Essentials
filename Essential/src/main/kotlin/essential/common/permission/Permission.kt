@@ -80,34 +80,9 @@ object Permission {
 
     fun load() {
         default = "user"
-        try {
-            if (userFile.exists()) {
-                val raw = userFile.readString()
-                // Remove YAML comments and whitespace to check if there's any real content
-                val stripped = raw.lineSequence()
-                    .filter { line -> !line.trimStart().startsWith("#") }
-                    .joinToString("\n")
-                    .trim()
-                if (stripped.isEmpty() || stripped == "---") {
-                    // Treat comment-only or effectively empty files as empty map
-                    user = mapOf()
-                    userRaw = mapOf()
-                } else {
-                    user = yaml.decodeFromString(userSerializer, raw)
-                    userRaw = yaml.decodeFromString(rawSerializer, raw)
-                }
-            } else {
-                user = mapOf()
-                userRaw = mapOf()
-            }
-            userFileValid = true
-            userFileError = null
-        } catch (e: Exception) {
-            userFileValid = false
-            userFileError = if (e is YamlException) "line ${e.line}: ${e.message}" else e.message.orEmpty()
-            Log.warn(bundle["permission.user.file.invalid", userFileError!!])
-        }
-
+        // permission.yaml first: PermissionData.group falls back to `default` at the moment
+        // kotlinx.serialization builds each entry, so the user file can only be decoded once
+        // the role marked `default: true` has been read out of permission.yaml.
         try {
             main = if (mainFile.exists()) {
                 yaml.decodeFromString(MapSerializer(String.serializer(), RoleConfig.serializer()), mainFile.readString())
@@ -139,6 +114,34 @@ object Permission {
                 }
                 inheritance = inheritedRole.inheritance
             }
+        }
+
+        try {
+            if (userFile.exists()) {
+                val raw = userFile.readString()
+                // Remove YAML comments and whitespace to check if there's any real content
+                val stripped = raw.lineSequence()
+                    .filter { line -> !line.trimStart().startsWith("#") }
+                    .joinToString("\n")
+                    .trim()
+                if (stripped.isEmpty() || stripped == "---") {
+                    // Treat comment-only or effectively empty files as empty map
+                    user = mapOf()
+                    userRaw = mapOf()
+                } else {
+                    user = yaml.decodeFromString(userSerializer, raw)
+                    userRaw = yaml.decodeFromString(rawSerializer, raw)
+                }
+            } else {
+                user = mapOf()
+                userRaw = mapOf()
+            }
+            userFileValid = true
+            userFileError = null
+        } catch (e: Exception) {
+            userFileValid = false
+            userFileError = if (e is YamlException) "line ${e.line}: ${e.message}" else e.message.orEmpty()
+            Log.warn(bundle["permission.user.file.invalid", userFileError!!])
         }
 
         apply()

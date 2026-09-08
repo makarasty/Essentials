@@ -6,6 +6,7 @@ import essential.common.rootPath
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
+import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -76,6 +77,47 @@ class PermissionLoadTest {
             assertTrue(Permission.hasGroup("loner"), "a role that inherits from itself should still be loaded")
         } finally {
             mainFile.writeString(good, false)
+            Permission.load()
+        }
+    }
+
+    @Test
+    fun permission_entryWithoutGroupGetsTheDefaultGroup() {
+        val mainFile = rootPath.child("permission.yaml")
+        val userFile = rootPath.child("permission_user.yaml")
+        val goodMain = mainFile.readString()
+        val goodUser = userFile.readString()
+        val uuid = "uuid-without-a-group"
+
+        try {
+            mainFile.writeString(
+                """
+                user:
+                    permission:
+                        - rtv
+                        - votemap
+                        - tp
+                visitor:
+                    default: true
+                    permission:
+                        - help
+                        - login
+                        - reg
+                """.trimIndent(),
+                false
+            )
+            userFile.writeString("$uuid:\n    name: Bob\n", false)
+
+            Permission.load()
+
+            assertEquals(
+                "visitor",
+                Permission.groupOf(uuid, "user"),
+                "an entry with no group: key belongs to the group permission.yaml marks default, not to user"
+            )
+        } finally {
+            mainFile.writeString(goodMain, false)
+            userFile.writeString(goodUser, false)
             Permission.load()
         }
     }
