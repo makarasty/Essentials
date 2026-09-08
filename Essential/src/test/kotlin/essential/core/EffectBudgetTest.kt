@@ -13,6 +13,9 @@ import kotlin.test.assertTrue
 class EffectBudgetTest {
     companion object {
         private var done = false
+
+        /** The shipped default of feature.level.effect.maxPacketsPerRun, pinned so a config change cannot silently reshape these assertions. */
+        private const val CEILING = 2000
     }
 
     @BeforeTest
@@ -40,11 +43,11 @@ class EffectBudgetTest {
         // 60 players at level 200 emit 8 effects each, and all 60 are watching.
         val targets = 60
 
-        val packets = EffectSystem().nextSlice(groups(60, 8), targets).size * targets
+        val packets = EffectSystem().nextSlice(groups(60, 8), targets, CEILING).size * targets
 
         assertTrue(
-            packets in 1..EffectSystem.MAX_PACKETS_PER_RUN,
-            "One pass sent $packets packets, ceiling is ${EffectSystem.MAX_PACKETS_PER_RUN}."
+            packets in 1..CEILING,
+            "One pass sent $packets packets, ceiling is $CEILING."
         )
     }
 
@@ -54,7 +57,7 @@ class EffectBudgetTest {
         val system = EffectSystem()
 
         val shown = mutableSetOf<Float>()
-        repeat(20) { system.nextSlice(groups, 60).forEach { shown.add(it.rotate) } }
+        repeat(20) { system.nextSlice(groups, 60, CEILING).forEach { shown.add(it.rotate) } }
 
         assertEquals(
             480,
@@ -69,7 +72,7 @@ class EffectBudgetTest {
         val system = EffectSystem()
 
         repeat(10) {
-            val slice = system.nextSlice(groups, 60)
+            val slice = system.nextSlice(groups, 60, CEILING)
             assertEquals(
                 0,
                 slice.size % 8,
@@ -80,17 +83,17 @@ class EffectBudgetTest {
 
     @Test
     fun aSmallBufferIsSentWhole() {
-        assertEquals(8, EffectSystem().nextSlice(groups(1, 8), 6).size)
+        assertEquals(8, EffectSystem().nextSlice(groups(1, 8), 6, CEILING).size)
     }
 
     @Test
     fun oneOversizedGroupIsStillSent() {
         // 2000 / 4 viewers allows 500, and this one player alone wants 800.
-        assertEquals(800, EffectSystem().nextSlice(groups(2, 800), 4).size)
+        assertEquals(800, EffectSystem().nextSlice(groups(2, 800), 4, CEILING).size)
     }
 
     @Test
     fun nothingIsSentWithNoViewers() {
-        assertTrue(EffectSystem().nextSlice(groups(1, 8), 0).isEmpty())
+        assertTrue(EffectSystem().nextSlice(groups(1, 8), 0, CEILING).isEmpty())
     }
 }

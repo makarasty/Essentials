@@ -25,19 +25,6 @@ class EffectSystem : Timer.Task() {
         val offsetY: Float = 0f
     )
 
-    companion object {
-        /**
-         * Effect packets one pass may send.
-         *
-         * A pass sends every buffered effect to every watching player, so the cost is the product of
-         * two player counts: sixty players at level 200 buffer 480 effects, which without a ceiling
-         * is 28,800 packets in one 50 ms tick. What does not fit is shown by the following passes
-         * rather than dropped.
-         */
-        // ponytail: fixed ceiling, make it a config value if an operator wants a different one
-        const val MAX_PACKETS_PER_RUN = 2000
-    }
-
     var buffer = ArrayList<EffectPos>()
 
     /** Which player the next pass starts at when the ceiling cuts it short. */
@@ -377,17 +364,25 @@ class EffectSystem : Timer.Task() {
     }
 
     /**
-     * The effects this pass may send to [targets] viewers without going over [MAX_PACKETS_PER_RUN].
+     * The effects this pass may send to [targets] viewers without going over [ceiling] packets.
+     *
+     * A pass sends every buffered effect to every watching player, so the cost is the product of two
+     * player counts: sixty players at level 200 buffer 480 effects, which uncapped is 28,800 packets
+     * in one 50 ms tick.
      *
      * [groups] holds one entry per emitting player, and the ceiling is applied to whole groups: a
      * tier draws a shape out of four or five effects, and half a shape looks broken rather than
      * thinned. When the groups do not all fit, the next pass starts at the group this one stopped
      * at, so everyone is shown, just not everyone in the same tick.
      */
-    internal fun nextSlice(groups: List<List<EffectPos>>, targets: Int): List<EffectPos> {
+    internal fun nextSlice(
+        groups: List<List<EffectPos>>,
+        targets: Int,
+        ceiling: Int = conf.feature.level.effect.maxPacketsPerRun
+    ): List<EffectPos> {
         if (targets <= 0 || groups.isEmpty()) return emptyList()
 
-        val allowed = (MAX_PACKETS_PER_RUN / targets).coerceAtLeast(1)
+        val allowed = (ceiling / targets).coerceAtLeast(1)
         if (groups.sumOf { it.size } <= allowed) return groups.flatten()
 
         val slice = ArrayList<EffectPos>(allowed)
