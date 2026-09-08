@@ -1208,4 +1208,40 @@ class FeatureTest {
             runBlocking { removeBanInfoByIP(ip) }
         }
     }
+
+    /**
+     * 2026-09-08-full-audit-03-1: Permission.apply writes Mindustry player entities, and /reload calls
+     * it from Dispatchers.IO. It has to reach the game thread before it touches a player.
+     */
+    @Test
+    fun permissionApplyDefersPlayerWritesToTheGameThread() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val file = rootPath.child("permission_user.yaml")
+        val savedFile = file.readString()
+        val originalName = target.first.name()
+
+        try {
+            file.writeString("$uuid:\n  name: deferred-rename\n  group: user\n", false)
+            Permission.load()
+
+            assertEquals(
+                originalName,
+                target.first.name(),
+                "Permission.apply must not write the player entity inline, or /reload does it from an IO thread"
+            )
+            assertTrue(
+                awaitPumped(5000) { target.first.name() == "deferred-rename" },
+                "The rename must land once the game thread runs the posted work"
+            )
+        } finally {
+            file.writeString(savedFile, false)
+            Permission.load()
+            awaitPumped(2000) { false }
+            target.first.name(originalName)
+            target.second.name = originalName
+            leavePlayer(target.first)
+        }
+    }
+
 }
