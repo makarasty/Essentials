@@ -124,18 +124,20 @@ object Permission {
             }
 
             var inheritance: String? = roleConfig.inheritance
-            while (inheritance != null) {
-                val inheritedRoleConfig = main[inheritance]
-                inheritedRoleConfig?.let { inheritedRole ->
-                    for (permission in inheritedRole.permission) {
-                        if (!permission.contains("all", true) && !roleConfig.permission.contains(permission)) {
-                            roleConfig.permission.add(permission)
-                        }
-                    }
-                    inheritance = inheritedRole.inheritance
-                } ?: run {
-                    inheritance = null
+            val walked = mutableSetOf(name)
+            while (true) {
+                val next = inheritance ?: break
+                if (!walked.add(next)) {
+                    Log.warn("[Permission] role '$name' inherits in a circle through '$next'. The chain is cut there; fix the 'inheritance:' lines in permission.yaml.")
+                    break
                 }
+                val inheritedRole = main[next] ?: break
+                for (permission in inheritedRole.permission) {
+                    if (!permission.contains("all", true) && !roleConfig.permission.contains(permission)) {
+                        roleConfig.permission.add(permission)
+                    }
+                }
+                inheritance = inheritedRole.inheritance
             }
         }
 
