@@ -4,6 +4,7 @@ import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import essential.common.database.data.getPlayerData
+import essential.common.database.data.mergePlayerAccounts
 import kotlinx.coroutines.runBlocking
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -74,6 +75,45 @@ class PlayerStatusPersistenceTest {
             }
         } finally {
             leavePlayer(player)
+        }
+    }
+
+    @Test
+    fun mergingTwoAccountsAddsTheirAchievementProgress() {
+        val (source, sourceData) = newPlayer()
+        val (target, targetData) = newPlayer()
+        try {
+            sourceData.status["record.time.serpulo"] = "5400"
+            sourceData.status["record.map.clear.count"] = "3"
+            sourceData.status["record.turret.quill.kill.time"] = "1000"
+            targetData.status["record.time.serpulo"] = "1800"
+            targetData.status["record.map.clear.count"] = "4"
+            targetData.status["record.turret.quill.kill.time"] = "2000"
+
+            runBlocking {
+                assertTrue(sourceData.update())
+                assertTrue(targetData.update())
+
+                mergePlayerAccounts(source.uuid(), target.uuid())
+
+                val merged = getPlayerData(target.uuid())
+                    ?: fail("Target ${target.uuid()} disappeared from the database.")
+
+                assertEquals(
+                    "7200",
+                    merged.status["record.time.serpulo"],
+                    "Merging accounts sums their counters, the way it already sums the columns."
+                )
+                assertEquals("7", merged.status["record.map.clear.count"])
+                assertEquals(
+                    "2000",
+                    merged.status["record.turret.quill.kill.time"],
+                    "A .time key is a timestamp, not a count: the later one wins rather than the sum."
+                )
+            }
+        } finally {
+            leavePlayer(source)
+            leavePlayer(target)
         }
     }
 }

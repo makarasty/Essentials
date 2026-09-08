@@ -24,7 +24,42 @@ import kotlin.time.ExperimentalTime
  * - last_login_date, last_logout_date: newest of the two (null-safe for logout)
  * - last_played_world_name/mode: use source (new) values
  * - ban_expire_date: latest of the two; isBanned adjusted to whether ban not expired
+ * - status_data: achievement counters summed, see [mergeRecordCounters]
  */
+/**
+ * The target's achievement progress with the source's added to it.
+ *
+ * Only `record.*` keys are considered, since they are the only part of `status` the row carries.
+ * Values are counts, so they add, with two exceptions that are not counts and would be meaningless
+ * added together: a key that is not a number at all keeps the target's value, and a `.time` key
+ * holds an epoch millisecond stamp, so the later of the two wins - adding those would put the
+ * player's last kill somewhere in the far future and freeze the window checks that read it.
+ */
+internal fun mergeRecordCounters(
+    to: Map<String, String>,
+    from: Map<String, String>
+): Map<String, String> {
+    val merged = to.filterKeys { it.startsWith(RECORD_PREFIX) }.toMutableMap()
+
+    for ((key, sourceValue) in from) {
+        if (!key.startsWith(RECORD_PREFIX)) continue
+
+        val target = merged[key]
+        if (target == null) {
+            merged[key] = sourceValue
+            continue
+        }
+
+        val a = target.toLongOrNull()
+        val b = sourceValue.toLongOrNull()
+        if (a == null || b == null) continue
+
+        merged[key] = if (key.endsWith(".time")) maxOf(a, b).toString() else (a + b).toString()
+    }
+
+    return merged
+}
+
 @OptIn(ExperimentalTime::class)
 suspend fun mergePlayerAccounts(fromUuid: String, toUuid: String): String = suspendTransaction {
     if (fromUuid.equals(toUuid, ignoreCase = true)) {
@@ -92,6 +127,7 @@ suspend fun mergePlayerAccounts(fromUuid: String, toUuid: String): String = susp
         it[isBanned] = mergedIsBanned
         it[banExpireDate] = mergedBanExpire
         it[attendanceDays] = to.attendanceDays + from.attendanceDays
+        it[statusData] = statusJson.encodeToString(mergeRecordCounters(to.status, from.status))
     }
 
     AchievementTable.deleteWhere { AchievementTable.playerId eq from.id }

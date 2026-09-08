@@ -26,10 +26,15 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
-private val statusJson = Json { ignoreUnknownKeys = true; isLenient = true }
+internal val statusJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
-/** Keys under this prefix are achievement progress, and are the only part of `status` that is saved. */
-private const val RECORD_PREFIX = "record."
+/**
+ * Keys under this prefix are achievement progress, and are the only part of `status` that is saved.
+ *
+ * The prefix is load-bearing: a counter named anything else is session state, and will not survive a
+ * restart, a reconnect, or a move to another server on the same database.
+ */
+internal const val RECORD_PREFIX = "record."
 
 internal fun parseLocaleOrDefault(rawLocale: String): String? {
     val normalized = rawLocale.replace('_', '-')
