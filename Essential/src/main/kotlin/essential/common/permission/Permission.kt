@@ -79,6 +79,7 @@ object Permission {
     }
 
     fun load() {
+        default = "user"
         try {
             if (userFile.exists()) {
                 val raw = userFile.readString()

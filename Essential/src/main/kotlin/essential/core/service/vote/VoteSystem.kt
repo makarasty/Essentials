@@ -297,7 +297,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
                         VoteType.Skip -> {
                             voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(3.minutes)
-                            for (a in 0..voteData.wave!!) {
+                            repeat(voteData.wave!!) {
                                 Vars.spawner.spawnEnemies()
                                 Vars.state.wave++
                                 Vars.state.wavetime = Vars.state.rules.waveSpacing

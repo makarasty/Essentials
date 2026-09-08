@@ -1199,7 +1199,7 @@ class Commands {
         val player = playerData.player
         val motd = readMotd(player.locale()).orEmpty()
         if (motd.isNotEmpty()) {
-            val count = motd.split("\r\n|\r|\n").toTypedArray().size
+            val count = motd.lines().size
             if (count > 10) Call.infoMessage(player.con(), motd) else player.sendMessage(motd)
         } else {
             playerData.send("command.motd.not-found")
@@ -2396,8 +2396,8 @@ class Commands {
                     )
                     if (Vars.state.rules.pvp) {
                         voteData.team = playerData.player.team()
-                        nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                     }
+                    nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                     start(voteData)
                 } else {
                     playerData.err(coolTime)
