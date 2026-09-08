@@ -9,11 +9,12 @@ import arc.util.Log
 import arc.util.Time
 import arc.util.Timer
 import essential.common.bundle.Bundle
-import essential.common.database.data.PluginData
 import essential.common.event.CustomEvents
 import essential.common.database.data.cleanupExpiredRoutingPermissions
 import essential.common.database.data.grantRoutingPermission
+import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.data.plugin.WarpCount
+import essential.common.database.data.plugin.WarpZone
 import essential.common.permission.Permission
 import essential.common.players
 import essential.common.pluginData
@@ -152,32 +153,43 @@ class Trigger {
             return findMedianCoordinates(startTile, endTile)
         }
 
+        /**
+         * The four warp lists are plain ArrayLists that /warp adds to, removes from and clears from
+         * another thread, and ArrayList iterators are fail-fast, so this thread reads a copy rather
+         * than the live list. A copy taken while the list is shrinking can carry nulls, because the
+         * size and the backing array are not read together; that is what the filter drops.
+         */
+        private fun <T : Any> snapshot(list: List<T>): List<T> = ArrayList<T?>(list).filterNotNull()
+
         override fun run() {
             var isNotTargetMap: Boolean
             try {
                 while (currentThread().isInterrupted.not()) {
                     val data = pluginData.data
+                    val warpCount = snapshot(data.warpCount)
+                    val warpTotal = snapshot(data.warpTotal)
+                    val warpZone = snapshot(data.warpZone)
+                    val warpBlock = snapshot(data.warpBlock)
 
                     isNotTargetMap = false
-                    if (data.warpCount.none { f -> f.mapName == Vars.state.map.name() } &&
-                        data.warpTotal.none { f -> f.mapName == Vars.state.map.name() } &&
-                        data.warpZone.none { f -> f.mapName == Vars.state.map.name() } &&
-                        data.warpBlock.none { f -> f.mapName == Vars.state.map.name() }
+                    if (warpCount.none { f -> f.mapName == Vars.state.map.name() } &&
+                        warpTotal.none { f -> f.mapName == Vars.state.map.name() } &&
+                        warpZone.none { f -> f.mapName == Vars.state.map.name() } &&
+                        warpBlock.none { f -> f.mapName == Vars.state.map.name() }
                     ) {
                         isNotTargetMap = true
                     }
 
                     if (!isNotTargetMap) {
                         var total = 0
-                        val serverInfo = getServerInfo(pluginData)
+                        val serverInfo = getServerInfo(warpBlock, warpCount, warpZone)
                         for (a in serverInfo) {
                             total += a.players
                         }
 
                         if (Vars.state.isPlaying) {
-                            for (i in data.warpCount.indices) {
-                                if (Vars.state.map.name() == data.warpCount[i].mapName) {
-                                    val value = data.warpCount[i]
+                            for (value in warpCount) {
+                                if (Vars.state.map.name() == value.mapName) {
                                     val info = serverInfo.find { a -> a.address == value.ip && a.port == value.port }
                                     if (info != null) {
                                         val str = info.players.toString()
@@ -195,7 +207,7 @@ class Trigger {
                                             }
                                         }
 
-                                        data.warpCount[i] = WarpCount(
+                                        val updated = WarpCount(
                                             Vars.state.map.name(),
                                             value.tile.pos(),
                                             value.ip,
@@ -203,14 +215,20 @@ class Trigger {
                                             info.players,
                                             digits.size
                                         )
+                                        // The position this entry had in the copy is not necessarily
+                                        // its position in the live list, so the write back happens on
+                                        // the main thread and finds the entry by identity.
+                                        Core.app.post {
+                                            val index = data.warpCount.indexOfFirst { it === value }
+                                            if (index != -1) data.warpCount[index] = updated
+                                        }
                                     }
                                 }
                             }
 
                             val memory = mutableListOf<Pair<Playerc, Triple<String, Float, Float>>>()
-                            val iterator = data.warpBlock.iterator()
-                            while (iterator.hasNext()) {
-                                val value = iterator.next()
+                            val stale = mutableListOf<WarpBlock>()
+                            for (value in warpBlock) {
                                 if (Vars.state.map.name() == value.mapName) {
                                     // Out of bounds means the loaded map is a different one that
                                     // happens to share this name, not that the block was broken.
@@ -222,7 +240,7 @@ class Trigger {
                                     // it assigns the building. Neither is proof the entry is stale.
                                     val build = tile.build
                                     if (build == null) {
-                                        if (tile.block() == Blocks.air) iterator.remove()
+                                        if (tile.block() == Blocks.air) stale.add(value)
                                     } else {
                                         var margin = 0f
                                         var isDup = false
@@ -303,7 +321,14 @@ class Trigger {
                                 }
                             }
 
-                            for (value in data.warpZone) {
+                            if (stale.isNotEmpty()) {
+                                // By identity, not by equals: WarpBlock is a data class, so two
+                                // entries describing the same block are equal and removeAll would
+                                // take both.
+                                Core.app.post { data.warpBlock.removeAll { b -> stale.any { it === b } } }
+                            }
+
+                            for (value in warpZone) {
                                 if (Vars.state.map.name() == value.mapName) {
                                     val center = calculateCenter(value.startTile, value.finishTile)
 
@@ -356,8 +381,7 @@ class Trigger {
                                 }
                             }
 
-                            for (i in data.warpTotal.indices) {
-                                val value = data.warpTotal[i]
+                            for (value in warpTotal) {
                                 if (Vars.state.map.name() == value.mapName) {
                                     if (value.totalPlayers != total) {
                                         when (total) {
@@ -412,17 +436,21 @@ class Trigger {
             }
         }
 
-        private fun getServerInfo(pluginData: PluginData): MutableSet<Host> {
+        private fun getServerInfo(
+            warpBlock: List<WarpBlock>,
+            warpCount: List<WarpCount>,
+            warpZone: List<WarpZone>
+        ): MutableSet<Host> {
             val total = mutableSetOf<Host>()
             var buf = arrayOf<Pair<String, Int>>()
 
-            for (it in pluginData.data.warpBlock) {
+            for (it in warpBlock) {
                 buf += Pair(it.ip, it.port)
             }
-            for (it in pluginData.data.warpCount) {
+            for (it in warpCount) {
                 buf += Pair(it.ip, it.port)
             }
-            for (it in pluginData.data.warpZone) {
+            for (it in warpZone) {
                 buf += Pair(it.ip, it.port)
             }
             for (a in buf) {
