@@ -1,5 +1,6 @@
 package essential.core.service.effect
 
+import arc.Core
 import arc.graphics.Color
 import arc.graphics.Colors
 import arc.util.Timer
@@ -19,10 +20,32 @@ class EffectSystem : Timer.Task() {
         val effect: Effect,
         val rotate: Float,
         val color: Color,
-        vararg val random: IntRange
+        val random: IntRange? = null,
+        val offsetX: Float = 0f,
+        val offsetY: Float = 0f
     )
 
+    companion object {
+        /**
+         * Effect packets one pass may send.
+         *
+         * A pass sends every buffered effect to every watching player, so the cost is the product of
+         * two player counts: sixty players at level 200 buffer 480 effects, which without a ceiling
+         * is 28,800 packets in one 50 ms tick. What does not fit is shown by the following passes
+         * rather than dropped.
+         */
+        // ponytail: fixed ceiling, make it a config value if an operator wants a different one
+        const val MAX_PACKETS_PER_RUN = 2000
+    }
+
     var buffer = ArrayList<EffectPos>()
+
+    /** Which player the next pass starts at when the ceiling cuts it short. */
+    private var groupCursor = 0
+
+    /** Whether a pass is already queued on the game thread. */
+    @Volatile
+    private var pending = false
 
     fun effect(data: PlayerData) {
         val color = if (data.effectColor != null) {
@@ -66,6 +89,18 @@ class EffectSystem : Timer.Task() {
             customColor: Color
         ) {
             buffer.add(EffectPos(data.player, effect, rotate, customColor))
+        }
+
+        fun runEffectAtOffset(
+            effect: Effect,
+            offsetX: Float,
+            offsetY: Float,
+            rotate: Float,
+            customColor: Color
+        ) {
+            buffer.add(
+                EffectPos(data.player, effect, rotate, customColor, offsetX = offsetX, offsetY = offsetY)
+            )
         }
 
         // If the unit is destroyed
@@ -255,19 +290,10 @@ class EffectSystem : Timer.Task() {
 
                 val customColor = Color.valueOf("ffaaff")
 
-                players.forEach {
-                    if (it.effectVisibility) {
-                        val p = it.player
-                        if (p.unit() != null && p.unit().health > 0f) {
-                            if (!conf.feature.level.effect.moving || p.unit().moving()) {
-                                Call.effect(p.con(), Fx.shootSmall, data.player.unit().x + x1, data.player.unit().y + y1, rot, customColor)
-                                Call.effect(p.con(), Fx.shootSmall, data.player.unit().x + x2, data.player.unit().y + y2, rot, customColor)
-                                Call.effect(p.con(), Fx.shootBig, data.player.unit().x, data.player.unit().y, rot + 180f, customColor)
-                                Call.effect(p.con(), Fx.mineHuge, data.player.unit().x, data.player.unit().y, 2f, customColor)
-                            }
-                        }
-                    }
-                }
+                runEffectAtOffset(Fx.shootSmall, x1, y1, rot, customColor)
+                runEffectAtOffset(Fx.shootSmall, x2, y2, rot, customColor)
+                runEffectAtOffset(Fx.shootBig, 0f, 0f, rot + 180f, customColor)
+                runEffectAtOffset(Fx.mineHuge, 0f, 0f, 2f, customColor)
             }
 
             in 500..1000 -> {
@@ -290,52 +316,92 @@ class EffectSystem : Timer.Task() {
 
                 val customColor = Color.valueOf("ffaaff")
 
-                players.forEach {
-                    if (it.effectVisibility) {
-                        val p = it.player
-                        if (p.unit() != null && p.unit().health > 0f) {
-                            if (!conf.feature.level.effect.moving || p.unit().moving()) {
-                                Call.effect(p.con(), Fx.shootSmall, data.player.unit().x + x1, data.player.unit().y + y1, rot, customColor)
-                                Call.effect(p.con(), Fx.shootSmall, data.player.unit().x + x2, data.player.unit().y + y2, rot, customColor)
-                                Call.effect(p.con(), Fx.shootBig, data.player.unit().x + x3, data.player.unit().y + y3, rot + 190f, customColor)
-                                Call.effect(p.con(), Fx.shootBig, data.player.unit().x + x4, data.player.unit().y + y4, rot - 190f, customColor)
-                                Call.effect(p.con(), Fx.mineHuge, data.player.unit().x, data.player.unit().y, rot - 190f, customColor)
-                            }
-                        }
-                    }
-                }
+                runEffectAtOffset(Fx.shootSmall, x1, y1, rot, customColor)
+                runEffectAtOffset(Fx.shootSmall, x2, y2, rot, customColor)
+                runEffectAtOffset(Fx.shootBig, x3, y3, rot + 190f, customColor)
+                runEffectAtOffset(Fx.shootBig, x4, y4, rot - 190f, customColor)
+                runEffectAtOffset(Fx.mineHuge, 0f, 0f, rot - 190f, customColor)
             }
         }
     }
 
     override fun run() {
-        if (Vars.state.isPlaying) {
-            if (conf.feature.level.effect.enabled) {
-                val target = ArrayList<Playerc>()
-                players.forEach {
-                    if (it.effectVisibility) {
-                        effect(it)
-                        if (it.player.unit() != null && it.player.unit().health > 0f) {
-                            if (conf.feature.level.effect.moving && it.player.unit().moving()) {
-                                target.add(it.player)
-                            } else if (!conf.feature.level.effect.moving) {
-                                target.add(it.player)
-                            }
-                        }
-                    }
-                }
+        if (!Vars.state.isPlaying) return
+        if (!conf.feature.level.effect.enabled) {
+            this.cancel()
+            return
+        }
+        // One pass may be queued at a time. Without this a stalled game thread drains every pass it
+        // missed in a single frame, which is the packet burst this ceiling exists to prevent.
+        if (pending) return
 
-                buffer.forEach {
-                    target.forEach { p ->
-                        val x = if (it.random.isNotEmpty()) it.player.unit().x + it.random[0].random() else it.player.unit().x
-                        val y = if (it.random.isNotEmpty()) it.player.unit().y + it.random[0].random() else it.player.unit().y
-                        Call.effect(p.con(), it.effect, x, y, it.rotate, it.color)
+        // Unit positions, and the packets built from them, belong to the game loop; Timer calls this
+        // from its own daemon thread.
+        pending = true
+        Core.app.post {
+            pending = false
+            emit()
+        }
+    }
+
+    private fun emit() {
+        if (!Vars.state.isPlaying || !conf.feature.level.effect.enabled) return
+
+        val target = ArrayList<Playerc>()
+        val groups = ArrayList<List<EffectPos>>()
+        players.forEach {
+            if (it.effectVisibility) {
+                buffer = ArrayList()
+                effect(it)
+                if (buffer.isNotEmpty()) groups.add(buffer)
+
+                if (it.player.unit() != null && it.player.unit().health > 0f) {
+                    if (conf.feature.level.effect.moving && it.player.unit().moving()) {
+                        target.add(it.player)
+                    } else if (!conf.feature.level.effect.moving) {
+                        target.add(it.player)
                     }
                 }
-                buffer = ArrayList()
-            } else {
-                this.cancel()
             }
         }
+        buffer = ArrayList()
+
+        nextSlice(groups, target.size).forEach {
+            val unit = it.player.unit() ?: return@forEach
+            val x = unit.x + it.offsetX + (it.random?.random() ?: 0)
+            val y = unit.y + it.offsetY + (it.random?.random() ?: 0)
+            target.forEach { p ->
+                Call.effect(p.con(), it.effect, x, y, it.rotate, it.color)
+            }
+        }
+    }
+
+    /**
+     * The effects this pass may send to [targets] viewers without going over [MAX_PACKETS_PER_RUN].
+     *
+     * [groups] holds one entry per emitting player, and the ceiling is applied to whole groups: a
+     * tier draws a shape out of four or five effects, and half a shape looks broken rather than
+     * thinned. When the groups do not all fit, the next pass starts at the group this one stopped
+     * at, so everyone is shown, just not everyone in the same tick.
+     */
+    internal fun nextSlice(groups: List<List<EffectPos>>, targets: Int): List<EffectPos> {
+        if (targets <= 0 || groups.isEmpty()) return emptyList()
+
+        val allowed = (MAX_PACKETS_PER_RUN / targets).coerceAtLeast(1)
+        if (groups.sumOf { it.size } <= allowed) return groups.flatten()
+
+        val slice = ArrayList<EffectPos>(allowed)
+        var index = groupCursor % groups.size
+        var visited = 0
+        while (visited < groups.size) {
+            val group = groups[index]
+            // Always send at least one group, even when that single group is over the ceiling.
+            if (slice.isNotEmpty() && slice.size + group.size > allowed) break
+            slice.addAll(group)
+            index = (index + 1) % groups.size
+            visited++
+        }
+        groupCursor = index
+        return slice
     }
 }
