@@ -41,5 +41,18 @@ object PlayerTable : Table("players") {
     val banExpireDate = datetime("ban_expire_date").nullable().default(null)
     val attendanceDays = integer("attendance_days").default(0)
 
+    /**
+     * The `record.*` half of [essential.common.database.data.PlayerData.status] as a JSON object.
+     *
+     * The achievement counters live in that map. Until this column existed they were held in memory
+     * only, so every counter restarted at zero when the player left, when the server restarted, or
+     * when the player moved to another server on the same database.
+     *
+     * Deliberately not called `status`: a nullable legacy `status` column still exists on databases
+     * upgraded through the v4 scripts, and reusing the name would make Exposed emit an ALTER to
+     * make it NOT NULL on every boot, over a column that still holds pre-fork content.
+     */
+    val statusData = text("status_data").default("{}")
+
     override val primaryKey = PrimaryKey(id)
 }
