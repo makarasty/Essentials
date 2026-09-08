@@ -7,6 +7,7 @@ import essential.common.database.data.plugin.WarpTotal
 import essential.common.database.data.plugin.WarpZone
 import essential.common.database.table.PluginTable
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
 import ksp.table.GenerateCode
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -21,7 +22,14 @@ data class PluginData(
     var databaseVersion: UByte,
     var hubMapName: String?,
     var data: DisplayData
-)
+) {
+    /**
+     * The row as this server last read or wrote it, with the serialised blob copied rather than
+     * shared. The generated update() reads it to tell which columns this server itself changed.
+     */
+    @Transient
+    var dbSnapshot: PluginData? = null
+}
 
 @Serializable
 data class DisplayData(
