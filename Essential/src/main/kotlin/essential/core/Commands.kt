@@ -84,6 +84,23 @@ class Commands {
         val charsPlacing = ConcurrentHashMap<String, Array<String>>()
 
         /**
+         * Drops the world history recorded on the map that is being replaced.
+         *
+         * History rows are keyed by tile coordinates and by nothing else, so they only mean anything
+         * inside the world they were recorded in. Left in place across a map change they become claims
+         * about a map that is no longer loaded, and a rollback rebuilds and removes real blocks on the
+         * current map from them. The game over handler already clears them; a map changed directly never
+         * fires one. The flush first is so that rows still sitting in the buffer cannot land after the
+         * table has been emptied.
+         */
+        private fun discardWorldHistory() {
+            scope.launch {
+                WorldHistoryBuffer.flush()
+                clearWorldHistory()
+            }
+        }
+
+        /**
          * Registers a menu that only [owner] is allowed to answer.
          *
          * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
@@ -153,6 +170,7 @@ class Commands {
                 Vars.state.rules = Vars.state.map.applyRules(mode)
                 Vars.logic.play()
                 reloader.end()
+                discardWorldHistory()
             } catch (_: IllegalArgumentException) {
                 playerData.err("command.changeMap.mode.not.found", arg[1])
             }
@@ -2400,6 +2418,7 @@ class Commands {
                                 Vars.state.rules = Vars.state.map.applyRules(currentRule)
                                 Vars.logic.play()
                                 reloader.end()
+                                discardWorldHistory()
                             }
                         } else {
                             playerData.err(mapNotFound)
