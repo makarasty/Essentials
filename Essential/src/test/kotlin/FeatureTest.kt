@@ -22,6 +22,7 @@ import essential.common.database.table.ServerRoutingTable
 import essential.common.database.data.checkPlayerBannedByIpOrUuid
 import essential.common.database.data.createBanInfo
 import essential.common.database.data.removeBanInfoByIP
+import essential.common.database.data.update
 import essential.common.event.CustomEvents
 import essential.common.mapStartTime
 import essential.common.players
@@ -1241,6 +1242,52 @@ class FeatureTest {
             target.first.name(originalName)
             target.second.name = originalName
             leavePlayer(target.first)
+        }
+    }
+    /**
+     * Menu ids are process-wide and menuChoose is client-callable with any id, so a listener that acts
+     * for the player it was opened for has to compare the responder. Hub warp zone.
+     */
+    @Test
+    fun onlyTheHubAdminWhoOpenedTheZoneMenuMayAnswerIt() {
+        val owner = newPlayer()
+        val intruder = newPlayer()
+        val tile = Vars.world.tile(30, 30)
+        val zonesBefore = pluginData.data.warpZone.size
+
+        try {
+            owner.second.status["hub_first"] = "10,10"
+            owner.second.status["hub_second"] = "true"
+            owner.second.status["hub_ip"] = "127.0.0.1"
+            owner.second.status["hub_port"] = "6567"
+
+            tap(TapEvent(owner.first, tile))
+            val zoneMenu = Menus.registerMenu { _, _ -> } - 1
+
+            Menus.menuChoose(intruder.first, zoneMenu, 0)
+            assertEquals(
+                zonesBefore,
+                pluginData.data.warpZone.size,
+                "A player the hub menu was never shown to must not be able to write a warp zone"
+            )
+
+            Menus.menuChoose(owner.first, zoneMenu, 0)
+            assertEquals(
+                zonesBefore + 1,
+                pluginData.data.warpZone.size,
+                "The player the menu was opened for must still be able to answer it"
+            )
+        } finally {
+            // The listener persists through scope.launch, so let that land before trimming, then write
+            // the trimmed list back rather than leaving the test's zone in the stored blob.
+            awaitPumped(2000L) { false }
+            while (pluginData.data.warpZone.size > zonesBefore) {
+                pluginData.data.warpZone.removeAt(pluginData.data.warpZone.size - 1)
+            }
+            runBlocking { pluginData.update() }
+            owner.second.status.clear()
+            leavePlayer(intruder.first)
+            leavePlayer(owner.first)
         }
     }
 

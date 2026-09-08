@@ -427,6 +427,9 @@ fun tap(event: TapEvent) {
             val bundle = Bundle(event.player.locale())
             val options = arrayOf(arrayOf(bundle["command.hub.zone.yes"], bundle["command.hub.zone.no"]))
             val menu = Menus.registerMenu { player, option ->
+                // menuChoose is client-callable with any id, and menu ids are process-wide, so without
+                // this any connected player could answer the hub menu and write a warp zone.
+                if (player.uuid() != data.uuid) return@registerMenu
                 val touch = when (option) {
                     0 -> true
                     else -> false
