@@ -566,9 +566,12 @@ class Trigger {
                     }
                 }
 
+                // A player with no unit (dead on a team that has no core left to respawn from) keeps
+                // unit() at null indefinitely, and tileOn() is nullable in its own right.
+                val unitTile = data.player.unit()?.tileOn()
                 for (two in pluginData.data.warpZone) {
-                    if (two.mapName == Vars.state.map.name() && !two.click && isUnitInside(
-                            data.player.unit().tileOn(),
+                    if (unitTile != null && two.mapName == Vars.state.map.name() && !two.click && isUnitInside(
+                            unitTile,
                             two.startTile,
                             two.finishTile
                         )
