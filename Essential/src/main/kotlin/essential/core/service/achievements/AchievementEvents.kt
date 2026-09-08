@@ -569,7 +569,17 @@ fun unitDestroy(event: UnitDestroyEvent) {
 
 @Event
 fun updateSecond() {
-    Timer.schedule({
+    Timer.schedule({ achievementSweep() }, 0f, 1f)
+}
+
+/**
+ * One pass of the per-second achievement sweep.
+ *
+ * Groups.player, Groups.build and PlayerData.status all belong to the game loop, and the caller is
+ * Arc's Timer daemon thread, so the work is handed to the game thread rather than done here.
+ */
+internal fun achievementSweep() {
+    Core.app.post {
         for (data in players) {
             // Track time played on different planets
             if (state.rules.planet === Planets.serpulo) {
@@ -672,7 +682,7 @@ fun updateSecond() {
                 }
             }
         }
-    }, 0f, 1f)
+    }
 }
 
 @Event
