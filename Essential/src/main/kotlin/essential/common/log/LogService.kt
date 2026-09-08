@@ -42,6 +42,7 @@ private val lastDropWarn = AtomicLong()
 private val writeLock = Any()
 private val timeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH_mm_ss")
 private val reportTimeFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH_mm_ss_SSS")
+private val unsafeInFileName = Regex("[^\\p{L}\\p{M}\\p{N} _-]")
 
 @Volatile
 private var writer: Thread? = null
@@ -152,7 +153,7 @@ private fun writeBatch(batch: List<LogLine>, allowRotate: Boolean = true) = sync
     for (line in batch) {
         try {
             if (line.type == LogType.Report) {
-                val name = line.name ?: "unknown"
+                val name = reportFileName(line.name)
                 rootPath.child("log/report/${reportTimeFormat.format(line.time)}-${reportSeq.incrementAndGet()}-$name.txt")
                     .writeString(line.text)
             } else {
@@ -167,6 +168,16 @@ private fun writeBatch(batch: List<LogLine>, allowRotate: Boolean = true) = sync
             written.incrementAndGet()
         }
     }
+}
+
+/**
+ * A report file is named after a player, and a player picks their own name. Anything that is not a
+ * letter, a combining mark, a digit, a space, an underscore or a hyphen becomes an underscore, so
+ * separators and `..` cannot walk the write out of log/report.
+ */
+private fun reportFileName(name: String?): String {
+    val safe = name?.replace(unsafeInFileName, "_")?.trim()
+    return if (safe.isNullOrEmpty()) "unknown" else safe
 }
 
 private fun appender(type: LogType): FileAppender =

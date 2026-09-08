@@ -193,6 +193,34 @@ class LogServiceTest {
     }
 
     @Test
+    fun a_name_with_separators_cannot_write_outside_the_report_folder() {
+        setLog(report = true)
+        // Two levels up from log/report is the plugin root, where the MOTD and every other file the
+        // plugin reads back lives.
+        val outside = rootPath.child("traversal-probe.txt")
+        outside.writeString("untouched")
+        val before = reportFolder.list().map { it.name() }.toSet()
+
+        try {
+            writeLog(LogType.Report, "traversal body", "..\\..\\traversal-probe")
+            writeLog(LogType.Report, "traversal body", "../../traversal-probe")
+            flushLog()
+
+            assertEquals("untouched", outside.readString())
+        } finally {
+            outside.delete()
+        }
+
+        val added = reportFolder.list().filterNot { before.contains(it.name()) }
+        assertEquals(2, added.size, "expected two report files, got ${added.map { it.name() }}")
+        for (file in added) {
+            assertFalse(file.name().contains("/"), file.name())
+            assertFalse(file.name().contains("\\"), file.name())
+            assertFalse(file.name().contains(".."), file.name())
+        }
+    }
+
+    @Test
     fun two_reports_do_not_overwrite_each_other() {
         setLog(report = true)
         val before = reportFolder.list().map { it.name() }.toSet()
