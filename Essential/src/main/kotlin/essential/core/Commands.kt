@@ -1830,18 +1830,20 @@ class Commands {
     fun skip(playerData: PlayerData, arg: Array<out String>) {
         val wave = arg[0].toIntOrNull()
         if (wave != null) {
-            if (wave > 0) {
+            if (wave <= 0) {
+                playerData.err("command.skip.number.low")
+            } else if (wave > conf.command.skip.limit) {
+                // Each spawn is engine work on the main thread, so an unbounded count is a way to stop the
+                // server ticking. /vote skip has always read this limit; the direct command never did.
+                playerData.err("command.vote.skip.tooMany")
+            } else {
                 val previousWave = Vars.state.wave
-                var loop = 0
-                while (arg[0].toInt() != loop) {
-                    loop++
+                repeat(wave) {
                     Vars.spawner.spawnEnemies()
                     Vars.state.wave++
                     Vars.state.wavetime = Vars.state.rules.waveSpacing
                 }
                 playerData.send("command.skip.process", previousWave, Vars.state.wave)
-            } else {
-                playerData.err("command.skip.number.low")
             }
         } else {
             playerData.err("command.skip.number.invalid")
