@@ -1,7 +1,6 @@
 package essential.core.service.achievements
 
 import arc.Core
-import arc.Events
 import arc.util.Log
 import arc.util.Timer
 import essential.common.bundle.Bundle
@@ -34,6 +33,14 @@ private var isLowPowerFailed = false
 private var isNoTurretsFailed = false
 private var isFlareOnlyFailed = false
 private var isDuoTurretFailed = false
+
+/**
+ * Players who left the current pvp game, with the team they left on, consumed by [gameover].
+ *
+ * The award cannot be made in the leave handler itself, because whether the team lost is only known
+ * at the game over, and by then the player is out of `players`.
+ */
+private val pvpLeavers = LinkedHashMap<String, Pair<PlayerData, Team>>()
 
 /** Executes achievement initialization after the core player-data load flow. */
 object AchievementHooks {
@@ -341,6 +348,19 @@ fun gameover(event: GameOverEvent) {
             data.status["record.pvp.defeat.streak.current"] = "0"
         }
     }
+
+    // LeaveAndLosePvP, for the players who left this game on a team that then lost. Recorded in
+    // playerLeave, because by the time the game ends they are no longer in `players`.
+    for ((data, team) in pvpLeavers.values) {
+        if (event.winner != team) {
+            val leaveCount = data.status.getOrDefault("record.pvp.leave.lose", "0").toInt() + 1
+            data.status["record.pvp.leave.lose"] = leaveCount.toString()
+            if (Achievement.LeaveAndLosePvP.success(data)) {
+                Achievement.LeaveAndLosePvP.set(data)
+            }
+        }
+    }
+    pvpLeavers.clear()
 }
 
 @Event
@@ -687,6 +707,9 @@ internal fun achievementSweep() {
 
 @Event
 fun playerJoin(event: PlayerJoin) {
+    // Someone who came back and played the game out did not leave and lose it.
+    pvpLeavers.remove(event.player.uuid())
+
     val data: PlayerData? = findPlayerData(event.player.uuid())
     if (data != null) {
         // Check for attendance achievement
@@ -738,27 +761,25 @@ fun playerJoin(event: PlayerJoin) {
 
 @Event
 fun playerLeave(event: PlayerLeave) {
-    val data: PlayerData? = findPlayerData(event.player.uuid())
-    if (data != null && state.rules.pvp) {
-        // Add a player to the offline players list for LeaveAndLosePvP achievement
-        offlinePlayers.add(data)
+    if (!state.rules.pvp) return
 
-        // When the game ends, check if this player's team lost
-        Events.on(GameOverEvent::class.java) { gameOver ->
-            if (gameOver.winner != event.player.team()) {
-                // Player left and their team lost
-                val leaveCount = data.status.getOrDefault("record.pvp.leave.lose", "0").toInt() + 1
-                data.status["record.pvp.leave.lose"] = leaveCount.toString()
-                if (Achievement.LeaveAndLosePvP.success(data)) {
-                    Achievement.LeaveAndLosePvP.set(data)
-                }
-            }
-        }
-    }
+    // Core's own playerLeave handler is registered first and has already moved this player out of
+    // `players` and into `offlinePlayers`, so the lookup has to allow for both.
+    val uuid = event.player.uuid()
+    val data = findPlayerData(uuid) ?: offlinePlayers.find { it.uuid == uuid } ?: return
+
+    // Derelict is not a side anyone can lose with, so leaving on it is not leaving a team behind.
+    val team = event.player.team()
+    if (team == Team.derelict) return
+
+    // Keyed by uuid, so leaving several times in the same game still counts once.
+    pvpLeavers[uuid] = data to team
 }
 
 @Event
 fun worldLoadEnd(event: WorldLoadEndEvent) {
+    // A game that ends without a GameOverEvent must not carry its leavers into the next one.
+    pvpLeavers.clear()
     isNoMiningFailed = false
     isNoPowerFailed = false
     isLowPowerFailed = false
