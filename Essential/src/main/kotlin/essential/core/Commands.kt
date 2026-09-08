@@ -45,6 +45,7 @@ import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
+import mindustry.gen.Player
 import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.Packets
@@ -81,6 +82,19 @@ class Commands {
         const val PLAYER_NOT_FOUND = "player.not.found"
         const val PLAYER_NOT_REGISTERED = "player.not.registered"
         val charsPlacing = ConcurrentHashMap<String, Array<String>>()
+
+        /**
+         * Registers a menu that only [owner] is allowed to answer.
+         *
+         * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
+         * may call with any id, so the engine hands every id it receives straight to the listener
+         * registered under it. A menu that acts on behalf of the player it was opened for therefore
+         * has to check the responder itself; nothing below this call does it.
+         */
+        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int =
+            Menus.registerMenu { player, option ->
+                if (player.uuid() == owner.uuid) listener(player, option)
+            }
 
         /**
          * Calculate the Levenshtein distance between two strings
@@ -603,10 +617,10 @@ class Commands {
                 arrayOf(bundle[close])
             )
 
-            val mainMenu = Menus.registerMenu { p, select ->
+            val mainMenu = registerOwnedMenu(playerData) { p, select ->
                 when (select) {
                     1 if !isBanned -> {
-                        val innerMenu = Menus.registerMenu { _, s ->
+                        val innerMenu = registerOwnedMenu(playerData) { _, s ->
                             val time: Int = when (s) {
                                 0 -> 10
                                 1 -> 60
@@ -633,7 +647,7 @@ class Commands {
                                 }"]
 
                                 if (s <= 5) {
-                                    val tempBanConfirmMenu = Menus.registerMenu { _, i ->
+                                    val tempBanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                                         if (i == 0) {
                                             require(targetData != null) {
                                                 "DB error?"
@@ -665,7 +679,7 @@ class Commands {
                                         arrayOf(arrayOf(bundle[ban], bundle[cancel]))
                                     )
                                 } else if (s == 6) {
-                                    val banConfirmMenu = Menus.registerMenu { _, i ->
+                                    val banConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                                         if (i == 0) {
                                             val uuid = targetData!!.uuid
                                             val label = Undo.label(uuid)
@@ -695,7 +709,7 @@ class Commands {
                     }
 
                     1 -> {
-                        val unbanConfirmMenu = Menus.registerMenu { _, i ->
+                        val unbanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                             if (i == 0) {
                                 targetData!!.banExpireDate = null
                                 scope.launch { targetData!!.update() }
@@ -990,7 +1004,7 @@ class Commands {
         playerData.status["page"] = "0"
 
         var mainMenu = 0
-        mainMenu = Menus.registerMenu { p, select ->
+        mainMenu = registerOwnedMenu(playerData) { p, select ->
             var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
@@ -1268,7 +1282,7 @@ class Commands {
         playerData.status["page"] = "0"
 
         var mainMenu = 0
-        mainMenu = Menus.registerMenu { p, select ->
+        mainMenu = registerOwnedMenu(playerData) { p, select ->
             var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
