@@ -91,4 +91,46 @@ class ProtectRulesTest {
         PluginTest.pumpApp()
         assertTrue(stranger.kicked, "a uuid with no row was not blocked")
     }
+
+    @Test
+    fun the_vpn_rule_does_not_swallow_the_database_ban_check() {
+        val (player, _) = PluginTest.newPlayer()
+        runBlocking { createBanInfo(Vars.netServer.admins.getInfo(player.uuid()), "test ban") }
+
+        useDatabaseBans(true)
+        ProtectService.conf.rules.vpn = true
+        ProtectService.conf.rules.blockNewUser = false
+
+        val con = connection()
+        connect(con, player.uuid(), player.plainName())
+
+        assertTrue(
+            PluginTest.waitUntil(15000) { con.kicked },
+            "a banned player joined because the vpn rule consumed the rule chain"
+        )
+    }
+
+    @Test
+    fun a_vpn_list_line_that_does_not_parse_does_not_skip_the_ban_check() {
+        val (player, _) = PluginTest.newPlayer()
+        runBlocking { createBanInfo(Vars.netServer.admins.getInfo(player.uuid()), "test ban") }
+
+        useDatabaseBans(true)
+        ProtectService.conf.rules.vpn = true
+        ProtectService.conf.rules.blockNewUser = false
+        val originalList = ProtectService.pluginData.vpnList
+        ProtectService.pluginData.vpnList = arrayOf("<!DOCTYPE html>")
+
+        try {
+            val con = connection()
+            connect(con, player.uuid(), player.plainName())
+
+            assertTrue(
+                PluginTest.waitUntil(15000) { con.kicked },
+                "a banned player joined because one unparseable vpn line threw out of the handler"
+            )
+        } finally {
+            ProtectService.pluginData.vpnList = originalList
+        }
+    }
 }

@@ -276,26 +276,34 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
         )
     }
 
+    // Each rule is its own check, guarded by whether an earlier rule already rejected. Chaining on the
+    // configuration flags instead let an enabled rule that did not reject swallow every rule below it.
     var kickReason = ""
     if (!conf.rules.mobile && event.connection.mobile) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.not.allow.mobile"], 0L)
         kickReason = "mobile"
-    } else if (conf.rules.minimalName.enabled && conf.rules.minimalName.length > event.packet.name.length) {
+    }
+    if (kickReason.isEmpty() && conf.rules.minimalName.enabled && conf.rules.minimalName.length > event.packet.name.length) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.name.short"], 0L)
         kickReason = "name.short"
-    } else if (conf.rules.vpn) {
+    }
+    if (kickReason.isEmpty() && conf.rules.vpn) {
         for (ip in pluginData.vpnList) {
-            val match = IpAddressMatcher(ip)
-            if (match.matches(event.connection.address)) {
+            // IpAddressMatcher throws on a line it cannot parse, and the list is downloaded. Letting
+            // that escape would skip every rule below, which is the defect this chain just lost.
+            val matched = runCatching { IpAddressMatcher(ip).matches(event.connection.address) }.getOrDefault(false)
+            if (matched) {
                 event.connection.kick(Bundle(event.packet.locale)["anti-grief.vpn"])
                 kickReason = "vpn"
                 break
             }
         }
-    } else if (conf.rules.blockNewUser && coldData?.contains(event.packet.uuid) == false) {
+    }
+    if (kickReason.isEmpty() && conf.rules.blockNewUser && coldData?.contains(event.packet.uuid) == false) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.new.blocked"], 0L)
         kickReason = "newuser"
-    } else if (coreConf.ban.useDatabase) {
+    }
+    if (kickReason.isEmpty() && coreConf.ban.useDatabase) {
         scope.launch {
             try {
                 if (checkPlayerBanned(event.packet.uuid, event.connection.address, event.packet.name)) {
