@@ -3,6 +3,8 @@ package essential.common.database
 import PluginTest.Companion.loadGame
 import essential.common.database.data.createPlayerData
 import essential.common.database.data.getPlayerData
+import essential.common.database.data.getPluginData
+import essential.common.pluginData
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -11,8 +13,8 @@ import kotlin.test.assertTrue
 
 /**
  * Six servers run against one database and each holds its own copy of a row from the moment it read
- * it. This stands in for that: two copies of the same row are loaded, each changes a different part
- * of it, and both are saved. Whatever the second save does not touch has to survive.
+ * it. These two tests stand in for that: two copies of the same row are loaded, each changes a
+ * different part of it, and both are saved. Whatever the second save does not touch has to survive.
  */
 class SharedRowWriteTest {
 
@@ -44,4 +46,47 @@ class SharedRowWriteTest {
         }
     }
 
+    @Test
+    fun anUnrelatedSaveDoesNotDropAnotherServersTempBan() {
+        loadGame(true)
+        runBlocking {
+            val banned = "shared-row-write-test-uuid"
+            val name = "shared-row-write-test-name"
+
+            // Server A is the process-wide copy loaded at boot.
+            val serverA = pluginData
+
+            try {
+                // Server B loads its own copy and issues a temp ban.
+                val serverB = getPluginData()
+                assertNotNull(serverB)
+                assertEquals(serverA.id, serverB.id, "the two copies must be of the same row")
+                assertTrue(serverA.data !== serverB.data, "the two copies must not share the blob")
+                serverB.data.tempBans[banned] = "2099-01-01T00:00"
+                assertTrue(serverB.update(), "server B could not write the temp ban")
+
+                // Server A edits something else in the same blob and saves.
+                assertTrue(
+                    !serverA.data.tempBans.containsKey(banned),
+                    "server A's copy already knows the temp ban, so this test would prove nothing"
+                )
+                serverA.data.blacklistedNames.add(name)
+                assertTrue(serverA.update(), "server A could not write its own change")
+
+                val stored = getPluginData()
+                assertNotNull(stored)
+                assertTrue(stored.data.blacklistedNames.contains(name), "server A's own change was lost")
+                assertTrue(
+                    stored.data.tempBans.containsKey(banned),
+                    "server A's unrelated save erased the temp ban issued on server B"
+                )
+            } finally {
+                // The blob is process-global state every later test reads, so put it back even when an
+                // assertion above fails: a blacklisted name filters joins and a temp ban outlives the JVM.
+                serverA.data.blacklistedNames.remove(name)
+                serverA.data.tempBans.remove(banned)
+                serverA.update()
+            }
+        }
+    }
 }
