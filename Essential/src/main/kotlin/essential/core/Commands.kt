@@ -1841,10 +1841,11 @@ class Commands {
         if (wave != null) {
             if (wave <= 0) {
                 playerData.err("command.skip.number.low")
-            } else if (wave > conf.command.skip.limit) {
-                // Each spawn is engine work on the main thread, so an unbounded count is a way to stop the
-                // server ticking. /vote skip has always read this limit; the direct command never did.
-                playerData.err("command.vote.skip.tooMany")
+            } else if (wave > conf.command.skip.adminLimit) {
+                // Every wave is spawned before this command returns, on the main thread, so the count the
+                // caller picks is how long the server stops ticking and how many units it allocates. The
+                // vote path's limit is a different setting for a different command and is left alone.
+                playerData.err("command.skip.number.high", conf.command.skip.adminLimit)
             } else {
                 val previousWave = Vars.state.wave
                 repeat(wave) {

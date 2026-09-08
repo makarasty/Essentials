@@ -14,7 +14,8 @@ import kotlin.test.assertTrue
 
 /**
  * /skip spawns its waves in one synchronous loop on the main thread, so the count a caller may ask for has
- * to be bounded. It is the same bound /vote skip has always applied.
+ * to be bounded. It has its own bound rather than the vote path's: an operator who capped vote skips did
+ * not ask for their own admin command to be capped with them.
  */
 class SkipLimitTest {
     companion object {
@@ -34,24 +35,29 @@ class SkipLimitTest {
     @Test
     fun skip_refusesMoreWavesThanTheLimit() {
         val (player, data) = admin()
-        val limit = conf.command.skip.limit
+        val limit = conf.command.skip.adminLimit
         val before = Vars.state.wave
 
         clientCommand.handleMessage("/skip ${limit + 1}", player)
 
         assertEquals(before, Vars.state.wave, "a count over the limit must spawn nothing at all")
-        assertEquals(err("command.vote.skip.tooMany"), data.lastReceivedMessage, "the player should be told why")
+        assertEquals(
+            err("command.skip.number.high", limit),
+            data.lastReceivedMessage,
+            "the refusal should name the limit and the setting that raises it"
+        )
     }
 
     @Test
-    fun skip_stillSkipsUpToTheLimit() {
+    fun skip_stillSkipsWithinTheLimit() {
         val (player, _) = admin()
-        val limit = conf.command.skip.limit
+        // Above the vote limit and below the admin one: the band this setting exists to create.
+        val asked = conf.command.skip.limit + 1
         val before = Vars.state.wave
 
-        assertTrue(limit > 0, "the limit has to leave the command usable")
-        clientCommand.handleMessage("/skip $limit", player)
+        assertTrue(conf.command.skip.adminLimit >= asked, "the command must not be bounded by the vote limit")
+        clientCommand.handleMessage("/skip $asked", player)
 
-        assertEquals(before + limit, Vars.state.wave, "a count within the limit must still skip that many waves")
+        assertEquals(before + asked, Vars.state.wave, "a count within the limit must still skip that many waves")
     }
 }
