@@ -28,6 +28,7 @@ import essential.common.rootPath
 import essential.common.systemTimezone
 import essential.common.timeSource
 import essential.core.Main
+import essential.core.buildingBulletDestroy
 import essential.core.connectPacket
 import essential.core.gameOver
 import essential.core.loadJoinedPlayerData
@@ -44,14 +45,17 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
 import mindustry.content.Blocks
+import mindustry.game.EventType.BuildingBulletDestroyEvent
 import mindustry.game.EventType.ConnectPacketEvent
 import mindustry.game.EventType.GameOverEvent
 import mindustry.game.EventType.PlayerJoin
 import mindustry.game.EventType.TapEvent
 import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
+import mindustry.gen.Bullet
 import mindustry.gen.Groups
 import mindustry.net.Administration
+import mindustry.world.blocks.storage.CoreBlock.CoreBuild
 import mindustry.net.NetConnection
 import mindustry.ui.Menus
 import mindustry.net.Packets
@@ -1018,4 +1022,96 @@ class FeatureTest {
             Vars.netServer.admins.unAdminPlayer(uuid)
         }
     }
+    /**
+     * 2026-09-08-full-audit-04-8: the PvP end-of-round check crowned the first active team that still
+     * had somebody connected, which is the team that was just eliminated once the survivors have left.
+     */
+    @Test
+    fun pvpGameOverCrownsTheTeamThatStillHoldsACore() {
+        val teams = Vars.state.teams
+        val cruxData = teams.get(Team.crux)
+        val shardedData = teams.get(Team.sharded)
+        val savedPvp = Vars.state.rules.pvp
+        val savedGameOver = Vars.state.gameOver
+        val savedInfinite = Vars.state.rules.infiniteResources
+        val savedTeams = Groups.player.map { it to it.team() }
+
+        // Other tests leave cores registered on teams this one never mentions (pvpBalanceTest plants
+        // one for green and blue), so the board is built from a known-empty state rather than assumed.
+        val touched = (teams.active.toList() + cruxData + shardedData).distinct()
+        val savedCores = touched.map { it to it.cores.toList() }
+        touched.forEach { it.cores.clear() }
+
+        val winners = CopyOnWriteArrayList<Team>()
+        val listener = Cons<GameOverEvent> { winners.add(it.winner) }
+
+        val p = newPlayer()
+
+        // Crux has just lost its last core, so it is no longer alive, but its remaining buildings and
+        // its connected player keep it in the active list - exactly the state the defect crowned.
+        val cruxWall = Blocks.copperWall.newBuilding().create(Blocks.copperWall, Team.crux)
+        cruxData.buildings.add(cruxWall)
+        if (!teams.active.contains(cruxData)) teams.active.add(cruxData)
+
+        // Sharded survives with a core but has nobody online.
+        val shardedCore = (Blocks.coreShard.newBuilding() as CoreBuild).also {
+            it.team = Team.sharded
+            shardedData.cores.add(it)
+        }
+        if (!teams.active.contains(shardedData)) teams.active.add(shardedData)
+
+        try {
+            Vars.state.rules.pvp = true
+            Vars.state.gameOver = false
+            // Keep the round's EXP and pvpWinCount writes out of the shared test database; what is
+            // under test is which team the event names, not what gameOver then persists for it.
+            Vars.state.rules.infiniteResources = true
+
+            // Everyone still connected is on the eliminated team, which is the reproduction: the
+            // survivors have left. Any player left on another team would put isWaitingForPlayers at
+            // two teams present and the branch under test would never run.
+            Groups.player.forEach { it.team(Team.crux) }
+            Groups.player.update()
+
+            assertFalse(cruxData.isAlive(), "Precondition: the eliminated team must hold no core")
+            assertTrue(shardedData.isAlive(), "Precondition: the surviving team must hold a core")
+            assertEquals(
+                listOf(Team.sharded),
+                teams.getActive().filter { it.isAlive() && it.team != Team.derelict }.map { it.team },
+                "Precondition: exactly one team is alive, or this test is measuring leftover state"
+            )
+            assertTrue(
+                Vars.netServer.isWaitingForPlayers,
+                "Precondition: fewer than two teams have players online, which is what gated the defect"
+            )
+
+            Events.on(GameOverEvent::class.java, listener)
+
+            val destroyedCore = Blocks.coreShard.newBuilding().create(Blocks.coreShard, Team.crux)
+            val bullet = Bullet.create()
+            bullet.team = Team.sharded
+            buildingBulletDestroy(BuildingBulletDestroyEvent(destroyedCore, bullet))
+
+            assertEquals(
+                listOf(Team.sharded),
+                winners.toList(),
+                "The round must be won by the team that still holds a core, not by the one that still has players"
+            )
+        } finally {
+            Events.remove(GameOverEvent::class.java, listener)
+            cruxData.buildings.remove(cruxWall)
+            shardedData.cores.remove(shardedCore)
+            savedCores.forEach { (data, cores) ->
+                data.cores.clear()
+                cores.forEach { data.cores.add(it) }
+            }
+            Vars.state.rules.infiniteResources = savedInfinite
+            Vars.state.rules.pvp = savedPvp
+            Vars.state.gameOver = savedGameOver
+            savedTeams.forEach { (entity, team) -> entity.team(team) }
+            Groups.player.update()
+            leavePlayer(p.first)
+        }
+    }
+
 }

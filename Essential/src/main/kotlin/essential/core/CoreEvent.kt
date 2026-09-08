@@ -728,6 +728,19 @@ fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
     }
 }
 
+/**
+ * The team that has won the round: the single one still holding a core, ignoring derelict.
+ *
+ * This is the engine's own test (Logic.checkGameState), and the plugin needs it because a team that
+ * has lost every core stays in Vars.state.teams.getActive() on its remaining buildings, so "is still
+ * present" and "is still alive" are not the same question. Null when the board does not name one
+ * winner - zero teams alive, or more than one - because the round is then the engine's to end.
+ */
+private fun soleSurvivingTeam(): Team? {
+    val alive = Vars.state.teams.getActive().filter { it.isAlive() && it.team != Team.derelict }
+    return if (alive.size == 1) alive[0].team else null
+}
+
 @Event
 fun gameOver(event: GameOverEvent) {
     MatchClock.reset()
@@ -1035,7 +1048,10 @@ fun playerLeave(event: PlayerLeave) {
                     }
                 }
                 if (s.keys.size == 1) {
-                    Events.fire(GameOverEvent(b.first().team()))
+                    // Which teams still have players says who is left to play, not who won, and
+                    // b.first() is not even the player from that team - a spectator parked on
+                    // Team.derelict sorts ahead of them. Ask the board who survived instead.
+                    soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
                 }
             }
         }
@@ -1289,12 +1305,9 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
             data.send("event.bullet.kill", event.bullet.team.coloredName(), event.build.team.coloredName())
         }
         if (Vars.netServer.isWaitingForPlayers) {
-            for (t in Vars.state.teams.getActive()) {
-                if (Groups.player.count { p: Player -> p.team() === t.team } > 0) {
-                    Events.fire(GameOverEvent(t.team))
-                    break
-                }
-            }
+            // isWaitingForPlayers only reports that fewer than two teams have someone connected; it
+            // says nothing about who survived.
+            soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
         }
     }
 }
