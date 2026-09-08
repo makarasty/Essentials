@@ -66,7 +66,13 @@ object ServerDescription {
         return conf.feature.description.template.ifBlank { Core.settings.getString(TEMPLATE_KEY, "") }
     }
 
-    fun hasPlaceholders(text: String): Boolean = placeholder.containsMatchIn(text)
+    /**
+     * Only placeholders this engine knows count. An unknown one is left in the text by
+     * [render], and if it counted, the rendered text would be read back as the template
+     * on the next tick - freezing every other value into the description for good.
+     */
+    fun hasPlaceholders(text: String): Boolean =
+        placeholder.findAll(text).any { it.groupValues[1] in placeholders }
 
     fun render(template: String, values: Map<String, () -> String>): String =
         placeholder.replace(template) { match -> values[match.groupValues[1]]?.invoke() ?: match.value }
