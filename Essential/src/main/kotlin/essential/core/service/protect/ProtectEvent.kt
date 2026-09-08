@@ -279,7 +279,9 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
     // Each rule is its own check, guarded by whether an earlier rule already rejected. Chaining on the
     // configuration flags instead let an enabled rule that did not reject swallow every rule below it.
     var kickReason = ""
-    if (!conf.rules.mobile && event.connection.mobile) {
+    // The packet, not the connection: the engine copies mobile onto the connection only after this
+    // event has fired, so the connection's own flag is always false here.
+    if (conf.rules.mobile && event.packet.mobile) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.not.allow.mobile"], 0L)
         kickReason = "mobile"
     }

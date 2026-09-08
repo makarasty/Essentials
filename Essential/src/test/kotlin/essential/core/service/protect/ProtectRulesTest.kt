@@ -47,13 +47,13 @@ class ProtectRulesTest {
         override fun close() = Unit
     }
 
-    private fun connect(con: NetConnection, uuid: String, name: String = "tester") {
+    private fun connect(con: NetConnection, uuid: String, name: String = "tester", mobile: Boolean = false) {
         val packet = Packets.ConnectPacket()
         packet.name = name
         packet.uuid = uuid
         packet.usid = uuid
         packet.locale = "en"
-        packet.mobile = false
+        packet.mobile = mobile
         con.uuid = uuid
         Events.fire(EventType.ConnectPacketEvent(con, packet))
     }
@@ -90,6 +90,29 @@ class ProtectRulesTest {
         connect(stranger, "uuid-that-has-no-row")
         PluginTest.pumpApp()
         assertTrue(stranger.kicked, "a uuid with no row was not blocked")
+    }
+
+    @Test
+    fun the_mobile_rule_blocks_mobile_players_only_when_it_is_switched_on() {
+        val (player, _) = PluginTest.newPlayer()
+        useDatabaseBans(false)
+
+        ProtectService.conf.rules.mobile = false
+        val allowed = connection()
+        connect(allowed, player.uuid(), mobile = true)
+        PluginTest.pumpApp()
+        assertFalse(allowed.kicked, "a mobile player was refused while the rule was off")
+
+        ProtectService.conf.rules.mobile = true
+        val refused = connection()
+        connect(refused, player.uuid(), mobile = true)
+        PluginTest.pumpApp()
+        assertTrue(refused.kicked, "a mobile player joined while the rule was on")
+
+        val desktop = connection()
+        connect(desktop, player.uuid(), mobile = false)
+        PluginTest.pumpApp()
+        assertFalse(desktop.kicked, "a desktop player was caught by the mobile rule")
     }
 
     @Test
