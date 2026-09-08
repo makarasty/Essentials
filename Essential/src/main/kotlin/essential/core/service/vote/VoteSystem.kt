@@ -44,20 +44,22 @@ private fun isYes(message: String) = message.trim().lowercase() in yesWords
 private fun isNo(message: String) = message.trim().lowercase() in noWords
 
 /**
- * The save a passed `vote back` restores: the newest file of whichever family is in use.
+ * The save a passed `vote back` restores: the newest `rollback_*.msav` on disk.
  *
- * A rollback vote is a request to undo something recent, so both families are ordered the same way.
- * Arc's `Seq.min` keeps the smallest value and reads the timestamp through a float, which cannot
- * hold an epoch millisecond exactly, so neither is used here.
+ * Only the plugin's own backups are eligible. They are written by the map backup task, capped by
+ * `command.rollback.limit` and deleted on every world load, so the newest one always belongs to the map
+ * being played. The engine's `auto_*` autosaves are not: they survive a map change, the first one on a
+ * new map is not written for `autosaveSpacing` seconds, and `SaveIO.load` performs no map check - so for
+ * that window the newest autosave on disk is the previous map, and restoring it would swap the server
+ * onto it.
+ *
+ * The timestamps are compared as longs. Arc's `Seq.min` and `Seq.max` read them through a float, which
+ * at the current epoch cannot separate two saves written within about two minutes of each other.
  */
-internal fun findVoteBackSave(): Fi? {
-    val saves = if (Core.settings.getBool("autosave")) {
-        Vars.saveDirectory.findAll { f: Fi -> f.name().startsWith("auto_") }
-    } else {
-        Vars.saveDirectory.findAll { f: Fi -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
-    }
-    return saves.maxByOrNull { it.lastModified() }
-}
+internal fun findVoteBackSave(): Fi? =
+    Vars.saveDirectory
+        .findAll { f: Fi -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
+        .maxByOrNull { it.lastModified() }
 
 /**
  * The repeating decay the `vote random` fire outcome leaves behind: every ten seconds it takes nine

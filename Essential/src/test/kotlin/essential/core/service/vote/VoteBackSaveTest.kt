@@ -10,11 +10,15 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * A passed `vote back` must restore the most recent save, never the oldest one on disk.
+ * A passed `vote back` must restore the newest of the plugin's own rollback backups, whatever the
+ * engine's `autosave` setting says.
  *
- * Before the fix the autosave branch used arc's `Seq.min`, which keeps the smallest value, so the
- * server was rolled back to the first autosave still on disk - possibly one written under a
- * different map - while the rollback branch of the same expression took the newest file.
+ * Two defects lived in the picker, and the tests below cover one each. It ordered the autosave family
+ * with arc's `Seq.min`, which keeps the smallest value, so it restored the first file still on disk
+ * rather than the last one - [takesTheNewestRollbackSave] guards the ordering. And with `autosave` on it
+ * read the autosave family at all, which the plugin neither writes nor clears on a map change, while
+ * `/vote back` had already been allowed on the strength of a rollback file existing -
+ * [ignoresEngineAutosavesEvenWhenAutosaveIsOn] and [noRollbackSaveIsNoFile] guard that.
  */
 class VoteBackSaveTest {
     private val written = mutableListOf<Fi>()
@@ -53,21 +57,28 @@ class VoteBackSaveTest {
     }
 
     @Test
-    fun autosaveBranchTakesTheNewestFile() {
-        Core.settings.put("autosave", true)
-        save("auto_vbt_old.msav", 600_000)
-        val newest = save("auto_vbt_new.msav", 1_000)
-        save("auto_vbt_middle.msav", 300_000)
+    fun takesTheNewestRollbackSave() {
+        save("rollback_vbt_old.msav", 600_000)
+        val newest = save("rollback_vbt_new.msav", 1_000)
+        save("rollback_vbt_middle.msav", 300_000)
 
-        assertEquals(newest.name(), findVoteBackSave()?.name(), "vote back restored an older autosave")
+        assertEquals(newest.name(), findVoteBackSave()?.name(), "vote back restored an older rollback save")
     }
 
     @Test
-    fun rollbackBranchTakesTheNewestFile() {
-        Core.settings.put("autosave", false)
-        save("rollback_vbt_old.msav", 600_000)
-        val newest = save("rollback_vbt_new.msav", 1_000)
+    fun ignoresEngineAutosavesEvenWhenAutosaveIsOn() {
+        Core.settings.put("autosave", true)
+        val rollback = save("rollback_vbt_only.msav", 600_000)
+        save("auto_vbt_newer.msav", 1_000)
 
-        assertEquals(newest.name(), findVoteBackSave()?.name(), "vote back restored an older rollback save")
+        assertEquals(rollback.name(), findVoteBackSave()?.name(), "vote back reached for an engine autosave")
+    }
+
+    @Test
+    fun noRollbackSaveIsNoFile() {
+        Core.settings.put("autosave", true)
+        save("auto_vbt_only.msav", 1_000)
+
+        assertEquals(null, findVoteBackSave(), "vote back found a save with no rollback backup on disk")
     }
 }
