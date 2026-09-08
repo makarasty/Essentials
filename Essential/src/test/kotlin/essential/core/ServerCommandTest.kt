@@ -5,6 +5,7 @@ import PluginTest.Companion.createPlayer
 import PluginTest.Companion.joinPlayer
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.newPlayer
+import PluginTest.Companion.pumpApp
 import PluginTest.Companion.serverCommand
 import PluginTest.Companion.waitUntil
 import arc.Events
@@ -396,9 +397,11 @@ class ServerCommandTest {
             data.update()
             TempBan.tick()
         }
+        pumpApp()
 
         assertFalse(admins.isIDBanned(uuid), "the scheduler should lift an expired ban")
-        assertNull(runBlocking { getPlayerData(uuid)?.banExpireDate }, "the scheduler should clear the ban expiry")
+        // The expiry stays in the row on purpose: sibling servers sharing the database read it too.
+        assertNotNull(runBlocking { getPlayerData(uuid)?.banExpireDate }, "the scheduler must not erase the expiry")
     }
 
     @Test
@@ -439,6 +442,7 @@ class ServerCommandTest {
         pluginData.data.tempBans[uuid] =
             Clock.System.now().minus(1.minutes).toLocalDateTime(systemTimezone).toString()
         runBlocking { TempBan.tick() }
+        pumpApp()
 
         assertFalse(admins.isIDBanned(uuid), "the scheduler should lift an expired ban without a player row")
         assertFalse(pluginData.data.tempBans.containsKey(uuid), "the scheduler should drop the stored expiry")

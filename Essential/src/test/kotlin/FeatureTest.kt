@@ -4,6 +4,7 @@ import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.player
+import PluginTest.Companion.pumpApp
 import PluginTest.Companion.serverCommand
 import PluginTest.Companion.setPermission
 import essential.common.database.data.checkRoutingPermission
@@ -35,12 +36,9 @@ import essential.core.playerDataRetries
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
-import arc.Core
 import arc.Events
-import arc.backend.headless.HeadlessApplication
 import arc.func.Cons
 import arc.util.Log
-import arc.util.TaskQueue
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
@@ -123,9 +121,7 @@ class FeatureTest {
     }
 
     private fun pumpAppTasksStrict() {
-        val field = HeadlessApplication::class.java.getDeclaredField("runnables")
-        field.isAccessible = true
-        (field.get(Core.app) as TaskQueue).run()
+        pumpApp()
     }
 
     /** Pumps the queue for the whole window and returns the first runnable that blew up. */
@@ -152,12 +148,7 @@ class FeatureTest {
     }
 
     private fun pumpAppTasks() {
-        try {
-            val field = HeadlessApplication::class.java.getDeclaredField("runnables")
-            field.isAccessible = true
-            (field.get(Core.app) as TaskQueue).run()
-        } catch (_: Exception) {
-        }
+        pumpApp()
     }
 
     private fun awaitPumped(timeoutMs: Long, condition: () -> Boolean): Boolean {
