@@ -1290,5 +1290,64 @@ class FeatureTest {
             leavePlayer(owner.first)
         }
     }
+    /**
+     * The same class of defect on the end-of-round rating menus: the rating is recorded under the uuid
+     * the menu was opened for, so anyone answering it rates in that player's name and locks them out.
+     */
+    @Test
+    fun onlyThePlayerShownTheRatingMenuMayRateTheMap() {
+        val originalConf = Main.conf
+        val originalStart = mapStartTime
+        val originalInfinite = Vars.state.rules.infiniteResources
+        val owner = newPlayer()
+        val intruder = newPlayer()
+        val ownerUuid = owner.first.uuid()
+        val ratedBefore = mapRatings.keys.toSet()
+
+        try {
+            Main.conf = originalConf.copy(feature = originalConf.feature.copy(mapVote = true))
+            Vars.state.rules.infiniteResources = true
+            mapStartTime = timeSource.markNow() - 10.minutes
+
+            // Exactly one menu must be built, so the last registered id is unambiguously the owner's.
+            players.forEach { if (it.uuid != ownerUuid) mapRatings[it.uuid] = true }
+            mapRatings.remove(ownerUuid)
+
+            gameOver(GameOverEvent(Team.crux))
+            awaitPumped(5000L) { false }
+            val difficultyMenu = Menus.registerMenu { _, _ -> } - 1
+
+            val menusBefore = Menus.registerMenu { _, _ -> }
+            Menus.menuChoose(intruder.first, difficultyMenu, 0)
+            assertEquals(
+                1,
+                Menus.registerMenu { _, _ -> } - menusBefore,
+                "Answering another player's difficulty menu must not open a rating menu"
+            )
+
+            Menus.menuChoose(owner.first, difficultyMenu, 0)
+            val ratingMenu = Menus.registerMenu { _, _ -> } - 1
+
+            Menus.menuChoose(intruder.first, ratingMenu, 4)
+            assertFalse(
+                mapRatings.containsKey(ownerUuid),
+                "Another player must not be able to rate the map in the owner's name"
+            )
+
+            Menus.menuChoose(owner.first, ratingMenu, 4)
+            assertTrue(
+                mapRatings.containsKey(ownerUuid),
+                "The player the menu was opened for must still be able to rate"
+            )
+        } finally {
+            awaitPumped(2000L) { false }
+            mapRatings.keys.toList().forEach { if (it !in ratedBefore) mapRatings.remove(it) }
+            Vars.state.rules.infiniteResources = originalInfinite
+            mapStartTime = originalStart
+            Main.conf = originalConf
+            leavePlayer(intruder.first)
+            leavePlayer(owner.first)
+        }
+    }
 
 }

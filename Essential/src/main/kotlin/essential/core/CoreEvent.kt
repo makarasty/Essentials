@@ -783,6 +783,9 @@ fun gameOver(event: GameOverEvent) {
                     val con = Groups.player.find { p -> p.uuid() == data.uuid }?.con() ?: return@post
 
                     val difficultyMenu = Menus.registerMenu { player, select ->
+                        // The rating is recorded under data.uuid, so anyone else answering this menu
+                        // rates the map in their name and locks them out of rating it themselves.
+                        if (player.uuid() != data.uuid) return@registerMenu
                         if (gameOverCount != currentCount) {
                             player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
                             return@registerMenu
@@ -793,6 +796,7 @@ fun gameOver(event: GameOverEvent) {
                         if (select in 0..4) {
                             val difficulty = select + 1
                             val ratingMenu = Menus.registerMenu { player2, select2 ->
+                                if (player2.uuid() != data.uuid) return@registerMenu
                                 if (gameOverCount != currentCount) {
                                     player2.sendMessage(Bundle(player2.locale())["command.map.rate.timeout"])
                                     return@registerMenu
