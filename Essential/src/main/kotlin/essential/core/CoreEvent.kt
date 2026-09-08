@@ -1089,10 +1089,15 @@ fun playerUnban(event: PlayerUnbanEvent) {
 
 @Event
 fun playerIpUnban(eent: PlayerIpUnbanEvent) {
-    Events.fire(CustomEvents.PlayerUnbanned(Vars.netServer.admins.findByIP(eent.ip).lastName, currentTime()))
+    // Clear the row every server shares first. The announcement below is cosmetic, and anything that
+    // throws in it used to strand the ban on the other five servers while this one reported success.
     scope.launch {
         removeBanInfoByIP(eent.ip)
     }
+    // The engine fires this for any address that was in the ban list, whether or not a PlayerInfo
+    // carries it, so findByIP legitimately returns null for hand-banned or pruned addresses.
+    val info = Vars.netServer.admins.findByIP(eent.ip)
+    Events.fire(CustomEvents.PlayerUnbanned(info?.lastName ?: eent.ip, currentTime()))
 }
 
 @Event

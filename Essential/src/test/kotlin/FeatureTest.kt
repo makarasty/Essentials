@@ -19,6 +19,9 @@ import essential.common.database.databaseClose
 import essential.common.database.databaseInit
 import essential.common.database.defaultDatabase
 import essential.common.database.table.ServerRoutingTable
+import essential.common.database.data.checkPlayerBannedByIpOrUuid
+import essential.common.database.data.createBanInfo
+import essential.common.database.data.removeBanInfoByIP
 import essential.common.event.CustomEvents
 import essential.common.mapStartTime
 import essential.common.players
@@ -35,6 +38,7 @@ import essential.core.gameOver
 import essential.core.loadJoinedPlayerData
 import essential.core.mapRatings
 import essential.core.playerDataRetries
+import essential.core.playerIpUnban
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
@@ -49,6 +53,7 @@ import mindustry.content.Blocks
 import mindustry.game.EventType.BuildingBulletDestroyEvent
 import mindustry.game.EventType.ConnectPacketEvent
 import mindustry.game.EventType.GameOverEvent
+import mindustry.game.EventType.PlayerIpUnbanEvent
 import mindustry.game.EventType.PlayerJoin
 import mindustry.game.EventType.TapEvent
 import mindustry.game.EventType.WorldLoadEvent
@@ -1162,5 +1167,45 @@ class FeatureTest {
             probe.delete()
         }
     }
+    /**
+     * 2026-09-08-full-audit-09-7: unbanning an address that no PlayerInfo carries threw before the
+     * coroutine that clears the shared ban table was ever launched.
+     */
+    @Test
+    fun ipUnbanClearsTheSharedBanRowWithoutAPlayerInfo() {
+        val ip = "203.0.113.9"
+        val info = Administration.PlayerInfo()
+        info.id = "fleetunban" + (System.nanoTime() % 100000000L)
+        info.lastName = "ghost"
+        info.lastIP = ip
+        info.names.add("ghost")
+        info.ips.add(ip)
 
+        val announced = CopyOnWriteArrayList<String>()
+        val listener = Cons<CustomEvents.PlayerUnbanned> { announced.add(it.name) }
+        Events.on(CustomEvents.PlayerUnbanned::class.java, listener)
+
+        try {
+            runBlocking { createBanInfo(info, "fleet regression") }
+            assertTrue(
+                runBlocking { checkPlayerBannedByIpOrUuid(info.id, ip) },
+                "Precondition: the ban row must exist before the unban"
+            )
+            assertNull(
+                Vars.netServer.admins.findByIP(ip),
+                "Precondition: no PlayerInfo may carry the address, which is what made findByIP return null"
+            )
+
+            playerIpUnban(PlayerIpUnbanEvent(ip))
+
+            assertEquals(listOf(ip), announced.toList(), "The unban must still be announced")
+            assertTrue(
+                awaitPumped(15000) { runBlocking { !checkPlayerBannedByIpOrUuid(info.id, ip) } },
+                "The row in the shared ban table must be cleared, or every other server stays banned"
+            )
+        } finally {
+            Events.remove(CustomEvents.PlayerUnbanned::class.java, listener)
+            runBlocking { removeBanInfoByIP(ip) }
+        }
+    }
 }
