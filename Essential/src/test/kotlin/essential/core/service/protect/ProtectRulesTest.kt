@@ -1,0 +1,94 @@
+package essential.core.service.protect
+
+import arc.Events
+import essential.common.database.data.createBanInfo
+import essential.core.CoreConfig
+import essential.core.Main
+import kotlinx.coroutines.runBlocking
+import mindustry.Vars
+import mindustry.game.EventType
+import mindustry.net.NetConnection
+import mindustry.net.Packets
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+class ProtectRulesTest {
+    companion object {
+        private var loaded = false
+    }
+
+    private lateinit var originalCore: CoreConfig
+    private lateinit var originalProtect: ProtectConfig
+
+    @BeforeTest
+    fun setup() {
+        if (!loaded) {
+            PluginTest.loadGame(true)
+            loaded = true
+        }
+        originalCore = Main.conf
+        originalProtect = ProtectService.conf
+        ProtectService.conf = ProtectConfig()
+        coldData = null
+    }
+
+    @AfterTest
+    fun cleanup() {
+        Main.conf = originalCore
+        ProtectService.conf = originalProtect
+        coldData = null
+    }
+
+    private fun connection(address: String = "192.168.0.5") = object : NetConnection(address) {
+        override fun send(`object`: Any?, reliable: Boolean) = Unit
+        override fun close() = Unit
+    }
+
+    private fun connect(con: NetConnection, uuid: String, name: String = "tester") {
+        val packet = Packets.ConnectPacket()
+        packet.name = name
+        packet.uuid = uuid
+        packet.usid = uuid
+        packet.locale = "en"
+        packet.mobile = false
+        con.uuid = uuid
+        Events.fire(EventType.ConnectPacketEvent(con, packet))
+    }
+
+    private fun useDatabaseBans(enabled: Boolean) {
+        Main.conf = Main.conf.copy(ban = Main.conf.ban.copy(useDatabase = enabled))
+    }
+
+    @Test
+    fun the_cold_uuid_list_holds_every_known_player() {
+        val (player, _) = PluginTest.newPlayer()
+
+        enableBlockNewUser()
+
+        assertTrue(PluginTest.waitUntil(15000) { coldData != null }, "the uuid list never loaded")
+        assertTrue(coldData!!.contains(player.uuid()), "a player with a row was missing from the list")
+    }
+
+    @Test
+    fun block_new_user_lets_a_returning_player_in() {
+        val (player, _) = PluginTest.newPlayer()
+        useDatabaseBans(false)
+        ProtectService.conf.rules.blockNewUser = true
+
+        enableBlockNewUser()
+        assertTrue(PluginTest.waitUntil(15000) { coldData != null }, "the uuid list never loaded")
+
+        val returning = connection()
+        connect(returning, player.uuid())
+        PluginTest.pumpApp()
+        assertFalse(returning.kicked, "a player who has a row in the database was kicked as new")
+
+        val stranger = connection()
+        connect(stranger, "uuid-that-has-no-row")
+        PluginTest.pumpApp()
+        assertTrue(stranger.kicked, "a uuid with no row was not blocked")
+    }
+}

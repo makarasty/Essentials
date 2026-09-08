@@ -47,7 +47,9 @@ import kotlin.math.min
 var pvpCount: Int = 0
 var originalBlockMultiplier: Float = 0f
 var originalUnitMultiplier: Float = 0f
-var coldData: Array<String> = arrayOf()
+/** Every uuid known to the database when new user blocking was switched on, or null while that list is unknown. */
+@Volatile
+var coldData: Set<String>? = null
 
 @Event
 fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
@@ -290,7 +292,7 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
                 break
             }
         }
-    } else if (conf.rules.blockNewUser && !listOf<String?>(*coldData).contains(event.packet.uuid)) {
+    } else if (conf.rules.blockNewUser && coldData?.contains(event.packet.uuid) == false) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.new.blocked"], 0L)
         kickReason = "newuser"
     } else if (coreConf.ban.useDatabase) {
@@ -313,26 +315,16 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
     }
 }
 
-fun start() {
-    if (conf.rules.blockNewUser) {
-        enableBlockNewUser()
-    }
-}
-
 fun enableBlockNewUser() {
     scope.launch {
         try {
-            suspendTransaction {
-                val list = PlayerTable.select(PlayerTable.uuid).toList()
-
-                var size = 0
-                for (playerData in list) {
-                    coldData[size++] = playerData[PlayerTable.uuid]
-                }
+            coldData = suspendTransaction {
+                PlayerTable.select(PlayerTable.uuid).toList().mapTo(HashSet()) { it[PlayerTable.uuid] }
             }
         } catch (e: Exception) {
+            // Without the list there is no way to tell a returning player from a new one, so the rule
+            // stands down rather than kicking everyone who connects. Any list already loaded is kept.
             Log.err("Failed to load player UUIDs for new user blocking", e)
-            coldData = arrayOf()
         }
     }
 }
