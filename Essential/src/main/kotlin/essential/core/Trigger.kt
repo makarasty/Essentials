@@ -637,6 +637,8 @@ class Trigger {
         }
 
         Timer.schedule({
+            if (unitLimitMessageCooldown > 0) unitLimitMessageCooldown--
+
             players.removeIf { it.player.con() == null || it.player.con().hasDisconnected }
 
             players.forEach {
@@ -731,16 +733,17 @@ class Trigger {
                 }
             }
 
-            if (rollbackCount == 0) {
+            if (rollbackCount <= 0) {
                 saveMapBackup()
 
                 rollbackCount = conf.command.rollback.time
             } else {
-                rollbackCount--
+                rollbackCount -= 60
             }
 
             if (conf.feature.motd.enabled) {
-                if (messageCount == conf.feature.motd.time) {
+                messageCount += 60
+                if (messageCount >= conf.feature.motd.time) {
                     players.forEach {
                         val message = if (rootPath.child("messages/${it.player.locale()}.txt").exists()) {
                             rootPath.child("messages/${it.player.locale()}.txt").readString()
@@ -751,7 +754,7 @@ class Trigger {
                             null
                         }
                         if (message != null) {
-                            val c = message.split(Regex("\r\n"))
+                            val c = message.lines()
 
                             if (c.size <= messageOrder) {
                                 messageOrder = 0
@@ -761,8 +764,6 @@ class Trigger {
                     }
                     messageOrder++
                     messageCount = 0
-                } else {
-                    messageCount++
                 }
             }
         }, 0f, 60f)

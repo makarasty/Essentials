@@ -200,8 +200,9 @@ data class RockTheVote(
 /** Feature - Unit limit settings */
 @Serializable
 data class UnitFeature(
+    @YamlComment("Enable the unit cap")
     val enabled: Boolean = false,
-    @YamlComment("Maximum number of blocks a player can place")
+    @YamlComment("Server-wide cap on live units; a unit spawned above it is killed at once (waves included)")
     val limit: Int = 3000,
 )
 
@@ -220,6 +221,8 @@ data class PvP(
     val autoTeam: Boolean = false,
     @YamlComment("Spectator mode for defeated players")
     val spector: Boolean = false,
+    @YamlComment("Put a rejoining player back into the team they had before; off = they pick again")
+    val rememberTeam: Boolean = false,
 )
 
 /** Feature - Player level feature settings */

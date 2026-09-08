@@ -93,7 +93,7 @@ var pvpPlayer = mutableMapOf<String, Team>()
 
 /** Whether global chat is muted */
 var isGlobalMute = false
-private var unitLimitMessageCooldown = 0
+var unitLimitMessageCooldown = 0
 
 /** Whether server routing is forced - becomes true when isNotTargetMap is false */
 var isNotTargetMap = false
@@ -571,7 +571,7 @@ fun serverLoad(event: ServerLoadEvent) {
 
     if (!conf.module.protect) {
         Events.on(PlayerJoin::class.java, Cons<PlayerJoin> {
-            it.player.admin(false)
+            // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
 
             val player = it.player
             val name = player.name
@@ -1037,12 +1037,10 @@ fun playerLeave(event: PlayerLeave) {
                 if (s.keys.size == 1) {
                     Events.fire(GameOverEvent(b.first().team()))
                 }
-            } else if (players.isEmpty() && pvpSpecters.isNotEmpty()) {
-                Events.fire(GameOverEvent(data.player.team()))
             }
         }
         players.removeIf { it.uuid == data.uuid }
-        worldEditSelection[data.uuid]
+        worldEditSelection.remove(data.uuid)
     }
 }
 
@@ -1069,7 +1067,7 @@ fun playerUnban(event: PlayerUnbanEvent) {
     Events.fire(CustomEvents.PlayerUnbanned(Vars.netServer.admins.getInfo(event.uuid).lastName, currentTime()))
     scope.launch {
         removeBanInfoByUUID(event.uuid)
-        TempBan.clearBanExpire(event.uuid)
+        TempBan.onUnban(event.uuid)
     }
 }
 
@@ -1126,23 +1124,27 @@ fun worldLoad(event: WorldLoadEvent) {
     Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }.forEach { it.delete() }
     if (Vars.saveDirectory.child("rollback.msav").exists()) Vars.saveDirectory.child("rollback.msav").delete()
 
-    if (Vars.state.rules.pvp) {
-        pvpSpecters.clear()
-        pvpPlayer.clear()
+    // Clear on every world load, PvP or not - otherwise a non-PvP map after a PvP one inherits
+    // the previous map's specters and team assignments.
+    pvpSpecters.clear()
+    pvpPlayer.clear()
 
+    if (Vars.state.rules.pvp) {
         val activeTeams = Vars.state.teams?.active?.filter {
             it.team != Team.derelict && it.hasCore() && !(Vars.state.rules.waves && Vars.state.rules.waveTeam == it.team)
         }
         val hasActiveTeams = activeTeams != null && activeTeams.any()
 
+        val isSpectator = { d: PlayerData -> conf.feature.pvp.spector && Permission.check(d, "pvp.spector") }
+
         for (data in players) {
-            if (Permission.check(data, "pvp.spector")) {
+            if (isSpectator(data)) {
                 data.player.team(Team.derelict)
             }
         }
 
         if (hasActiveTeams) {
-            val nonSpectators = players.filter { !Permission.check(it, "pvp.spector") }
+            val nonSpectators = players.filter { !isSpectator(it) }
             if (conf.feature.pvp.autoTeam) {
                 nonSpectators.forEach { it.player.team(Team.derelict) }
                 nonSpectators.forEach { data ->
@@ -1250,12 +1252,11 @@ fun playerConnect(event: PlayerConnect) {
             val playerData = getPlayerDataSync(player.uuid())
             val banExpireDate = playerData?.banExpireDate
             if (banExpireDate != null) {
+                // A past expiry already means the ban is over; don't clear it here. The server that
+                // issued the ban still needs to see this timestamp in its own sweep to lift the local ban.
                 if (banExpireDate > Clock.System.now().toLocalDateTime(systemTimezone)) {
                     val reason = Bundle(player.locale())["command.tempBan.banned", playerData.name, "Admin", banExpireDate.toString()]
                     Core.app.post { player.con.kick(reason) }
-                } else {
-                    playerData.banExpireDate = null
-                    playerData.update()
                 }
             }
         } catch (e: Exception) {
@@ -1316,6 +1317,9 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
                     val newConf = Config.load("config", CoreConfig.serializer(), CoreConfig())
                     if (newConf != null) {
                         conf = newConf
+                        // The description timer is built from the config; rebuild it with the new one.
+                        // This runs on the file-watcher thread, but start() can render immediately, so post it to the game thread.
+                        Core.app.post { ServerDescription.start() }
                     }
                     Log.info(Bundle()["config.reloaded"])
                 } catch (_: FileNotFoundException) {
@@ -1373,7 +1377,7 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
 
         // If the MOTD exceeds 10 lines, display it as a full-screen message
         if (motd != null) {
-            val count = motd.split("\r\n|\r|\n").toTypedArray().size
+            val count = motd.lines().size
             if (count > 10) Call.infoMessage(player.con(), motd) else message.appendLine(motd)
         }
 
@@ -1401,15 +1405,15 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     if (Vars.state.rules.pvp) {
         when {
             // If this player previously joined a team, reassign them to that team
-            pvpPlayer.containsKey(playerData.uuid) -> {
+            conf.feature.pvp.rememberTeam && pvpPlayer.containsKey(playerData.uuid) -> {
                 player.team(pvpPlayer[playerData.uuid])
             }
 
             // If PvP spectator is enabled and the player is a spectator or has spectator permission, set to the spectator team
-            conf.feature.pvp.spector && pvpSpecters.contains(playerData.uuid) || Permission.check(
+            conf.feature.pvp.spector && (pvpSpecters.contains(playerData.uuid) || Permission.check(
                 playerData,
                 "pvp.spector"
-            ) -> {
+            )) -> {
                 player.team(Team.derelict)
             }
 

@@ -121,7 +121,7 @@ class Main : Plugin() {
             init {
                 Events.on(WorldLoadEvent::class.java) {
                     isNotTargetMap =
-                        !isNotTargetMap && pluginData.data.warpBlock.none { f -> f.mapName == state.map.name() }
+                        pluginData.data.warpBlock.none { f -> f.mapName == state.map.name() }
                 }
             }
 
