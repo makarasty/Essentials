@@ -324,15 +324,17 @@ class StatisticsController {
 
 fun Route.statisticsRoutes(controller: StatisticsController) {
     route("/api/server") {
-        get("/status") {
-            controller.handleGetServerStatus(call)
-        }
-
-        get("/contribution") {
-            controller.handleGetContribution(call)
-        }
-
+        // Every route here reports on the players currently online, so all of them belong inside the
+        // authenticate block: authenticate wraps only the routes declared in its own lambda.
         authenticate("auth-session") {
+            get("/status") {
+                controller.handleGetServerStatus(call)
+            }
+
+            get("/contribution") {
+                controller.handleGetContribution(call)
+            }
+
             get("/chat") {
                 controller.handleGetChat(call)
             }
