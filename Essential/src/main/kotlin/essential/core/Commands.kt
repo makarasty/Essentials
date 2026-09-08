@@ -1747,7 +1747,16 @@ class Commands {
         val previous = Permission.groupOf(data.uuid, data.permission)
         val hadUserEntry = Permission.hasUserEntry(data.uuid)
 
-        if (!Permission.setGroup(data.uuid, group)) {
+        // permission_user.yaml is per server and wins over the shared permission column, so an entry
+        // written here would mask this group on this server and be pushed back over the shared row on
+        // the next load. The group belongs in the row every server reads. An entry the operator wrote by
+        // hand is left in place and kept in step; one this command created is not worth having.
+        val written = if (hadUserEntry) {
+            Permission.setGroup(data.uuid, group)
+        } else {
+            Permission.removeUserEntry(data.uuid, group)
+        }
+        if (!written) {
             val problem = Permission.userFileProblem().orEmpty()
             if (sender != null) {
                 sender.err("permission.user.file.invalid", problem)

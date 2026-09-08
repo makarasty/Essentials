@@ -157,7 +157,7 @@ class UndoTest {
     }
 
     @Test
-    fun undo_setPermRemovesTheEntryItCreated() {
+    fun undo_setPermLeavesNoUserEntry() {
         val admin = admin("owner")
         val target = newPlayer().first
         val uuid = target.uuid()
@@ -165,13 +165,14 @@ class UndoTest {
         assertFalse(Permission.hasUserEntry(uuid), "a fresh player should have no yaml entry")
 
         clientCommand.handleMessage("/setperm ${target.name} admin", admin)
-        assertTrue(Permission.hasUserEntry(uuid), "setperm should create a yaml entry")
+        assertFalse(Permission.hasUserEntry(uuid), "setperm should not write an entry that masks the shared row")
+        assertEquals("admin", Permission.groupOf(uuid, data(target).permission), "the group should still apply")
 
         clientCommand.handleMessage("/undo", admin)
-        assertFalse(Permission.hasUserEntry(uuid), "undo should remove the entry setperm created")
+        assertFalse(Permission.hasUserEntry(uuid), "undo should leave no entry behind either")
         assertFalse(
             rootPath.child("permission_user.yaml").readString().contains(uuid),
-            "the created entry should be gone from the file"
+            "no entry for this player should ever reach the file"
         )
     }
 
