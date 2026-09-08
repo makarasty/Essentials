@@ -1,6 +1,8 @@
 package essential.common.service
 
+import arc.Core
 import arc.Events
+import arc.util.Log
 import essential.common.event.CustomEvents
 import essential.common.rootPath
 import java.nio.file.*
@@ -18,7 +20,19 @@ fun fileWatchService() {
             for (event in watchKey.pollEvents()) {
                 val kind = event.kind()
                 val paths = (event.context() as Path).fileName.toString()
-                Events.fire(CustomEvents.ConfigFileModified(kind, paths))
+                // Arc runs listeners inline, so firing here would run them on this watcher thread.
+                // Config reloads reach Mindustry entity writes (Permission.apply renames players and
+                // flips their admin flag) and replace the shared config object, both of which race the
+                // server's own per-tick work. Hand the event to the game thread instead.
+                Core.app.post {
+                    try {
+                        Events.fire(CustomEvents.ConfigFileModified(kind, paths))
+                    } catch (e: Throwable) {
+                        // A listener that threw used to cost this watcher thread. On the game thread it
+                        // would cost the server's main loop, so a failed reload stays a failed reload.
+                        Log.err("Failed to apply a configuration file change.", e)
+                    }
+                }
             }
 
             if (!watchKey.reset()) {

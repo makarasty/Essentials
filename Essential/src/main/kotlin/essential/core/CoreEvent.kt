@@ -1331,7 +1331,8 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
                     if (newConf != null) {
                         conf = newConf
                         // The description timer is built from the config; rebuild it with the new one.
-                        // This runs on the file-watcher thread, but start() can render immediately, so post it to the game thread.
+                        // Config events already arrive on the game thread, so this only defers start()
+                        // to the next frame rather than rendering inside the reload.
                         Core.app.post { ServerDescription.start() }
                     }
                     Log.info(Bundle()["config.reloaded"])

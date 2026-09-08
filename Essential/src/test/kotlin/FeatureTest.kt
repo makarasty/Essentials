@@ -27,6 +27,7 @@ import essential.common.pluginData
 import essential.common.rootPath
 import essential.common.systemTimezone
 import essential.common.timeSource
+import essential.common.service.fileWatchService
 import essential.core.Main
 import essential.core.buildingBulletDestroy
 import essential.core.connectPacket
@@ -1111,6 +1112,54 @@ class FeatureTest {
             savedTeams.forEach { (entity, team) -> entity.team(team) }
             Groups.player.update()
             leavePlayer(p.first)
+        }
+    }
+    /**
+     * 2026-09-08-full-audit-03-1: Arc runs listeners inline, so a config reload fired from the watcher
+     * thread reached Mindustry entity writes off the game thread.
+     */
+    @Test
+    fun configFileEventsNeverRunOnTheWatcherThread() {
+        val configDir = rootPath.child("config")
+        configDir.mkdirs()
+        val probe = configDir.child("fleet-watch-probe.yaml")
+        probe.writeString("probe: 1", false)
+
+        val delivered = CopyOnWriteArrayList<Thread>()
+        val listener = Cons<CustomEvents.ConfigFileModified> { delivered.add(Thread.currentThread()) }
+        Events.on(CustomEvents.ConfigFileModified::class.java, listener)
+
+        val pumpingThread = Thread.currentThread()
+        val watcher = Thread({ fileWatchService() }, "fleet-test-config-watcher")
+        watcher.isDaemon = true
+        watcher.start()
+
+        try {
+            // Give the watch service time to register the directory before the edit it must notice.
+            Thread.sleep(1000)
+            probe.writeString("probe: 2", false)
+
+            assertTrue(
+                awaitPumped(30000) { delivered.isNotEmpty() },
+                "The watcher never delivered a config event, so this test proved nothing"
+            )
+            assertFalse(
+                delivered.contains(watcher),
+                "Config events must reach listeners on the game thread, not on the file-watcher thread"
+            )
+            // The plugin starts its own watcher during loadGame, so asserting only against this test's
+            // thread would pass whenever that other watcher won the delivery race. Every delivery has to
+            // land on the thread that pumps Core.app, whichever watcher produced it.
+            assertEquals(
+                listOf(pumpingThread),
+                delivered.distinct(),
+                "Every config event must be delivered on the thread that pumps the application queue"
+            )
+        } finally {
+            Events.remove(CustomEvents.ConfigFileModified::class.java, listener)
+            watcher.interrupt()
+            watcher.join(5000)
+            probe.delete()
         }
     }
 
