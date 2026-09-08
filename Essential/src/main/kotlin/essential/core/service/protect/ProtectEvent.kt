@@ -13,6 +13,7 @@ import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.players
 import essential.core.Main.Companion.scope
+import essential.core.Main.Companion.conf as coreConf
 import essential.core.ServerDescription
 import essential.core.firePlayerDataLoad
 import essential.core.loadJoinedPlayerData
@@ -80,8 +81,9 @@ fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
     Vars.platform.net.connectFilter = filter
 
     if (conf.pvp.peace.enabled && Vars.state.rules.pvp) {
-        originalBlockMultiplier = Vars.state.rules.blockDamageMultiplier
-        originalUnitMultiplier = Vars.state.rules.unitDamageMultiplier
+        // A save loaded during peace time can already have the multiplier at 0; treat that as unset.
+        originalBlockMultiplier = if (Vars.state.rules.blockDamageMultiplier == 0f) 1f else Vars.state.rules.blockDamageMultiplier
+        originalUnitMultiplier = if (Vars.state.rules.unitDamageMultiplier == 0f) 1f else Vars.state.rules.unitDamageMultiplier
         Vars.state.rules.blockDamageMultiplier = 0f
         Vars.state.rules.unitDamageMultiplier = 0f
         pvpCount = conf.pvp.peace.time
@@ -150,7 +152,7 @@ fun config(e: EventType.ConfigEvent) {
 
 @Event
 fun playerJoin(e: EventType.PlayerJoin) {
-    e.player.admin(false)
+    // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
     val player = e.player
     val uuid = player.uuid()
     val plainName = player.plainName()
@@ -257,6 +259,21 @@ fun playerDataLoaded(e: CustomEvents.PlayerDataLoadEnd) {
 
 @Event
 fun connectPacket(event: EventType.ConnectPacketEvent) {
+    // Shared by the async ban check and the synchronous rule checks below - both need to log and
+    // announce the same way once a reason is known.
+    fun kicked(reasonKey: String) {
+        val bundle = Bundle()
+        val reason = bundle["event.player.kick", event.packet.name, event.packet.uuid, event.connection.address, bundle["event.player.kick.reason.$reasonKey"]]
+        writeLog(LogType.Player, reason)
+        Log.info(reason)
+        Events.fire(
+            CustomEvents.PlayerConnectKicked(
+                event.packet.name,
+                bundle["event.player.kick.reason.$reasonKey"]
+            )
+        )
+    }
+
     var kickReason = ""
     if (!conf.rules.mobile && event.connection.mobile) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.not.allow.mobile"], 0L)
@@ -276,12 +293,14 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
     } else if (conf.rules.blockNewUser && !listOf<String?>(*coldData).contains(event.packet.uuid)) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.new.blocked"], 0L)
         kickReason = "newuser"
-    } else {
+    } else if (coreConf.ban.useDatabase) {
         scope.launch {
             try {
-                if (checkPlayerBanned(event.packet.name, event.packet.uuid, event.connection.address)) {
-                    event.connection.kick(Packets.KickReason.banned)
-                    kickReason = "banned"
+                if (checkPlayerBanned(event.packet.uuid, event.connection.address, event.packet.name)) {
+                    kicked("banned")
+                    arc.Core.app.post {
+                        event.connection.kick(Packets.KickReason.banned)
+                    }
                 }
             } catch (e: Exception) {
                 Log.err("Failed to check if player is banned", e)
@@ -290,19 +309,7 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
     }
 
     if (!kickReason.isEmpty()) {
-        val bundle = Bundle()
-        val reason = bundle["event.player.kick", event.packet.name, event.packet.uuid, event.connection.address, bundle["event.player.kick.reason.$kickReason"]]
-        writeLog(
-            LogType.Player,
-            reason
-        )
-        Log.info(reason)
-        Events.fire(
-            CustomEvents.PlayerConnectKicked(
-                event.packet.name,
-                bundle["event.player.kick.reason.$kickReason"]
-            )
-        )
+        kicked(kickReason)
     }
 }
 
