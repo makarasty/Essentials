@@ -46,22 +46,31 @@ import kotlin.test.fail
  * such a database both repairs are no-ops and both inserts succeed, so each test hands the engine a
  * duplicate first and fails naming the database and its indexes if the engine takes it.
  *
- * [twoServersCreatingOnePlayerBothGetTheRow] also counts how many of its attempts genuinely raced, so
- * a run in which the two calls happened to be serialised - and which therefore never reached the
- * branch under test - is red rather than a vacuous green. That count comes from `createPlayerData`
- * logging its refusal. `setAchievement` says nothing on that path and its fire rate is not observable
- * from here; `ask/16-2.md` of run `backlog-2026-09-10` asks for the matching line.
+ * **Both also count how many of their attempts genuinely met a refusal**, so a run in which the two
+ * calls happened to be serialised - and which therefore never reached the branch under test - is red
+ * rather than a vacuous green. That is not decoration: in the full suite, before the harness stopped
+ * handing this class a legacy-shaped database, [twoServersCreatingOnePlayerBothGetTheRow] passed on
+ * zero refusals in twenty-five attempts against a `players` table with no unique index on `uuid` at
+ * all. The counts come from the two functions' own log lines and nothing else in this class emits
+ * either, so they cannot be inflated.
+ *
+ * An earlier counter inferred the number of inserts that reached the engine from the gap in the
+ * auto-increment column, since a refused insert has already taken its id. It reported 38 and 56 races
+ * out of 25 attempts, because H2 allocates identity values in cached blocks and the gaps are the
+ * cache. Do not reach for it again.
  */
 class ConcurrentInsertRaceTest {
 
     private companion object {
         const val ATTEMPTS = 25
 
-        /** What `createPlayerData` says when the engine refused its insert. */
-        const val REFUSAL = "Insert refused for"
+        /** What each function says when the engine refused its insert. Neither is a prefix of the other. */
+        const val PLAYER_REFUSAL = "Insert refused for"
+        const val ACHIEVEMENT_REFUSAL = "Achievement insert refused for"
     }
 
-    private val refusals = AtomicInteger()
+    private val playerRefusals = AtomicInteger()
+    private val achievementRefusals = AtomicInteger()
     private var previousLogger: Log.LogHandler? = null
 
     @BeforeTest
@@ -72,7 +81,10 @@ class ConcurrentInsertRaceTest {
         val previous = Log.logger
         previousLogger = previous
         Log.logger = Log.LogHandler { level, text ->
-            if (text.contains(REFUSAL)) refusals.incrementAndGet()
+            when {
+                text.contains(ACHIEVEMENT_REFUSAL) -> achievementRefusals.incrementAndGet()
+                text.contains(PLAYER_REFUSAL) -> playerRefusals.incrementAndGet()
+            }
             previous.log(level, text)
         }
     }
@@ -90,7 +102,7 @@ class ConcurrentInsertRaceTest {
         var raced = 0
         repeat(ATTEMPTS) {
             val player = createPlayer()
-            val before = refusals.get()
+            val before = playerRefusals.get()
             try {
                 val both = listOf(
                     async(Dispatchers.IO) { createPlayerData(player) },
@@ -107,7 +119,7 @@ class ConcurrentInsertRaceTest {
                         "a server that lost the insert race was handed a different row than the one in the table"
                     )
                 }
-                if (refusals.get() > before) raced++
+                if (playerRefusals.get() > before) raced++
             } finally {
                 player.remove()
                 suspendTransaction { PlayerTable.deleteWhere { uuid eq player.uuid() } }
@@ -129,8 +141,10 @@ class ConcurrentInsertRaceTest {
         try {
             assertAchievementPairIsUnique(data.id)
 
+            var raced = 0
             repeat(ATTEMPTS) { attempt ->
                 val name = "race-achievement-$attempt"
+                val before = achievementRefusals.get()
                 listOf(
                     async(Dispatchers.IO) { setAchievement(data, name) },
                     async(Dispatchers.IO) { setAchievement(data, name) },
@@ -151,7 +165,15 @@ class ConcurrentInsertRaceTest {
                     },
                     "$name was recorded twice"
                 )
+                if (achievementRefusals.get() > before) raced++
             }
+
+            println("[race] setAchievement met a refusal on $raced of $ATTEMPTS attempts, against ${reachedDatabase()}")
+            assertTrue(
+                raced > 0,
+                "on none of $ATTEMPTS attempts did a caller meet a refusal, so this test never reached " +
+                    "the branch that tolerates one and would have passed whether that branch worked or not"
+            )
         } finally {
             suspendTransaction { AchievementTable.deleteWhere { playerId eq data.id } }
             suspendTransaction { PlayerTable.deleteWhere { uuid eq player.uuid() } }
