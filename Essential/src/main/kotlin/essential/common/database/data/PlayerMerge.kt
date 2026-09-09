@@ -161,6 +161,12 @@ suspend fun mergePlayerAccounts(fromUuid: String, toUuid: String): String = susp
                 (AchievementTable.achievementName notInList earnedOnTarget.keys)
     }) {
         it[playerId] = to.id
+        // Not redundant. MySQL gives the first TIMESTAMP column in a table an implicit
+        // ON UPDATE CURRENT_TIMESTAMP unless it was declared with a DEFAULT, and the hosts running this
+        // predate the shipped DDL - one of them declaring it bare would have this statement rewrite every
+        // carried date to now, silently, on the rows the carry exists to preserve. Assigning the column
+        // its own value is what MySQL documents as the way to opt out.
+        it[completedAt] = AchievementTable.completedAt
     }
     AchievementTable.deleteWhere { AchievementTable.playerId eq from.id }
 
