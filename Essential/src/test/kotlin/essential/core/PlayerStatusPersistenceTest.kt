@@ -3,9 +3,14 @@ package essential.core
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
+import essential.common.database.data.getPlayerAchievements
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.mergePlayerAccounts
+import essential.common.database.table.AchievementTable
 import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.LocalDateTime
+import org.jetbrains.exposed.v1.r2dbc.insert
+import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -164,6 +169,62 @@ class PlayerStatusPersistenceTest {
                     merged.status["record.time.chat"],
                     "record.time.chat is a running total: the exclusion is the .time suffix, not the " +
                             "word appearing anywhere in the key."
+                )
+            }
+        } finally {
+            leavePlayer(source)
+            leavePlayer(target)
+        }
+    }
+
+    @Test
+    fun mergingTwoAccountsCarriesTheSourcesAchievements() {
+        val (source, sourceData) = newPlayer()
+        val (target, targetData) = newPlayer()
+        try {
+            val earlier = LocalDateTime(2024, 1, 1, 0, 0)
+            val later = LocalDateTime(2025, 1, 1, 0, 0)
+
+            runBlocking {
+                assertTrue(sourceData.update())
+                assertTrue(targetData.update())
+
+                suspendTransaction {
+                    listOf(
+                        // Held by both, earned earlier on the source.
+                        Triple(sourceData.id, "apm50", earlier),
+                        Triple(targetData.id, "apm50", later),
+                        // Held only by the source, and hidden: the reload loop skips hidden
+                        // achievements, so this one has no way back once its row is gone.
+                        Triple(sourceData.id, "newyear", earlier),
+                        // Held only by the target.
+                        Triple(targetData.id, "apm100", later)
+                    ).forEach { (owner, name, at) ->
+                        AchievementTable.insert {
+                            it[playerId] = owner
+                            it[achievementName] = name
+                            it[completedAt] = at
+                        }
+                    }
+                }
+
+                mergePlayerAccounts(source.uuid(), target.uuid())
+
+                val carried = getPlayerAchievements(targetData)
+                    .associate { it.achievementName to it.completedAt }
+
+                assertEquals(
+                    earlier,
+                    carried["newyear"],
+                    "A hidden achievement is skipped by the reload that re-derives the others, so " +
+                            "deleting the source's row is the only copy of it gone."
+                )
+                assertTrue(carried.containsKey("apm100"), "The target keeps what it already held.")
+                assertEquals(
+                    earlier,
+                    carried["apm50"],
+                    "Earliest wins on an achievement both accounts hold, so merging three accounts " +
+                            "settles on the same date whatever order they are merged in."
                 )
             }
         } finally {

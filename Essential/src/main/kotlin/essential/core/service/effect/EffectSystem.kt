@@ -321,8 +321,8 @@ class EffectSystem : Timer.Task() {
         // the packet burst this ceiling exists to prevent.
         if (pending) return
 
-        // Unit positions, and the packets built from them, belong to the game loop; Timer calls this
-        // from its own daemon thread.
+        // Arc posts a Timer task body to the application thread, so run() is already on the game loop
+        // and this post buys a frame rather than a thread hop - which is what the ceiling above counts.
         pending = true
         Core.app.post {
             pending = false

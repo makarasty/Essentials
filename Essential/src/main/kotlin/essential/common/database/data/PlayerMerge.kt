@@ -4,10 +4,15 @@ import essential.common.database.table.AchievementTable
 import essential.common.database.table.ContributionTable
 import essential.common.database.table.PlayerTable
 import essential.common.systemTimezone
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toList
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.toLocalDateTime
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.notInList
 import org.jetbrains.exposed.v1.r2dbc.deleteWhere
+import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.r2dbc.update
@@ -25,6 +30,9 @@ import kotlin.time.ExperimentalTime
  * - last_played_world_name/mode: use source (new) values
  * - ban_expire_date: latest of the two; isBanned adjusted to whether ban not expired
  * - status_data: achievement counters summed, see [mergeRecordCounters]
+ * - player_achievements: the source's rows move to the target, earliest completed_at wins. Run this
+ *   with both accounts offline: an award landing on the target between the read and the move
+ *   collides with it.
  */
 /** The target's achievement progress with the source's running totals added to it. */
 internal fun mergeRecordCounters(
@@ -114,7 +122,54 @@ suspend fun mergePlayerAccounts(fromUuid: String, toUuid: String): String = susp
         it[statusData] = statusJson.encodeToString(mergeRecordCounters(to.status, from.status))
     }
 
+    // The source's achievement rows move to the target rather than being deleted. Only the
+    // achievements whose criterion is a summed counter can be re-derived on the target's next join:
+    // the reload skips hidden ones, the ones resting on a key that must not be summed have nothing
+    // left to re-derive from, and the APM ones read a field that is never persisted at all - so a
+    // delete here loses an arbitrary subset of them for good.
+    val earnedOnTarget = AchievementTable
+        .select(AchievementTable.achievementName, AchievementTable.completedAt)
+        .where { AchievementTable.playerId eq to.id }
+        .map { it[AchievementTable.achievementName] to it[AchievementTable.completedAt] }
+        .toList()
+        .toMap()
+
+    val earnedOnSource = AchievementTable
+        .select(AchievementTable.achievementName, AchievementTable.completedAt)
+        .where { AchievementTable.playerId eq from.id }
+        .map { it[AchievementTable.achievementName] to it[AchievementTable.completedAt] }
+        .toList()
+
+    // Earliest wins on an achievement both hold, so three accounts merged in any order settle on the
+    // same date.
+    for ((name, earnedAt) in earnedOnSource) {
+        if (earnedAt >= (earnedOnTarget[name] ?: continue)) continue
+
+        AchievementTable.update({
+            (AchievementTable.playerId eq to.id) and (AchievementTable.achievementName eq name)
+        }) {
+            it[completedAt] = earnedAt
+        }
+    }
+
+    // Only a name the target does not already hold can move; the target's own row is the surviving
+    // copy of the rest, and the source's duplicates go with its player row. The split is done here
+    // rather than left to the unique index because the legacy MySQL schema declares only the foreign
+    // key - `SchemaUtils` adds no index to a table it did not create.
+    AchievementTable.update({
+        (AchievementTable.playerId eq from.id) and
+                (AchievementTable.achievementName notInList earnedOnTarget.keys)
+    }) {
+        it[playerId] = to.id
+        // Not redundant. MySQL gives the first TIMESTAMP column in a table an implicit
+        // ON UPDATE CURRENT_TIMESTAMP unless it was declared with a DEFAULT, and the hosts running this
+        // predate the shipped DDL - one of them declaring it bare would have this statement rewrite every
+        // carried date to now, silently, on the rows the carry exists to preserve. Assigning the column
+        // its own value is what MySQL documents as the way to opt out.
+        it[completedAt] = AchievementTable.completedAt
+    }
     AchievementTable.deleteWhere { AchievementTable.playerId eq from.id }
+
     // Reassign the source player's contribution records to the target before deletion.
     ContributionTable.update({ ContributionTable.playerId eq from.id }) {
         it[ContributionTable.playerId] = to.id
