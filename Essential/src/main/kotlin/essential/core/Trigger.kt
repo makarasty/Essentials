@@ -78,6 +78,16 @@ class Trigger {
         }
 
         /**
+         * Most marks the world-edit outline draws along one edge. Uncapped it was one packet per
+         * perimeter tile four times a second per selecting player, so a selection dragged across
+         * a 500x500 map cost that one client roughly 8000 packets a second until they cleared it.
+         */
+        const val OUTLINE_MARKS = 32
+
+        /** Coordinates the outline marks along one edge, thinned to at most [OUTLINE_MARKS] of them. */
+        fun outlineMarks(min: Int, max: Int): IntProgression = min..max step (max - min) / OUTLINE_MARKS + 1
+
+        /**
          * What counts as this player having moved. `NetClient.sync` sends `0f, 0f` for the aim of a
          * player with no unit and the server assigns that straight into mouseX/mouseY, so the
          * pointer of a player who can never respawn is pinned - reading it would make the afk
@@ -652,12 +662,19 @@ class Trigger {
                 }
 
                 val weSelection = worldEditSelection[data.uuid]
-                if (weSelection != null && Time.globalTime.toInt() % 15 == 0) {
+                // trackTick rather than Time.globalTime for the reason spelled out at the /track
+                // gate below: globalTime is a float that stops resolving single ticks after a few
+                // days up, and the same int then passes this test on consecutive frames.
+                if (weSelection != null && trackTick % 15 == 0) {
                     if ((weSelection.selecting && weSelection.startX != -1 && weSelection.startY != -1) || weSelection.selectionComplete) {
                         val startX = weSelection.startX
                         val startY = weSelection.startY
-                        val endX = if (weSelection.selecting) (data.player.mouseX() / 8f).toInt() else weSelection.endX
-                        val endY = if (weSelection.selecting) (data.player.mouseY() / 8f).toInt() else weSelection.endY
+                        // The pointer arrives from the client and NetServer only rejects NaN and
+                        // infinity, so an out-of-range one used to set the loop bound below.
+                        val endX = (if (weSelection.selecting) (data.player.mouseX() / 8f).toInt() else weSelection.endX)
+                            .coerceIn(0, Vars.world.width() - 1)
+                        val endY = (if (weSelection.selecting) (data.player.mouseY() / 8f).toInt() else weSelection.endY)
+                            .coerceIn(0, Vars.world.height() - 1)
 
                         val minX = minOf(startX, endX)
                         val maxX = maxOf(startX, endX)
@@ -665,15 +682,18 @@ class Trigger {
                         val maxY = maxOf(startY, endY)
 
                         // Top & Bottom edges
-                        for (x in minX..maxX) {
+                        for (x in outlineMarks(minX, maxX)) {
                             Call.effect(data.player.con(), Fx.fire, x * 8f + 4f, minY * 8f + 4f, 0f, Color.orange)
                             Call.effect(data.player.con(), Fx.fire, x * 8f + 4f, maxY * 8f + 4f, 0f, Color.orange)
                         }
                         // Left & Right edges
-                        for (y in minY..maxY) {
+                        for (y in outlineMarks(minY, maxY)) {
                             Call.effect(data.player.con(), Fx.fire, minX * 8f + 4f, y * 8f + 4f, 0f, Color.orange)
                             Call.effect(data.player.con(), Fx.fire, maxX * 8f + 4f, y * 8f + 4f, 0f, Color.orange)
                         }
+                        // Both progressions start at their min, so this is the one corner sampling
+                        // can miss - and during a drag it is the one under the cursor.
+                        Call.effect(data.player.con(), Fx.fire, maxX * 8f + 4f, maxY * 8f + 4f, 0f, Color.orange)
                     }
                 }
 
