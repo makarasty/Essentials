@@ -72,9 +72,9 @@ class ProtectService : Plugin() {
 
         // 계정 설정 유무에 따라 기본 권한 변경
         if (conf.account.getAuthType() != ProtectConfig.AuthType.None) {
-            Permission.default = "user"
+            Permission.setAuthDefault("user")
         } else {
-            Permission.default = "visitor"
+            Permission.setAuthDefault("visitor")
         }
 
         // VPN 확인

@@ -121,4 +121,50 @@ class PermissionLoadTest {
             Permission.load()
         }
     }
+
+    @Test
+    fun permission_reloadKeepsTheAccountServiceDefault() {
+        val mainFile = rootPath.child("permission.yaml")
+        val userFile = rootPath.child("permission_user.yaml")
+        val goodMain = mainFile.readString()
+        val goodUser = userFile.readString()
+        val uuid = "uuid-reloaded-without-a-group"
+
+        try {
+            mainFile.writeString(
+                """
+                user:
+                    permission:
+                        - rtv
+                visitor:
+                    default: true
+                    permission:
+                        - login
+                """.trimIndent(),
+                false
+            )
+            userFile.writeString("$uuid:\n    name: Bob\n", false)
+
+            // What ProtectService.init does once at boot when account authentication is configured.
+            Permission.setAuthDefault("user")
+            Permission.load()
+
+            assertEquals(
+                "user",
+                Permission.default,
+                "a reload must not answer for the account service with the permission.yaml default"
+            )
+            assertEquals(
+                "visitor",
+                Permission.groupOf(uuid, "owner"),
+                "and it must not answer for permission.yaml with the account service default either: an entry with no group: key still belongs to the role permission.yaml marks default"
+            )
+        } finally {
+            Permission.setAuthDefault(null)
+            mainFile.writeString(goodMain, false)
+            userFile.writeString(goodUser, false)
+            Permission.load()
+        }
+    }
+
 }
