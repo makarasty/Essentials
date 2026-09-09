@@ -139,6 +139,16 @@ class MapController {
         }
     }
 
+    /**
+     * Whether this uploader may write over what is already under these two keys. Split out of the handler
+     * so the rule can be exercised without a multipart request carrying a valid .msav.
+     */
+    internal fun mayReplaceExisting(username: String, fileExists: Boolean, fileOwner: String?, nameOwner: String?): Boolean {
+        val clobbersFile = fileExists && !username.equals(fileOwner, ignoreCase = true)
+        val clobbersName = nameOwner != null && !username.equals(nameOwner, ignoreCase = true)
+        return !clobbersFile && !clobbersName
+    }
+
     suspend fun handleMapUpload(call: ApplicationCall) {
         val multipart = call.receiveMultipart()
         var fileName = ""
@@ -195,15 +205,42 @@ class MapController {
             val uploadDir = File(conf.uploadPath).canonicalFile
             val targetFile = File(uploadDir, fileName).canonicalFile
             if (targetFile.parentFile != uploadDir) {
+                tempFile.delete()
                 call.respond(HttpStatusCode.BadRequest, "Invalid upload filename")
                 return
             }
+
+            // The uploader name decides who may delete this map later, so it has to be a real caller
+            // rather than a placeholder standing in for the absence of one.
+            val username = call.sessions.get<UserSession>()?.username
+            if (username == null) {
+                tempFile.delete()
+                call.respond(HttpStatusCode.Unauthorized, "Unauthorized")
+                return
+            }
+            val mapName = parsedMap.name()
+
+            // Ownership is recorded under the map's own name while the file is stored under the uploaded
+            // file name, so an upload can clobber either one on its own. Both are refused unless the
+            // caller already owns what is being replaced, because taking over the record is what gives
+            // the delete endpoint its answer. A file with no uploader record - one predating the record,
+            // or a map shipped with the server - belongs to nobody here and cannot be claimed by
+            // re-uploading over it; replacing those stays an operator's job on disk.
+            //
+            // A record whose map is no longer loaded reserves nothing: it would otherwise let one account
+            // squat unbounded names by re-uploading one file under edited internal names.
+            val maps = allMaps()
+            val fileOwner = maps.find { it.file.name().equals(fileName, ignoreCase = true) }
+                ?.let { uploadersMap[it.name()] }
+            val nameOwner = uploadersMap[mapName]?.takeIf { maps.any { map -> map.name() == mapName } }
+            if (!mayReplaceExisting(username, targetFile.exists(), fileOwner, nameOwner)) {
+                tempFile.delete()
+                call.respond(HttpStatusCode.Forbidden, "A map by that name already exists and is not yours")
+                return
+            }
+
             Files.copy(tempFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
             tempFile.delete()
-
-            val session = call.sessions.get<UserSession>()
-            val username = session?.username ?: "unknown"
-            val mapName = parsedMap.name()
 
             // Fetch and cache map image immediately on upload using the local map render API (async queueing)
             essential.core.Main.scope.launch {
