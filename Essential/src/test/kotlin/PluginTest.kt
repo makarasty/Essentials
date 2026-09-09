@@ -429,8 +429,24 @@ class PluginTest {
             }
             databaseClose()
 
-            val dataDir = rootPath.child("data").file().toPath()
-            if (Files.exists(dataDir)) {
+            // Two directories, because in this suite they are two. Database.kt opens H2 at a literal
+            // ./config/mods/Essentials/data/, while rootPath is Core.settings.dataDirectory +
+            // mods/Essentials - the same directory on a real server, whose data directory is config/,
+            // and a different one here, where loadGame sets the data directory to the working
+            // directory. Walking only rootPath meant this deleted nothing for the life of the suite:
+            // PluginTest.dbUpgradeTest_20 boots src/test/resources/database-v3.mv.db through the
+            // legacy scripts, which create no unique indexes, SchemaUtils.create skips tables that
+            // already exist and the boot declines every index repair by design - so every class after
+            // this one inherited a schema with no unique index on players.uuid, players.name or
+            // player_achievements (player_id, achievement_name).
+            //
+            // The literals in Database.kt are correct where they are and are not touched: where a live
+            // server opens its database is the operator's.
+            for (dataDir in listOf(
+                rootPath.child("data").file().toPath(),
+                Paths.get("config", "mods", "Essentials", "data")
+            )) {
+                if (!Files.exists(dataDir)) continue
                 try {
                     Files.walk(dataDir).use { stream ->
                         stream.filter { path ->
