@@ -5,6 +5,8 @@ import arc.util.Log
 import essential.common.bundle
 import essential.common.rootPath
 import kotlinx.serialization.Serializable
+import org.junit.Assume.assumeTrue
+import java.io.FileOutputStream
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -66,5 +68,43 @@ class ConfigDiagnosticsTest {
             logged(bundle["config.parse.failed", FILE]),
             "a malformed config must leave something to search the log for, but the log held: $lines"
         )
+    }
+
+    @Test
+    fun failedDirectoryRenameIsReported() {
+        val old = rootPath.child("configs")
+        val current = rootPath.child("config")
+        val parked = rootPath.child("config_chip3_parked")
+
+        // A real legacy directory belongs to whoever put it there, so leave rather than delete it.
+        assumeTrue("a configs/ directory is already present", !old.exists())
+        parked.deleteDirectory()
+
+        val hadConfig = current.exists()
+        if (hadConfig) assumeTrue("could not park config/", current.file().renameTo(parked.file()))
+
+        try {
+            old.mkdirs()
+            old.child("held.yaml").writeString("alpha: \"x\"\n", false)
+            // An open handle is what makes renameTo return false on Windows. Elsewhere the rename
+            // succeeds and there is nothing to assert, so the test skips rather than passing hollow.
+            FileOutputStream(old.child("held.yaml").file()).use {
+                Config.renameConfigsDirectory()
+                assumeTrue("rename succeeded on this platform", old.exists() && !current.exists())
+                assertTrue(
+                    logged(bundle["config.migrate.failed", old.absolutePath(), current.absolutePath()]),
+                    "a failed rename must be reported, or fresh defaults are written silently: $lines"
+                )
+            }
+        } finally {
+            old.deleteDirectory()
+            if (hadConfig) {
+                current.deleteDirectory()
+                // Unchecked here would be the very defect this test is about, and the next line
+                // would then delete the only copy.
+                check(parked.file().renameTo(current.file())) { "could not restore config/ from $parked" }
+            }
+            parked.deleteDirectory()
+        }
     }
 }

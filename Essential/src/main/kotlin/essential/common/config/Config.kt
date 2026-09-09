@@ -26,7 +26,12 @@ object Config {
         val newDir = rootPath.child("config")
         if (oldDir.exists() && !newDir.exists()) {
             try {
-                oldDir.file().renameTo(newDir.file())
+                // renameTo reports failure by returning false, not by throwing, and on Windows an open
+                // handle is enough to fail it. Unread, the next step writes fresh defaults and logs
+                // config.created as though this were a first run.
+                if (!oldDir.file().renameTo(newDir.file())) {
+                    Log.err(bundle["config.migrate.failed", oldDir.absolutePath(), newDir.absolutePath()])
+                }
             } catch (e: Exception) {
                 Log.err(e)
             }
