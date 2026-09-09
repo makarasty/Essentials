@@ -61,7 +61,6 @@ import java.nio.file.StandardWatchEventKinds
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
 import java.text.NumberFormat
-import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
@@ -1345,15 +1344,6 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
 fun configFileModified(event: CustomEvents.ConfigFileModified) {
     if (event.kind == StandardWatchEventKinds.ENTRY_MODIFY) {
         when (event.paths) {
-            "permission_user.yaml", "permission.yaml" -> {
-                try {
-                    Permission.load()
-                    Log.info(Bundle()["config.permission.updated"])
-                } catch (e: ParseException) {
-                    Log.err(e)
-                }
-            }
-
             "config.yaml" -> {
                 try {
                     val newConf = Config.load("config", CoreConfig.serializer(), CoreConfig())
