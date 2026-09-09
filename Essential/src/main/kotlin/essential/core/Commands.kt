@@ -2497,7 +2497,17 @@ class Commands {
         }
 
         val solo = players.size == 1 && arg[0] == "map"
-        if (!solo && players.filter { !it.afk }.size <= 3 && !Permission.check(playerData, "vote.admin")) {
+        // Mirrors VoteSystem.check()'s own electorate: team-scoped non-afk on a PvP map, server-wide
+        // otherwise. The gate and the pass threshold have to count the same electorate, or a team that
+        // is mostly eliminated (marked afk once unable to respawn - Team.derelict, a core wipe) can be
+        // blocked from starting any vote by players elsewhere on the map who were never going to vote
+        // in it anyway.
+        val eligibleVoters = if (Vars.state.rules.pvp) {
+            players.count { it.player.team() == playerData.player.team() && !it.afk }
+        } else {
+            players.count { !it.afk }
+        }
+        if (!solo && eligibleVoters <= 3 && !Permission.check(playerData, "vote.admin")) {
             playerData.err("command.vote.enough")
             return
         }
@@ -2516,11 +2526,15 @@ class Commands {
                         // The poll below is scoped to the starter's team, so a target on another team
                         // would be kicked by a vote that team never saw - and a player alone on a team
                         // would decide it unopposed. Vanilla refuses a cross-team votekick outright.
-                        // The admin key is reused because its text is the generic refusal and a new one
-                        // means editing every locale file, which is nobody's cluster in this run.
                         playerData.err("command.vote.kick.target.admin", target.plainName())
                     } else if (targetData != null && Permission.check(targetData, "kick.admin")) {
-                        playerData.err("command.vote.kick.target.admin")
+                        // A dedicated key: the reused admin key takes {0} and this call never supplied
+                        // one, so the refusal rendered a literal "{0}" placeholder.
+                        playerData.err("command.vote.kick.target.kickAdmin")
+                    } else if (!nextVoteAvailable.hasPassedNow()) {
+                        // gg/skip/random/draw all obey this cooldown; kick did not, exempting it from the
+                        // same anti-spam limit every other vote type is held to.
+                        playerData.err(coolTime)
                     } else {
                         val voteData = VoteData(
                             target = target,
@@ -2532,6 +2546,7 @@ class Commands {
                         if (Vars.state.rules.pvp) {
                             voteData.team = playerData.player.team()
                         }
+                        nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                         start(voteData)
                     }
                 }
@@ -2572,13 +2587,20 @@ class Commands {
 
                     if (target != null) {
                         if (players.size != 1) {
-                            val voteData = VoteData(
-                                type = VoteType.Map,
-                                map = target,
-                                reason = arg[2],
-                                starter = playerData
-                            )
-                            start(voteData)
+                            // gg/skip/random/draw all obey this cooldown; map did not. The solo path below
+                            // is a direct change with no vote and is rightly exempt, same as the gate above.
+                            if (!nextVoteAvailable.hasPassedNow()) {
+                                playerData.err(coolTime)
+                            } else {
+                                val voteData = VoteData(
+                                    type = VoteType.Map,
+                                    map = target,
+                                    reason = arg[2],
+                                    starter = playerData
+                                )
+                                nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                                start(voteData)
+                            }
                         } else {
                             isSurrender = true
                             val currentRule = Vars.state.rules.mode()
@@ -2655,11 +2677,17 @@ class Commands {
                     playerData.send(noReason)
                     return
                 }
+                // gg/skip/random/draw all obey this cooldown; back did not.
+                if (!nextVoteAvailable.hasPassedNow()) {
+                    playerData.err(coolTime)
+                    return
+                }
                 val voteData = VoteData(
                     type = VoteType.Back,
                     reason = arg[1],
                     starter = playerData
                 )
+                nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                 start(voteData)
             }
 
