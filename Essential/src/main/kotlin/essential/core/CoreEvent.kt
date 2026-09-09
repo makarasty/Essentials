@@ -90,7 +90,9 @@ var pvpSpecters = mutableListOf<String>()
 /** PvP player team map */
 var pvpPlayer = mutableMapOf<String, Team>()
 
-/** Whether global chat is muted */
+/** Whether global chat is muted. Volatile: written from the game thread by /chat off, read from a
+ *  Ktor worker by the web chat endpoint. */
+@Volatile
 var isGlobalMute = false
 var unitLimitMessageCooldown = 0
 
