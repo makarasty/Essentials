@@ -140,10 +140,10 @@ object WorldHistoryBuffer {
         stopped.set(true)
         flushJob?.cancelAndJoin()
         flushJob = null
-        withContext(NonCancellable) {
-            val batch = drain()
-            if (batch.isNotEmpty()) flushBatch(batch)
-        }
+        // cancelAndJoin has already stopped the flush loop, but discard() is a second writer shutdown
+        // does not otherwise coordinate with: draining outside the lock here would take the rows a map
+        // change was about to clear and commit them after its truncate.
+        withContext(NonCancellable) { flush() }
     }
 
     private suspend fun flushLoop() {
