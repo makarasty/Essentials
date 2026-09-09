@@ -1382,6 +1382,13 @@ class FeatureTest {
             target.second.status["record.time.noafk"] = "5"
             temporary.second.status["record.time.noafk"] = "6"
 
+            // Burst counts with no suffix to give them away: AchievementEvents resets them to 1 once the
+            // paired .time stamp is more than ten seconds old, and QuillKiller reads the count at 5.
+            target.second.status["record.turret.quill.kill"] = "3"
+            temporary.second.status["record.turret.quill.kill"] = "3"
+            target.second.status["record.turret.zenith.kill"] = "10"
+            temporary.second.status["record.turret.zenith.kill"] = "20"
+
             mergeTemporaryPlayerData(temporary.second, target.second)
 
             assertEquals("7", target.second.status["record.wave"], "A counter both objects hold must be summed")
@@ -1404,6 +1411,16 @@ class FeatureTest {
                 "5",
                 target.second.status["record.time.noafk"],
                 "A per-map continuous window must not be summed"
+            )
+            assertEquals(
+                "3",
+                target.second.status["record.turret.quill.kill"],
+                "A burst count must not be summed: two players mid-burst at three would merge over QuillKiller"
+            )
+            assertEquals(
+                "10",
+                target.second.status["record.turret.zenith.kill"],
+                "A burst count must not be summed, whatever it is named"
             )
             assertFalse(
                 target.second.status.containsKey("login_consent"),
