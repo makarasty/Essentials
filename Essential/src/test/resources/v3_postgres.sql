@@ -1,5 +1,5 @@
 --
--- PostgreSQL version-3 fixture for Testcontainers.
+-- PostgreSQL version-3 fixture for LivePostgresUpgradeTest.
 -- All records in this fixture are synthetic migration data.
 --
 
@@ -8,19 +8,13 @@ CREATE TABLE public.banned (
     data text NOT NULL
 );
 
-ALTER TABLE public.banned OWNER TO plugins;
-
 CREATE TABLE public.data (
     data text NOT NULL
 );
 
-ALTER TABLE public.data OWNER TO plugins;
-
 CREATE TABLE public.db (
     version integer NOT NULL
 );
-
-ALTER TABLE public.db OWNER TO plugins;
 
 CREATE TABLE public.player (
     name text NOT NULL,
@@ -70,8 +64,6 @@ CREATE TABLE public.player (
     "pvpEliminationTeamCount" integer NOT NULL,
     strict boolean NOT NULL
 );
-
-ALTER TABLE public.player OWNER TO plugins;
 
 INSERT INTO public.banned (type, data) VALUES (0, 'test-banned-player');
 INSERT INTO public.banned (type, data) VALUES (1, '203.0.113.7');

@@ -311,7 +311,6 @@ dependencies {
     testImplementation(libs.bundles.exposed)
     testImplementation(libs.bundles.r2dbc.drivers)
     testImplementation(libs.bundles.flyway)
-    testImplementation(libs.bundles.testcontainers)
     testImplementation(libs.jbcrypt)
 }
 
