@@ -509,7 +509,19 @@ class ClientCommandTest {
 
         setPermission("user", true)
         clientCommand.handleMessage("/help", player)
-        assertContains(playerData.lastReceivedMessage, "vote")
+        val pageCount = Regex("""\[gray]/\[lightgray](\d+)\[orange]""")
+            .find(playerData.lastReceivedMessage)?.groupValues?.get(1)?.toInt()
+        assertNotNull(pageCount, "the help header should carry a page count")
+        // /help paginates Vars.netServer.clientCommands in registration order, and which page a
+        // command lands on is an artefact of that order rather than of the permission being
+        // checked here: re-applying the command set (a /reload, or a config.yaml edit picked up by
+        // the watcher) re-registers every plugin command, and CommandHandler.register appends,
+        // so they all move. Assert that a user's help lists /vote, not which page it prints on.
+        val listed = (1..pageCount).joinToString("\n") { page ->
+            clientCommand.handleMessage("/help $page", player)
+            playerData.lastReceivedMessage
+        }
+        assertContains(listed, "/vote ")
         clientCommand.handleMessage("/help 3", player)
         clientCommand.handleMessage("/help 5", player)
 
