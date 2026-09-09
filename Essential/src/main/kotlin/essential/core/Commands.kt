@@ -2403,7 +2403,14 @@ class Commands {
                 val target = PlayerLookup.online(arg[1], playerData)
                 if (target != null) {
                     val targetData = players.find { it.uuid == target.uuid() }
-                    if (targetData != null && Permission.check(targetData, "kick.admin")) {
+                    if (Vars.state.rules.pvp && target.team() != playerData.player.team()) {
+                        // The poll below is scoped to the starter's team, so a target on another team
+                        // would be kicked by a vote that team never saw - and a player alone on a team
+                        // would decide it unopposed. Vanilla refuses a cross-team votekick outright.
+                        // The admin key is reused because its text is the generic refusal and a new one
+                        // means editing every locale file, which is nobody's cluster in this run.
+                        playerData.err("command.vote.kick.target.admin", target.plainName())
+                    } else if (targetData != null && Permission.check(targetData, "kick.admin")) {
                         playerData.err("command.vote.kick.target.admin")
                     } else {
                         val voteData = VoteData(
@@ -2413,6 +2420,9 @@ class Commands {
                             type = VoteType.Kick,
                             starter = playerData
                         )
+                        if (Vars.state.rules.pvp) {
+                            voteData.team = playerData.player.team()
+                        }
                         start(voteData)
                     }
                 }
