@@ -1,5 +1,6 @@
 package essential.common.config
 
+import arc.util.ArcRuntimeException
 import arc.util.Log
 import com.charleskorn.kaml.Yaml
 import com.charleskorn.kaml.YamlConfiguration
@@ -231,6 +232,13 @@ object Config {
             false
         } catch (e: SerializationException) {
             Log.err(bundle["config.serialize.failed", name], e)
+            false
+        } catch (e: ArcRuntimeException) {
+            // Fi.writeString throws this, not IOException, for a read-only directory or a full disk.
+            // Uncaught here it used to escape both of load()'s callers: mislabelled as a migration
+            // failure from the re-save path, and past load() entirely - out to Main.kt - from the
+            // first-boot default-config path. Caught at the one place both routes call through.
+            Log.err(bundle["config.save.failed", name], e)
             false
         }
     }
