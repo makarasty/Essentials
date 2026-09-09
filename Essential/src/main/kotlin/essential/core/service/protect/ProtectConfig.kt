@@ -47,7 +47,7 @@ data class ProtectConfig(
     data class Account(
         @YamlComment("Enable account authentication system")
         var enabled: Boolean = false,
-        @YamlComment("Authentication method: None, Password, or Discord")
+        @YamlComment("Authentication method: None, Password, or Discord (Discord needs the separate essential-discord mod; without it there is no login prompt, only the action filter)")
         private val authType: String = AuthType.None.name,
         @YamlComment("Discord OAuth URL for Discord-based authentication")
         var discordURL: String = ""
@@ -61,7 +61,7 @@ data class ProtectConfig(
     data class Protect(
         @YamlComment("Make all cores indestructible (health set to 100 million)")
         var unbreakableCore: Boolean = false,
-        @YamlComment("Detect and prevent power graph manipulation exploits")
+        @YamlComment("Detect power graph manipulation exploits (deprecated - not implemented)")
         var powerDetect: Boolean = false
     )
 

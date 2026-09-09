@@ -77,12 +77,6 @@ class ProtectService : Plugin() {
             Permission.setAuthDefault("visitor")
         }
 
-        // VPN 확인
-        if (conf.rules.vpn) {
-            val list = URI("https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt").toURL().readText()
-            pluginData.vpnList = list.split("\n".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
-        }
-
         if (conf.rules.blockNewUser) {
             enableBlockNewUser()
         }
@@ -99,6 +93,12 @@ class ProtectService : Plugin() {
 
         // 이벤트 설정
         registerGeneratedEventHandlers()
+
+        // VPN 확인 - the registration above must already be done: an unreachable list used
+        // to take every handler in this module down with it.
+        if (conf.rules.vpn) {
+            downloadVpnList()?.let { pluginData.vpnList = it }
+        }
     }
 
 
@@ -107,5 +107,25 @@ class ProtectService : Plugin() {
         if (conf.account.getAuthType() != ProtectConfig.AuthType.Password || !conf.account.enabled) {
             handler.removeCommand("reg")
         }
+    }
+}
+
+internal const val VPN_LIST_URL = "https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4.txt"
+
+/**
+ * The JVM default timeouts are unbounded, and this used to run ahead of handler registration, so an
+ * unreachable list took the whole module down with it. A failure leaves the rule inert rather than
+ * refusing everyone, the way [enableBlockNewUser] stands its rule down.
+ */
+internal fun downloadVpnList(url: String = VPN_LIST_URL): Array<String>? {
+    return try {
+        val connection = URI(url).toURL().openConnection()
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 20_000
+        val list = connection.getInputStream().use { it.reader().readText() }
+        list.split("\n".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
+    } catch (e: Exception) {
+        Log.err("Failed to download the VPN address list, the vpn rule stays inert", e)
+        null
     }
 }

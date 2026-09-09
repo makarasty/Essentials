@@ -24,25 +24,20 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import ksp.event.Event
 import mindustry.Vars
-import mindustry.content.Blocks
 import mindustry.content.Fx
 import mindustry.entities.Damage
 import mindustry.game.EventType
-import mindustry.gen.Building
+import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.net.ArcNetProvider
 import mindustry.net.NetworkIO
 import mindustry.net.Packets
-import mindustry.world.Tile
-import mindustry.world.blocks.power.PowerGraph
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.net.InetAddress
 import java.net.UnknownHostException
 import java.nio.ByteBuffer
-import kotlin.math.max
-import kotlin.math.min
 
 var pvpCount: Int = 0
 var originalBlockMultiplier: Float = 0f
@@ -82,6 +77,23 @@ fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
         Server.ServerConnectFilter { s -> !Vars.netServer.admins.bannedIPs.contains(s) }
     Vars.platform.net.connectFilter = filter
 
+    applyPeaceMode()
+}
+
+/**
+ * Peace has to be applied against the rules object the round will actually run with. Every map path
+ * reassigns `state.rules` from `applyRules` AFTER the world load fires, so applying it only on
+ * [worldLoadEnd] wrote the multipliers onto the object that was about to be thrown away and peace was
+ * silently inert on every rotation, vote and host. The save-load path never calls `logic.play()`, so
+ * both hooks are needed; each one recomputes from whatever `state.rules` is current, so applying
+ * twice is not applying twice to the same object.
+ */
+@Event
+fun play(e: EventType.PlayEvent) {
+    applyPeaceMode()
+}
+
+private fun applyPeaceMode() {
     if (conf.pvp.peace.enabled && Vars.state.rules.pvp) {
         // A save loaded during peace time can already have the multiplier at 0; treat that as unset.
         originalBlockMultiplier = if (Vars.state.rules.blockDamageMultiplier == 0f) 1f else Vars.state.rules.blockDamageMultiplier
@@ -103,6 +115,9 @@ fun runEverySecond() {
             if (pvpCount == 0) {
                 Vars.state.rules.blockDamageMultiplier = originalBlockMultiplier
                 Vars.state.rules.unitDamageMultiplier = originalUnitMultiplier
+                // The rules reach a client once, with the world snapshot. Without this the client
+                // keeps predicting the peace multipliers and shows damage the server discards.
+                Call.setRules(Vars.state.rules)
                 players.forEach {
                     it.send("event.pvp.peace.end")
                 }
@@ -123,32 +138,6 @@ fun update() {
     }
     if (conf.protect.unbreakableCore) {
         Vars.state.teams.active.forEach { t -> t.cores.forEach { c -> c.health(1.0E8f) } }
-    }
-}
-
-@Event
-fun config(e: EventType.ConfigEvent) {
-    if (conf.protect.powerDetect && e.value is Int) {
-        val entity: Building = e.tile
-        val other: Tile? = Vars.world.tile(e.value as Int)
-        val valid =
-            other != null && entity.power != null && other.block().hasPower && other.block().outputsPayload && other.block() !== Blocks.massDriver && other.block() === Blocks.payloadMassDriver && other.block() === Blocks.largePayloadMassDriver
-        if (valid) {
-            val oldGraph: PowerGraph = entity.power.graph
-            val newGraph: PowerGraph = other.build.power.graph
-            val oldGraphCount = 0
-            val newGraphCount = 0
-
-            players.forEach { a ->
-                a.send(
-                    "event.antiGrief.node",
-                    e.player.name,
-                    max(oldGraphCount, newGraphCount),
-                    min(oldGraphCount, newGraphCount),
-                    "${e.tile.x},${e.tile.y}"
-                )
-            }
-        }
     }
 }
 
@@ -201,8 +190,13 @@ fun playerJoin(e: EventType.PlayerJoin) {
                 }
 
                 if (!exists) {
-                    //data.send("event.discord.not.registered")
-                    // TODO discord 로그인 추가
+                    // There is no Discord login on this path - the action filter is the only gate,
+                    // and it denies silently. Say so rather than leaving the player in a server
+                    // where nothing they do works.
+                    arc.Core.app.post {
+                        Groups.player.find { p -> p.uuid() == uuid }
+                            ?.sendMessage(Bundle(locale)["event.discord.not.registered"])
+                    }
                 } else {
                     val reason = Bundle(locale)["event.player.name.duplicate"]
                     arc.Core.app.post {
@@ -290,15 +284,14 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
         kickReason = "name.short"
     }
     if (kickReason.isEmpty() && conf.rules.vpn) {
-        for (ip in pluginData.vpnList) {
-            // IpAddressMatcher throws on a line it cannot parse, and the list is downloaded. Letting
-            // that escape would skip every rule below.
-            val matched = runCatching { IpAddressMatcher(ip).matches(event.connection.address) }.getOrDefault(false)
-            if (matched) {
-                event.connection.kick(Bundle(event.packet.locale)["anti-grief.vpn"])
-                kickReason = "vpn"
-                break
-            }
+        // The matchers are built once when the list is set and the remote address is parsed once per
+        // connection, not once per entry: this runs on the main thread and the list is tens of
+        // thousands of lines long. An address that will not parse matches nothing rather than
+        // throwing, which would skip every rule below.
+        val remote = runCatching { InetAddress.getByName(event.connection.address) }.getOrNull()
+        if (remote != null && pluginData.vpnMatchers.any { it.matches(remote) }) {
+            event.connection.kick(Bundle(event.packet.locale)["anti-grief.vpn"])
+            kickReason = "vpn"
         }
     }
     if (kickReason.isEmpty() && conf.rules.blockNewUser && coldData?.contains(event.packet.uuid) == false) {
@@ -362,8 +355,7 @@ class IpAddressMatcher(ipAddress: String) {
         }
     }
 
-    fun matches(address: String?): Boolean {
-        val remoteAddress = parseAddress(address)
+    fun matches(remoteAddress: InetAddress): Boolean {
         if (requiredAddress.javaClass != remoteAddress.javaClass) {
             return false
         }

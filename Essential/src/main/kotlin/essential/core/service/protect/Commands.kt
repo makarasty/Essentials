@@ -42,26 +42,29 @@ class Commands {
             }.firstOrNull()
             val existingDeviceAccount = getPlayerData(currentUuid)
 
+            // bcrypt is deliberately slow: verified inside the post below, every attempt stalled the
+            // simulation for one comparison, and any player who can type /login could repeat that.
+            val isBcryptHash = target?.accountPW != null && (target.accountPW!!.startsWith($$"$2a$") || target.accountPW!!.startsWith($$"$2b$") || target.accountPW!!.startsWith(
+                $$"$2y$"
+            ))
+            val passwordMatches = isBcryptHash && try {
+                BCrypt.checkpw(arg[1], target.accountPW!!)
+            } catch (e: Exception) {
+                false
+            }
+
             Core.app.post {
                 if (target == null) {
                     playerData.err("command.login.not.found")
                     return@post
                 }
-                val isBcryptHash = target.accountPW != null && (target.accountPW!!.startsWith($$"$2a$") || target.accountPW!!.startsWith($$"$2b$") || target.accountPW!!.startsWith(
-                    $$"$2y$"
-                ))
 
                 if (!isBcryptHash) {
                     player.sendMessage(bundle["command.login.plaintext"])
                     return@post
                 }
 
-                try {
-                    if (!BCrypt.checkpw(arg[1], target.accountPW!!)) {
-                        playerData.err("command.login.not.found")
-                        return@post
-                    }
-                } catch (e: Exception) {
+                if (!passwordMatches) {
                     playerData.err("command.login.not.found")
                     return@post
                 }
