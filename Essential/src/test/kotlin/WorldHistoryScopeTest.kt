@@ -66,6 +66,13 @@ class WorldHistoryScopeTest {
             waitUntil(10000) { runBlocking { getAllWorldHistory() }.isEmpty() },
             "history recorded on the previous map must not survive into the new one"
         )
+
+        // Put the suite back on the map ClientCommandTest already leaves it on. A test class that ends on
+        // a different map changes the world every later class stands on, and createPlayer spawns its unit
+        // at coordinates up to 300x500 - on a smaller map the spawn falls outside and the player is left
+        // with no unit, which makes leavePlayer throw in whichever class runs next.
+        clientCommand.handleMessage("/changemap glacier", player)
+        assertEquals("Glacier", Vars.state.map.name(), "the suite should be left on the map it started on")
     }
 
     @Test
