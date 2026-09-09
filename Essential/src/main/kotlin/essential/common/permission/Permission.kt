@@ -286,7 +286,16 @@ object Permission {
         return true
     }
 
-    private fun applyGroup(uuid: String, group: String) {
+    /**
+     * Apply [group] to a player that permission_user.yaml carries no entry for, without going near the
+     * file. An entry in that file wins over [group] everywhere a permission is actually decided -
+     * [isAdmin], [groupOf] and [get] all prefer it - so calling this for a uuid that has one leaves
+     * PlayerData.permission saying one thing and every check answering with another.
+     *
+     * It is not free of side effects: [syncVanillaAdmin] reaches Mindustry own admin database, and for
+     * an unknown uuid Administration.unAdminPlayer creates and saves an empty PlayerInfo row there.
+     */
+    fun applyGroup(uuid: String, group: String) {
         syncVanillaAdmin(uuid, group)
 
         players.find { data -> data.uuid == uuid }?.let { data ->
