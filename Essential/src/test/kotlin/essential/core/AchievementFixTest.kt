@@ -198,7 +198,7 @@ class AchievementFixTest {
         val victims = (1..5).map { UnitTypes.dagger.spawn(Team.crux, player.x, player.y) }
         try {
             data.status.remove("record.turret.multikill.current")
-            data.status.remove("record.turret.multikill.bullet")
+            data.status.remove("record.turret.multikill.bullet.current")
             data.status.remove("record.turret.multikill")
             data.achievementStatus.remove("turretmultikill")
 
@@ -206,9 +206,16 @@ class AchievementFixTest {
             bullet.owner = shooter
             victims.forEach { achievementUnitBulletDestroy(EventType.UnitBulletDestroyEvent(it, bullet)) }
 
+            // Achievement.TurretMultiKill.current() reads this same key against value()=5: a literal "1"
+            // here (rather than the real count) would pass this assertion while leaving success() unable
+            // to ever return true - checking achievementStatus is what actually proves it was awarded.
             assertEquals(
-                "1",
+                "5",
                 data.status["record.turret.multikill"],
+                "Five victims destroyed by the same bullet must record the real count, not a flag."
+            )
+            assertTrue(
+                data.achievementStatus.contains("turretmultikill"),
                 "Five victims destroyed by the same bullet must award TurretMultiKill."
             )
         } finally {
@@ -227,7 +234,7 @@ class AchievementFixTest {
         val victims = (1..5).map { UnitTypes.dagger.spawn(Team.crux, player.x, player.y) }
         try {
             data.status.remove("record.turret.multikill.current")
-            data.status.remove("record.turret.multikill.bullet")
+            data.status.remove("record.turret.multikill.bullet.current")
             data.status.remove("record.turret.multikill")
             data.achievementStatus.remove("turretmultikill")
 
@@ -297,7 +304,7 @@ class AchievementFixTest {
         try {
             data.status.remove("record.crawler.block.destroy")
             data.status.remove("record.crawler.block.destroy.current")
-            data.status.remove("record.crawler.block.destroy.bullet")
+            data.status.remove("record.crawler.block.destroy.bullet.current")
             data.achievementStatus.remove("crawlerblockdestroyer")
 
             val bullet = Bullet.create()
@@ -309,9 +316,15 @@ class AchievementFixTest {
                 tile.setBlock(Blocks.air)
             }
 
+            // Same current()-vs-flag trap as TurretMultiKill above: assert both the real count and that
+            // the achievement was actually awarded, not just that some status key changed.
             assertEquals(
-                "1",
+                "5",
                 data.status["record.crawler.block.destroy"],
+                "Five blocks destroyed by the same crawler explosion must record the real count, not a flag."
+            )
+            assertTrue(
+                data.achievementStatus.contains("crawlerblockdestroyer"),
                 "Five blocks destroyed by the same crawler explosion must award CrawlerBlockDestroyer."
             )
         } finally {
@@ -330,7 +343,7 @@ class AchievementFixTest {
         val crawler = spawnControlledUnit(player, UnitTypes.crawler)
         try {
             data.status.remove("record.crawler.block.destroy.current")
-            data.status.remove("record.crawler.block.destroy.bullet")
+            data.status.remove("record.crawler.block.destroy.bullet.current")
 
             val tile = world.tile(75, 75)
             tile.setBlock(Blocks.copperWall, player.team(), 0)

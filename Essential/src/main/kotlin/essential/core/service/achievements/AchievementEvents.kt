@@ -527,17 +527,26 @@ fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
     // rather than replaced, since the achievement's own text has nothing to do with turrets. "Simultaneously
     // with a single bullet" means what it says: count by bullet id, resetting on a new bullet, rather than
     // accumulating lifetime kills (a splash-damage bullet can hit several units in the one explosion).
+    //
+    // A second opus review caught a further bug, pre-existing before this fix and shared by
+    // OmuraHorizonKiller/ExplosionKiller/CrawlerBlockDestroyer below: Achievement.TurretMultiKill.current()
+    // reads record.turret.multikill, but the achievement code wrote a literal "1" into that key on
+    // completion rather than the real count - so current() >= value() (1 >= 5) was always false and
+    // success() could never return true through that path. record.turret.multikill.bullet also isn't
+    // excluded from PlayerData's merge-summing (only .time/.current/.duration suffixes are, generically,
+    // plus an explicit list neither PlayerData.kt nor this file's owner can casually extend) - named with a
+    // .current suffix instead so the existing generic exclusion covers it without touching that file.
     val multiKillBulletId = bullet.id()
-    val lastMultiKillBulletId = data.status.getOrDefault("record.turret.multikill.bullet", "-1").toIntOrNull()
+    val lastMultiKillBulletId = data.status.getOrDefault("record.turret.multikill.bullet.current", "-1").toIntOrNull()
     val multiKillCount = if (multiKillBulletId == lastMultiKillBulletId) {
         data.status.getOrDefault("record.turret.multikill.current", "0").toInt() + 1
     } else {
         1
     }
-    data.status["record.turret.multikill.bullet"] = multiKillBulletId.toString()
+    data.status["record.turret.multikill.bullet.current"] = multiKillBulletId.toString()
     data.status["record.turret.multikill.current"] = multiKillCount.toString()
     if (multiKillCount >= 5) {
-        data.status["record.turret.multikill"] = "1"
+        data.status["record.turret.multikill"] = multiKillCount.toString()
         if (Achievement.TurretMultiKill.success(data)) {
             Achievement.TurretMultiKill.set(data)
         }
@@ -589,16 +598,17 @@ fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
     // TurretMultiKill above: "simultaneously with a single bullet" is counted by bullet id.
     if (owner.type == UnitTypes.omura && victim.type.name.equals("horizon", true)) {
         val comboBulletId = bullet.id()
-        val lastComboBulletId = data.status.getOrDefault("record.omura.horizon.kill.bullet", "-1").toIntOrNull()
+        val lastComboBulletId = data.status.getOrDefault("record.omura.horizon.kill.bullet.current", "-1").toIntOrNull()
         val comboKillCount = if (comboBulletId == lastComboBulletId) {
             data.status.getOrDefault("record.omura.horizon.kill.current", "0").toInt() + 1
         } else {
             1
         }
-        data.status["record.omura.horizon.kill.bullet"] = comboBulletId.toString()
+        data.status["record.omura.horizon.kill.bullet.current"] = comboBulletId.toString()
         data.status["record.omura.horizon.kill.current"] = comboKillCount.toString()
         if (comboKillCount >= 5) {
-            data.status["record.omura.horizon.kill"] = "1"
+            // Same current()-vs-threshold bug as TurretMultiKill above: the real count, not a "1" flag.
+            data.status["record.omura.horizon.kill"] = comboKillCount.toString()
             if (Achievement.OmuraHorizonKiller.success(data)) {
                 Achievement.OmuraHorizonKiller.set(data)
             }
@@ -616,7 +626,8 @@ fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
         val explosionKillCount = data.status.getOrDefault("record.explosion.kill.current", "0").toInt() + 1
         data.status["record.explosion.kill.current"] = explosionKillCount.toString()
         if (explosionKillCount >= 10) {
-            data.status["record.explosion.kill"] = "1"
+            // Same current()-vs-threshold bug as TurretMultiKill above: the real count, not a "1" flag.
+            data.status["record.explosion.kill"] = explosionKillCount.toString()
             if (Achievement.ExplosionKiller.success(data)) {
                 Achievement.ExplosionKiller.set(data)
             }
@@ -657,18 +668,25 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
     // shootOnDeath explosion, fired once), so each crawler death is one attack and every block it
     // destroys in that blast shares the same Bullet instance. Counting by bullet id, not lifetime kills,
     // is what "with a single ... attack" actually means - reset rather than accumulate across attacks.
+    // .bullet.current, not .bullet: only .time/.current/.duration-suffixed keys are excluded from
+    // PlayerData's merge-summing (see NON_TOTAL_RECORD_KEYS in common/database/data/PlayerData.kt, not
+    // mine to edit), so this borrows the existing generic .current exclusion rather than needing a change
+    // there for a key that was never meant to be summed across two accounts in the first place.
     val bulletId = bullet.id()
-    val lastBulletId = data.status.getOrDefault("record.crawler.block.destroy.bullet", "-1").toIntOrNull()
+    val lastBulletId = data.status.getOrDefault("record.crawler.block.destroy.bullet.current", "-1").toIntOrNull()
     val count = if (bulletId == lastBulletId) {
         data.status.getOrDefault("record.crawler.block.destroy.current", "0").toInt() + 1
     } else {
         1
     }
-    data.status["record.crawler.block.destroy.bullet"] = bulletId.toString()
+    data.status["record.crawler.block.destroy.bullet.current"] = bulletId.toString()
     data.status["record.crawler.block.destroy.current"] = count.toString()
 
     if (count >= Achievement.CrawlerBlockDestroyer.value()) {
-        data.status["record.crawler.block.destroy"] = "1"
+        // Achievement.CrawlerBlockDestroyer.current() reads record.crawler.block.destroy and compares it
+        // against value() (5) - a literal "1" here (a second opus review's catch) made that comparison
+        // always false and the achievement permanently unearnable regardless of the rest of this fix.
+        data.status["record.crawler.block.destroy"] = count.toString()
         if (Achievement.CrawlerBlockDestroyer.success(data)) {
             Achievement.CrawlerBlockDestroyer.set(data)
         }
