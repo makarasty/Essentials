@@ -14,7 +14,7 @@ class BundleKeyCoverageTest {
         "command.changeName.success",
         "command.fuck.no.command",
         "command.meme.not.found",
-        "permission.denied"
+        "command.permission.false"
     )
 
     private fun english() = Bundle("bundles/common/bundle", Locale.ENGLISH)
