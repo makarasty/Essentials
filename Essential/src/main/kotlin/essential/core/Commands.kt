@@ -695,7 +695,18 @@ class Commands {
                                             }
                                             targetData!!.banExpireDate =
                                                 Clock.System.now().plus(time.minutes).toLocalDateTime(systemTimezone)
-                                            scope.launch { targetData!!.update() }
+                                            // The ban itself is applied below regardless (banPlayerID does
+                                            // not depend on this row), so a failed write here is a durability
+                                            // problem, not a "nothing happened" one - the admin is told rather
+                                            // than the confirm silently going through. Captured now: targetData
+                                            // is a mutable var that a later /info call can repoint before this
+                                            // coroutine's Core.app.post runs.
+                                            val bannedTarget = targetData!!
+                                            scope.launch {
+                                                if (!bannedTarget.update()) {
+                                                    Core.app.post { playerData.err("command.tempBan.db.failed", bannedTarget.name) }
+                                                }
+                                            }
                                             Events.fire(
                                                 CustomEvents.PlayerTempBanned(
                                                     targetData!!.name,
@@ -765,7 +776,15 @@ class Commands {
                         val unbanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                             if (i == 0) {
                                 targetData!!.banExpireDate = null
-                                scope.launch { targetData!!.update() }
+                                // Captured now: targetData is a mutable var a later /info call can repoint
+                                // before this coroutine's Core.app.post runs. The unban itself (below) does
+                                // not depend on this write succeeding; only its durability does.
+                                val unbannedTarget = targetData!!
+                                scope.launch {
+                                    if (!unbannedTarget.update()) {
+                                        Core.app.post { playerData.err("command.unban.db.failed", unbannedTarget.name) }
+                                    }
+                                }
                                 unbanPlayer(targetData)
                                 Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
                                 playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
@@ -1876,7 +1895,21 @@ class Commands {
         }
 
         data.permission = group
-        scope.launch { data.update() }
+        // The group change is live on this server the instant data.permission is set above - only its
+        // durability is in question here. A failed write is not undone (the file half already committed,
+        // and reverting the live group would desync this server from what the file now says), but the
+        // admin is told, instead of a persistence failure being reported as an unqualified success.
+        scope.launch {
+            if (!data.update()) {
+                Core.app.post {
+                    if (sender != null) {
+                        sender.err("command.setPerm.db.failed", data.name)
+                    } else {
+                        Log.warn(Bundle()["command.setPerm.db.failed", data.name])
+                    }
+                }
+            }
+        }
 
         if (sender != null) {
             sender.send("command.setPerm.success", data.name, group)
