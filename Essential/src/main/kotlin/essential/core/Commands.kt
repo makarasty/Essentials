@@ -2922,6 +2922,10 @@ class Commands {
                     playerData.err("command.ws.no.selection")
                     return
                 }
+                if (getRegionSize(selection) > conf.command.worldEdit.maxRegionSize) {
+                    playerData.err("command.ws.region.too.large", getRegionSize(selection), conf.command.worldEdit.maxRegionSize)
+                    return
+                }
                 val blockName = parsedArgs[1]
                 val block = findBlockByName(blockName)
                 if (block == null) {
@@ -2939,6 +2943,10 @@ class Commands {
                 }
                 if (selection == null || !selection.selectionComplete) {
                     playerData.err("command.ws.no.selection")
+                    return
+                }
+                if (getRegionSize(selection) > conf.command.worldEdit.maxRegionSize) {
+                    playerData.err("command.ws.region.too.large", getRegionSize(selection), conf.command.worldEdit.maxRegionSize)
                     return
                 }
                 val fromName = parsedArgs[1]
@@ -2960,6 +2968,10 @@ class Commands {
                 // Delete: /ws d
                 if (selection == null || !selection.selectionComplete) {
                     playerData.err("command.ws.no.selection")
+                    return
+                }
+                if (getRegionSize(selection) > conf.command.worldEdit.maxRegionSize) {
+                    playerData.err("command.ws.region.too.large", getRegionSize(selection), conf.command.worldEdit.maxRegionSize)
                     return
                 }
                 deleteRegion(playerData, selection)

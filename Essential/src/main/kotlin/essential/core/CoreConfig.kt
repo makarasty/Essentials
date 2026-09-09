@@ -275,6 +275,15 @@ data class Command(
     val rollback: Rollback = Rollback(),
     @YamlComment("Run commands typed in a Cyrillic keyboard layout without switching (/rtv typed as .kem)")
     val layoutFix: Boolean = true,
+    @YamlComment("/ws (WorldEdit) settings")
+    val worldEdit: WorldEdit = WorldEdit(),
+)
+
+/** Command - WorldEdit settings */
+@Serializable
+data class WorldEdit(
+    @YamlComment("Maximum tiles /ws f, /ws r and /ws d may touch in one selection. Each tile is a synchronous Call.setTile on the main thread, so an unbounded selection stalls the server for however long the loop takes.")
+    val maxRegionSize: Int = 10000,
 )
 
 /** Command - Wave skip settings */
