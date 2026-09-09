@@ -5,6 +5,7 @@ import PluginTest.Companion.stopPlugin
 import arc.util.Log
 import essential.common.bundle
 import essential.common.database.data.getPluginData
+import essential.common.database.data.mergePlayerAccounts
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.vendors.MariaDBDialect
 import org.jetbrains.exposed.v1.core.vendors.MysqlDialect
@@ -164,6 +165,8 @@ class LiveDatabaseBootTest {
 
     private fun List<String>.emittedDdl() = filter { it.startsWith(DDL_TAG) }.map { it.removePrefix(DDL_TAG) }
 
+    private fun List<String>.declinedRepairs() = filter { it.startsWith(DECLINED_TAG) }
+
     private fun List<String>.report() = joinToString("\n").ifEmpty { "(nothing was logged)" }
 
     /** Everything the next person needs to place a failure: what ran, what was swallowed, what threw. */
@@ -282,6 +285,30 @@ class LiveDatabaseBootTest {
         )
         assertNull(failure, "a version 4 database could not boot. $why")
 
+        // An upgrade that reached the baseline but skipped work has to say both halves. v5.sql skips
+        // all five of its map_ratings statements here, and on any real server too: that table is never
+        // created by the scripts, only by SchemaUtils after this point. Before this change the boot
+        // said nothing at all about them.
+        assertTrue(
+            bootLog.any { it.contains("statement(s) failed and were skipped as non-critical") },
+            "the boot did not report the statements it skipped. $why"
+        )
+        assertEquals(
+            5, bootLog.swallowed().size,
+            "v5.sql skipped a different number of statements than the five map_ratings ones. $why"
+        )
+        // The count and the table together are the deploy check: five, map_ratings, move on. Naming the
+        // tables is what makes that one line to read rather than five statements to compare by eye.
+        assertTrue(
+            bootLog.any { it.contains("(tables: map_ratings)") },
+            "the skipped-statement report did not name the table, so the deploy check is still manual. $why"
+        )
+        assertTrue(
+            bootLog.none { it.contains("DID NOT FINISH") },
+            "an upgrade that reached the baseline was reported as an abort, which teaches an operator " +
+                "to ignore the line that matters. $why"
+        )
+
         engine.open(legacyDb).use { connection ->
             assertEquals(
                 "5", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
@@ -312,6 +339,14 @@ class LiveDatabaseBootTest {
         val failure = engine.bootCatching(legacyDb)
         val why by lazy { diagnosis(engine, failure) }
         assertNull(failure, "a database at the baseline could not start, so the plugin would not load. $why")
+
+        // Nothing for the legacy path to do, and the boot has to say so plainly - that line is the
+        // whole point of the outcome report, and it is the one an operator reads to know the schema is
+        // current rather than half migrated.
+        assertTrue(
+            bootLog.any { it.contains("no legacy upgrade is outstanding") },
+            "a boot with no upgrade outstanding said nothing that says so. $why"
+        )
 
         runBlocking {
             val stored = getPluginData()
@@ -391,6 +426,57 @@ class LiveDatabaseBootTest {
                 "an upgrade that aborted still advanced the stored version. $why"
             )
         }
+
+        // The version stamp being right is only half of it: the boot carried on into SchemaUtils and
+        // Flyway on a half-migrated schema, and the only thing that said so was the warn above, which
+        // an operator has to know to look for. The outcome block is what they read instead.
+        assertTrue(
+            bootLog.any { it.contains("DID NOT FINISH") },
+            "the boot never stated that it had come up on a half-migrated schema. $why"
+        )
+        assertTrue(
+            bootLog.any { it.contains("still reads 4") },
+            "the outcome report did not name the version the database is actually on. $why"
+        )
+    }
+
+    /**
+     * A schema the `resources/sql` scripts built has none of the unique indexes the Kotlin tables
+     * declare, and the boot repair pass drops every statement that would add one - deliberately, since
+     * a unique index over a live column that already holds duplicates fails the ALTER and would take
+     * the boot with it. What was missing was any record of the refusal.
+     *
+     * If this finds nothing declined, the premise of the finding is wrong for these engines and the
+     * assertion message is the reading.
+     */
+    @Test
+    fun theBootNamesTheRepairsItRefusesToMake() = onEachEngine { engine ->
+        engine.reset(legacyDb)
+        engine.open(legacyDb).use {
+            it.execScript(VERSION_FOUR_SCHEMA)
+            it.execScript(VERSION_FIVE_ADDITIONS)
+            it.execScript(BASELINE_STAMP)
+        }
+
+        val failure = engine.bootCatching(legacyDb)
+        val why by lazy { diagnosis(engine, failure) }
+        assertNull(failure, "a database at the baseline could not start. $why")
+
+        val declined = bootLog.declinedRepairs()
+        assertTrue(
+            declined.isNotEmpty(),
+            "the boot declined nothing on a schema the legacy scripts built, so either " +
+                "addMissingColumnsStatements offers no index statements on this engine or there is " +
+                "nothing to add. $why"
+        )
+        // Named against players itself, not merely mentioning it: a foreign key on another table
+        // carries players in its REFERENCES clause, and a report that pointed at the wrong table would
+        // send an operator to look for an index that was never missing.
+        assertTrue(
+            declined.any { it.startsWith(DECLINED_TAG + "players:") },
+            "no repair was declined against players, whose uuid and name unique indexes are the ones " +
+                "the legacy schema is missing. Declined: ${declined.report()}"
+        )
     }
 
     /**
@@ -411,9 +497,55 @@ class LiveDatabaseBootTest {
         )
     }
 
+    /**
+     * The account merge locks both player rows for the length of its transaction.
+     *
+     * Every value it writes is an absolute one computed in Kotlin from a snapshot, so without the lock
+     * a counter another of the six servers committed between the read and the write was overwritten by
+     * a sum from before it existed. `SELECT ... FOR UPDATE` is the part of that fix an H2-backed suite
+     * cannot vouch for, so it is exercised here against the engine the servers actually run.
+     */
+    @Test
+    fun anAccountMergeLocksBothRowsAndStillCompletes() = onEachEngine { engine ->
+        engine.reset(testDb)
+        engine.boot(testDb)
+
+        val from = "MERGEFROMAAAAAAAAAAAAA=="
+        val to = "MERGETOAAAAAAAAAAAAAAA=="
+        engine.open(testDb).use {
+            it.exec("INSERT INTO `players` (`name`, `uuid`, `exp`) VALUES ('merge-from', '$from', 30)")
+            it.exec("INSERT INTO `players` (`name`, `uuid`, `exp`) VALUES ('merge-to', '$to', 12)")
+        }
+
+        // Exposed drops the FOR UPDATE clause silently when the dialect reports it unsupported, so
+        // the merge would go on passing every assertion below with no lock at all. This is the flag it
+        // consults, and it is the only thing standing between this fix and a quiet no-op.
+        assertTrue(
+            defaultDatabase!!.supportsSelectForUpdate,
+            "$engine reports no SELECT ... FOR UPDATE, so the account merge runs unlocked"
+        )
+
+        val result = runBlocking { mergePlayerAccounts(from, to) }
+        assertTrue(result.startsWith("Merged"), "the merge did not run on $engine: $result")
+
+        engine.open(testDb).use { connection ->
+            assertEquals(
+                "42", connection.scalar("SELECT exp FROM players WHERE uuid = '$to'"),
+                "the merge did not carry the source's exp across on $engine"
+            )
+            assertNull(
+                connection.scalar("SELECT uuid FROM players WHERE uuid = '$from'"),
+                "the source row survived the merge on $engine"
+            )
+        }
+    }
+
     private companion object {
         /** The tag `Database.kt` prints each add-missing-columns statement under. */
         const val DDL_TAG = "[Database] "
+
+        /** The tag `Database.kt` prints each repair it refuses to attempt under. */
+        const val DECLINED_TAG = "[Database/schema] repair declined on "
 
         /**
          * The schema a database upgraded by `sql/v4.sql` has: v3, as `database-v3.mv.db` holds it, with
