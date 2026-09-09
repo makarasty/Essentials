@@ -41,5 +41,23 @@ object PlayerTable : Table("players") {
     val banExpireDate = datetime("ban_expire_date").nullable().default(null)
     val attendanceDays = integer("attendance_days").default(0)
 
+    /**
+     * The `record.*` half of [essential.common.database.data.PlayerData.status] as a JSON object.
+     *
+     * The achievement counters live in that map. Until this column existed they were held in memory
+     * only, so every counter restarted at zero when the player left, when the server restarted, or
+     * when the player moved to another server on the same database.
+     *
+     * Deliberately not called `status`: a nullable legacy `status` column still exists on databases
+     * upgraded through the v4 scripts, and reusing the name would make Exposed emit an ALTER to
+     * make it NOT NULL on every boot, over a column that still holds pre-fork content.
+     *
+     * Nullable with a null default, the same shape as [PluginTable.hubMapName], because MySQL refuses
+     * a literal default on a TEXT column: `TEXT NOT NULL DEFAULT '{}'` is error 1101 there, and it
+     * would be emitted both by the create and by the add-missing-columns pass at boot. A row that
+     * predates the column reads as null and starts from an empty map.
+     */
+    val statusData = text("status_data").nullable().default(null)
+
     override val primaryKey = PrimaryKey(id)
 }

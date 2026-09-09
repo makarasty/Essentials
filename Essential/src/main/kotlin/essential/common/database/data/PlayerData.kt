@@ -10,6 +10,8 @@ import essential.common.playerNumber
 import essential.common.systemTimezone
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.toLocalDateTime
 import ksp.table.GenerateCode
@@ -20,8 +22,61 @@ import org.jetbrains.exposed.v1.r2dbc.*
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mindrot.jbcrypt.BCrypt
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+
+internal val statusJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+/**
+ * Keys under this prefix are achievement progress, and are the only part of `status` that is saved.
+ *
+ * The prefix is load-bearing: a counter named anything else is session state, and will not survive a
+ * restart, a reconnect, or a move to another server on the same database.
+ */
+internal const val RECORD_PREFIX = "record."
+
+/**
+ * The `record.*` keys that are not running totals, and so must never be added together when two
+ * accounts, or a temporary data object and a real one, are merged.
+ *
+ * Summing a window turns two half-runs into one whole one and awards something that never happened;
+ * summing a timestamp lands so far in the future that the window it guards never closes again. In
+ * both cases the merged player keeps their own value and the other side's is dropped.
+ *
+ * Note the two `.kill` entries. They read as lifetime totals and are not: `AchievementEvents.kt`
+ * assigns them `1` rather than incrementing whenever more than ten seconds have passed since the
+ * paired `.time` stamp, so they are burst counts. Excluding the timestamp alone does not protect
+ * them, because the achievement reads the count directly and never consults the stamp.
+ */
+internal val NON_TOTAL_RECORD_KEYS = setOf(
+    "record.turret.quill.kill.time",
+    "record.turret.zenith.kill.time",
+    "record.turret.quill.kill",
+    "record.turret.zenith.kill",
+    "record.pvp.win.streak.current",
+    "record.pvp.defeat.streak.current",
+    "record.turret.multikill.current",
+    "record.omura.horizon.kill.current",
+    "record.explosion.kill.current",
+    "record.warp.disconnect.duration",
+    "record.time.noafk",
+)
+
+/**
+ * Whether a `record.*` key may be added to the same key on another account.
+ *
+ * Both merge paths must use this rather than each spelling out a rule: an account merge and a
+ * temporary-data merge that disagree about one key is one of them handing out an achievement the
+ * other refuses. The suffix test is a backstop, not the rule - a new window that nobody remembered to
+ * put in [NON_TOTAL_RECORD_KEYS] is then dropped rather than summed, and dropping progress is the
+ * failure worth having.
+ */
+internal fun isRunningTotalRecordKey(key: String): Boolean =
+    key !in NON_TOTAL_RECORD_KEYS &&
+            !key.endsWith(".time") &&
+            !key.endsWith(".current") &&
+            !key.endsWith(".duration")
 
 internal fun parseLocaleOrDefault(rawLocale: String): String? {
     val normalized = rawLocale.replace('_', '-')
@@ -71,7 +126,13 @@ data class PlayerData(
     var isConnected: Boolean = false,
     var isBanned: Boolean = false,
     var banExpireDate: LocalDateTime? = null,
-    var attendanceDays: Int = 0
+    var attendanceDays: Int = 0,
+    /**
+     * The `record.*` half of [status] as JSON; read on load, rewritten from the map on every [update].
+     *
+     * Null on a row written before the column existed.
+     */
+    var statusData: String? = null
 ) {
     // Exp
     var expMultiplier: Double = 1.0
@@ -121,11 +182,37 @@ data class PlayerData(
             Log.warn("Player data of $name ($uuid) is temporary, the changes are kept in memory only.")
             return false
         }
+        statusData = statusJson.encodeToString(status.filterKeys { it.startsWith(RECORD_PREFIX) })
         return updateRow()
     }
 
     var player: Playerc = Player.create()
-    val status = mutableMapOf<String, String>()
+
+    /**
+     * Two kinds of key share this map.
+     *
+     * `record.*` are the achievement counters, and those are the ones [statusData] carries between
+     * sessions and between servers. Everything else - a half-finished hub block selection, the
+     * pendingLogin confirmation token, the chat page a player is on - belongs to the session that
+     * created it, and is deliberately not persisted: a confirmation that outlives the conversation
+     * it belongs to is a confirmation nobody gave.
+     *
+     * Concurrent because the achievement handlers write it from the game thread while [update] runs
+     * from a coroutine.
+     */
+    val status: MutableMap<String, String> = ConcurrentHashMap()
+
+    init {
+        val stored = statusData
+        if (!stored.isNullOrBlank()) {
+            try {
+                status.putAll(statusJson.decodeFromString<Map<String, String>>(stored))
+            } catch (e: SerializationException) {
+                Log.warn("Unreadable status for $name ($uuid), starting from empty: ${e.message}")
+            }
+        }
+    }
+
     val bundle: Bundle get() = Bundle(
         if (player.con() != null && !player.locale().isNullOrBlank()) player.locale() else languageTag
     )

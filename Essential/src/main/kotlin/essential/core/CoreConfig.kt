@@ -242,6 +242,12 @@ data class Effects(
     val enabled: Boolean = false,
     @YamlComment("Trigger effect only when moving")
     val moving: Boolean = false,
+    @YamlComment(
+        "Ceiling on the effect packets one pass may send, twenty passes per second.",
+        "Nothing is dropped when the ceiling is hit: the effects that do not fit are sent by the",
+        "following passes instead. Below the ceiling nothing is changed at all."
+    )
+    val maxPacketsPerRun: Int = 2000,
 )
 
 @Serializable
