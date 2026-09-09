@@ -48,6 +48,7 @@ import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.Playerc
+import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.Administration
 import mindustry.net.Packets
@@ -1060,28 +1061,32 @@ fun buildSelect(event: BuildSelectEvent) {
     }
 }
 
-@Event
-fun blockDestroy(event: BlockDestroyEvent) {
-    if (Vars.state.rules.attackMode) {
-        for (a in players) {
-            if (event.tile.team() != Vars.state.rules.defaultTeam) {
-                a.currentBuildAttackCount++
-            } else {
-                a.currentBuildDestroyedCount++
-            }
-        }
-    }
-}
+// blockDestroy(BlockDestroyEvent) used to credit every connected player's
+// currentBuildAttackCount/currentBuildDestroyedCount in attack mode, with no attribution at all -
+// BlockDestroyEvent carries no owner. Removed: task-083's attribution now runs entirely off
+// buildingBulletDestroy below, which has a Bullet and can name one.
 
+// unitDestroy(UnitDestroyEvent) used to credit every connected player not on the victim's team,
+// the same way, off an event that also carries no owner. Removed for the same reason: task-092's
+// attribution now runs entirely off unitBulletDestroy below.
+
+/**
+ * task-092's attribution. unitDestroy used to credit currentUnitDestroyedCount to every connected
+ * player not on the victim's team, with no attribution at all - a player who never fired a shot
+ * earned the same credit as whoever actually got the kill, and that feeds earnEXP's erekirAttack
+ * term. Per the attribution rule this file and AchievementEvents.kt share: credit only replaces
+ * broadcast where a Bullet actually names an owner, and where none exists - fire, poison, a
+ * self-destruct with no weapon - credit nobody rather than everybody. Also collapses the old
+ * O(players)-per-kill loop into a single lookup.
+ */
 @Event
-fun unitDestroy(event: UnitDestroyEvent) {
-    if (!Vars.state.rules.pvp) {
-        for (a in players) {
-            if (event.unit.team() != a.player.team()) {
-                a.currentUnitDestroyedCount++
-            }
-        }
-    }
+fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
+    if (Vars.state.rules.pvp) return
+    val owner = event.bullet.owner as? Unit ?: return
+    val player = owner.player ?: return
+    if (event.unit.team() == player.team()) return
+    val data = findPlayerData(player.uuid()) ?: return
+    data.currentUnitDestroyedCount++
 }
 
 @Event
@@ -1451,6 +1456,23 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
             // isWaitingForPlayers only reports that fewer than two teams have someone connected; it
             // says nothing about who survived.
             soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
+        }
+    }
+
+    // task-083's CoreEvent.kt half, on the attribution rule AchievementEvents.kt shares:
+    // credit only replaces broadcast where a Bullet actually names an owner, and where
+    // none exists - fire, poison, a self-destruct with no weapon - credit nobody rather than
+    // everybody. This also collapses the old O(players)-per-destruction loop into a single lookup.
+    if (Vars.state.rules.attackMode) {
+        val owner = event.bullet.owner as? Unit
+        val player = owner?.player
+        val data = player?.let { findPlayerData(it.uuid()) }
+        if (data != null) {
+            if (event.build.team != Vars.state.rules.defaultTeam) {
+                data.currentBuildAttackCount++
+            } else {
+                data.currentBuildDestroyedCount++
+            }
         }
     }
 }
