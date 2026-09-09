@@ -389,17 +389,16 @@ class Trigger {
                         // hostname never matched the address its ping answered from.
                         val info = cycle.hostFor(value.ip, value.port)
                         if (info != null) {
-                            val tile = value.tile ?: continue
-                            if (value.players != info.players) {
-                                for (px in 0..2) {
-                                    for (py in 0..4) {
-                                        Vars.world.tile(tile.x + 4 + px, tile.y + py)
-                                            ?.setBlock(Blocks.air)
-                                    }
-                                }
-                            }
+                            // Off-map (a map re-saved smaller than when this warp was configured)
+                            // must still skip the update below, even though nothing here reads the
+                            // tile itself anymore.
+                            if (value.tile == null) continue
 
                             val updated = WarpCount(mapName, value.pos, value.ip, value.port)
+                            // Written and never read: the digit-count number this sized has no drawing
+                            // routine anywhere in this repository. Kept anyway - WarpCount serialises
+                            // into PluginData, the row six servers share, and removing a field changes
+                            // that shape (task-119, answers/6-3.md).
                             updated.numberSize = info.players.toString().length
                             updated.players = info.players
                             // The position this entry had in the copy is not necessarily its
@@ -533,21 +532,13 @@ class Trigger {
                     Call.label(m.first.con(), m.second.first, cycle.labelLife, m.second.second, m.second.third)
                 }
 
-                for (value in cycle.warpTotal) {
-                    if (mapName == value.mapName) {
-                        val tile = value.tile ?: continue
-                        if (value.totalPlayers != cycle.total) {
-                            val offset = if (cycle.total in 0..9) 0 else 4
-                            val lastColumn = if (cycle.total in 0..9) 2 else 5
-                            for (px in 0..lastColumn) {
-                                for (py in 0..4) {
-                                    Vars.world.tile(tile.x + offset + px, tile.y + py)
-                                        ?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
-                                }
-                            }
-                        }
-                    }
-                }
+                // The warp total display had a broadcast tile-erase here (Call.setTile, every client)
+                // to clear space for a digit count nothing in this repository draws. Deleted: it
+                // networked-deleted whatever a player had built at the warp anchor whenever a remote
+                // server's player count changed (task-119, refuted as a display desync - the real
+                // defect was this destructive edit; see answers/6-3.md). WarpTotal.numberSize, the
+                // field it was clearing space for, stays: it still serialises into the shared
+                // PluginData row and costs nothing unused.
             }
 
             if (conf.feature.count) {
