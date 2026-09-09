@@ -82,6 +82,23 @@ fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
         Server.ServerConnectFilter { s -> !Vars.netServer.admins.bannedIPs.contains(s) }
     Vars.platform.net.connectFilter = filter
 
+    applyPeaceMode()
+}
+
+/**
+ * Peace has to be applied against the rules object the round will actually run with. Every map path
+ * reassigns `state.rules` from `applyRules` AFTER the world load fires, so applying it only on
+ * [worldLoadEnd] wrote the multipliers onto the object that was about to be thrown away and peace was
+ * silently inert on every rotation, vote and host. The save-load path never calls `logic.play()`, so
+ * both hooks are needed; each one recomputes from whatever `state.rules` is current, so applying
+ * twice is not applying twice to the same object.
+ */
+@Event
+fun play(e: EventType.PlayEvent) {
+    applyPeaceMode()
+}
+
+private fun applyPeaceMode() {
     if (conf.pvp.peace.enabled && Vars.state.rules.pvp) {
         // A save loaded during peace time can already have the multiplier at 0; treat that as unset.
         originalBlockMultiplier = if (Vars.state.rules.blockDamageMultiplier == 0f) 1f else Vars.state.rules.blockDamageMultiplier
