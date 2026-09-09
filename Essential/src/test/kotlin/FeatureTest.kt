@@ -101,12 +101,21 @@ class FeatureTest {
         }
     }
 
+    /**
+     * Same contract as [PluginTest.waitUntil], including the pump: work a background coroutine
+     * hands to the game thread with `Core.app.post` only ever runs because something drains that
+     * queue, and on a live server the main loop does it every frame. A wait that only sleeps sees
+     * the database side of an async handler and never its engine side, so an assertion on engine
+     * state - a connection kicked, a ban lifted - reads as "it never happened".
+     */
     private fun awaitCondition(timeoutMs: Long = 3000L, intervalMs: Long = 50L, condition: () -> Boolean): Boolean {
         val start = System.currentTimeMillis()
         while (System.currentTimeMillis() - start < timeoutMs) {
+            pumpApp()
             if (condition()) return true
             Thread.sleep(intervalMs)
         }
+        pumpApp()
         return condition()
     }
 
