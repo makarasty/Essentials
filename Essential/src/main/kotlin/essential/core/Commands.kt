@@ -41,6 +41,7 @@ import mindustry.content.Blocks
 import mindustry.content.Weathers
 import mindustry.core.GameState
 import mindustry.game.EventType.GameOverEvent
+import mindustry.game.EventType.WaveEvent
 import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.gen.Call
@@ -84,6 +85,14 @@ class Commands {
         val charsPlacing = ConcurrentHashMap<String, Array<String>>()
 
         /**
+         * An admin's explicit /nextmap pick, so the popularity tally that runs after every later vote
+         * (including someone else's) re-affirms it instead of silently recomputing over it. Reset
+         * whenever a vote is cast into an empty mapVotes, which is how a fresh voting round is detected
+         * without needing CoreEvent.kt's game-over handler (which clears mapVotes) to know about this.
+         */
+        private var nextMapAdminOverride: Map? = null
+
+        /**
          * History rows are keyed by tile coordinates and by nothing else, so across a map change they
          * become claims about a map that is no longer loaded and a rollback rebuilds and removes real
          * blocks from them. The game over handler already clears them; a map changed directly never
@@ -98,15 +107,30 @@ class Commands {
         }
 
         /**
+         * `Menus.registerMenu` appends to a process-wide Seq with no way to remove an entry - the engine
+         * exposes no unregister call at all. Registering a fresh one per menu opened (this command runs
+         * on every /info, /players, /maps, ... call) grew that Seq and the PlayerData each closure
+         * captured without bound for the life of the server. One id is registered once and reused; each
+         * call here only replaces this uuid's current listener, so the old closure - and whatever it
+         * captured - is eligible for collection instead of retained forever. Same shape as
+         * Undo.menuId/Undo.kt, which already does this for its own menu.
+         *
          * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
          * may call with any id, so the engine hands every id it receives straight to the listener
          * registered under it. A menu that acts on behalf of the player it was opened for therefore
          * has to check the responder itself; nothing below this call does it.
          */
-        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int =
-            Menus.registerMenu { player, option ->
+        private val ownedMenuListeners = ConcurrentHashMap<String, (Player, Int) -> kotlin.Unit>()
+        private val ownedMenuId: Int by lazy {
+            Menus.registerMenu { player, option -> ownedMenuListeners[player.uuid()]?.invoke(player, option) }
+        }
+
+        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int {
+            ownedMenuListeners[owner.uuid] = { player, option ->
                 if (player.uuid() == owner.uuid) listener(player, option)
             }
+            return ownedMenuId
+        }
 
         /**
          * Calculate the Levenshtein distance between two strings
@@ -607,12 +631,17 @@ class Commands {
 
             val unbanControlMenus = arrayOf(
                 arrayOf(bundle[close]),
-                arrayOf(bundle[ban], bundle["info.button.kick"])
+                arrayOf(bundle["info.button.unban"], bundle["info.button.kick"])
             )
 
             val offlineControlMenus = arrayOf(
                 arrayOf(bundle[close]),
                 arrayOf(bundle[ban])
+            )
+
+            val offlineUnbanControlMenus = arrayOf(
+                arrayOf(bundle[close]),
+                arrayOf(bundle["info.button.unban"])
             )
 
             val banMenus = arrayOf(
@@ -667,7 +696,18 @@ class Commands {
                                             }
                                             targetData!!.banExpireDate =
                                                 Clock.System.now().plus(time.minutes).toLocalDateTime(systemTimezone)
-                                            scope.launch { targetData!!.update() }
+                                            // The ban itself is applied below regardless (banPlayerID does
+                                            // not depend on this row), so a failed write here is a durability
+                                            // problem, not a "nothing happened" one - the admin is told rather
+                                            // than the confirm silently going through. Captured now: targetData
+                                            // is a mutable var that a later /info call can repoint before this
+                                            // coroutine's Core.app.post runs.
+                                            val bannedTarget = targetData!!
+                                            scope.launch {
+                                                if (!bannedTarget.update()) {
+                                                    Core.app.post { playerData.err("command.tempBan.db.failed", bannedTarget.name) }
+                                                }
+                                            }
                                             Events.fire(
                                                 CustomEvents.PlayerTempBanned(
                                                     targetData!!.name,
@@ -677,11 +717,23 @@ class Commands {
                                             )
                                             val uuid = targetData!!.uuid
                                             val label = Undo.label(uuid)
-                                            Vars.netServer.admins.banPlayerID(uuid)
+                                            // As in the server /tempban path: banPlayerID returns false when the
+                                            // target was already banned and did nothing, so an undo entry that
+                                            // reverts via Undo.unban must not be recorded here — it would fully
+                                            // lift a ban that predates this menu action.
+                                            val freshBan = Vars.netServer.admins.banPlayerID(uuid)
                                             if (targetData!!.player.con() != null) {
                                                 targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
                                             }
-                                            Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
+                                            if (freshBan) {
+                                                Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
+                                            } else {
+                                                playerData.send(
+                                                    "command.tempBan.already.banned",
+                                                    targetData!!.name,
+                                                    targetData!!.banExpireDate.toString()
+                                                )
+                                            }
                                         }
                                     }
                                     Call.menu(
@@ -725,7 +777,15 @@ class Commands {
                         val unbanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                             if (i == 0) {
                                 targetData!!.banExpireDate = null
-                                scope.launch { targetData!!.update() }
+                                // Captured now: targetData is a mutable var a later /info call can repoint
+                                // before this coroutine's Core.app.post runs. The unban itself (below) does
+                                // not depend on this write succeeding; only its durability does.
+                                val unbannedTarget = targetData!!
+                                scope.launch {
+                                    if (!unbannedTarget.update()) {
+                                        Core.app.post { playerData.err("command.unban.db.failed", unbannedTarget.name) }
+                                    }
+                                }
                                 unbanPlayer(targetData)
                                 Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
                                 playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
@@ -765,7 +825,7 @@ class Commands {
                 val menu = if (Permission.check(other, "info.other")) {
                     arrayOf(arrayOf(bundle[close]))
                 } else if (other.player.con() == null) {
-                    offlineControlMenus
+                    if (!isBanned) offlineControlMenus else offlineUnbanControlMenus
                 } else if (!isBanned) {
                     controlMenus
                 } else {
@@ -1487,6 +1547,32 @@ class Commands {
         }
     }
 
+    /**
+     * Rebuilds a config value from its stored string against the classes [block] itself declares
+     * accepting (`Block.configurations`), instead of guessing a type from the string. Returns null when
+     * the declared type cannot be round-tripped through a bare string (a Point2 link, a live Building
+     * reference, or any class this does not know how to rebuild) so the caller can refuse the restore
+     * rather than hand the block a value of the wrong type.
+     */
+    private fun reconstructConfig(block: mindustry.world.Block, raw: String): Any? {
+        val configClasses = mutableListOf<Class<*>>()
+        block.configurations.each { configClass, _ -> configClasses += configClass }
+
+        for (configClass in configClasses) {
+            val value = when {
+                configClass == java.lang.Boolean::class.java -> raw.toBooleanStrictOrNull()
+                configClass == java.lang.Integer::class.java -> raw.toIntOrNull()
+                configClass == String::class.java -> raw
+                mindustry.ctype.MappableContent::class.java.isAssignableFrom(configClass) ->
+                    Vars.content.byName(raw)?.takeIf { configClass.isInstance(it) }
+
+                else -> null
+            }
+            if (value != null) return value
+        }
+        return null
+    }
+
     @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
@@ -1497,6 +1583,7 @@ class Commands {
                 Core.app.post {
                     try {
                         var affectedCount = 0
+                        val unrestoredConfigs = mutableListOf<String>()
                         val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
                         grouped.forEach { (pos, entriesUnsorted) ->
@@ -1574,7 +1661,22 @@ class Commands {
                                 if (block != null) {
                                     targetTile.setBlock(block, desiredTeam, desiredRot)
                                     if (desiredConfig != null && targetTile.build != null) {
-                                        targetTile.build.configure(desiredConfig)
+                                        // The stored value is a flattened string (its original type is
+                                        // lost before this ever reaches Commands.kt - see ask/9-1.md), so
+                                        // reconstruct it against what the block itself declares it accepts
+                                        // rather than guessing a type from the string alone. A block that
+                                        // accepts an Item/Liquid/Block/UnitType round-trips through
+                                        // Vars.content.byName, since MappableContent.toString() is exactly
+                                        // that name. Anything the block declares that isn't one of the
+                                        // simple types below (a Point2 link, a live Building reference)
+                                        // cannot be reconstructed from a bare string; refuse rather than
+                                        // hand the block a value of the wrong type.
+                                        val configValue = reconstructConfig(block, desiredConfig)
+                                        if (configValue != null) {
+                                            targetTile.build.configure(configValue)
+                                        } else {
+                                            unrestoredConfigs += block.name
+                                        }
                                     }
                                 } else {
                                     targetTile.remove()
@@ -1589,6 +1691,13 @@ class Commands {
                         }
 
                         playerData.send("command.rollback.success", arg[0], affectedCount)
+                        if (unrestoredConfigs.isNotEmpty()) {
+                            playerData.send(
+                                "command.rollback.config.unrestored",
+                                unrestoredConfigs.size,
+                                unrestoredConfigs.distinct().joinToString(", ")
+                            )
+                        }
                     } catch (e: Exception) {
                         playerData.err("command.rollback.failed")
                         Log.err("Failed to roll back the actions of ${arg[0]}", e)
@@ -1712,8 +1821,15 @@ class Commands {
     fun setItem(playerData: PlayerData, arg: Array<out String>) {
         fun set(item: Item) {
             fun s(team: Team) {
-                team.core().items[item] =
-                    if (team.core().storageCapacity < arg[1].toInt()) team.core().storageCapacity else arg[1].toInt()
+                // Team.core() returns null when the team has no core (wiped out, or never had one) -
+                // a plain Java platform type Kotlin will not stop you from dereferencing, and this was
+                // dereferencing it twice with no check at all: a deterministic NPE.
+                val core = team.core()
+                if (core == null) {
+                    playerData.err("command.setItem.no.core", team.name)
+                    return
+                }
+                core.items[item] = if (core.storageCapacity < arg[1].toInt()) core.storageCapacity else arg[1].toInt()
             }
 
             val amount = arg[1].toIntOrNull()
@@ -1780,7 +1896,21 @@ class Commands {
         }
 
         data.permission = group
-        scope.launch { data.update() }
+        // The group change is live on this server the instant data.permission is set above - only its
+        // durability is in question here. A failed write is not undone (the file half already committed,
+        // and reverting the live group would desync this server from what the file now says), but the
+        // admin is told, instead of a persistence failure being reported as an unqualified success.
+        scope.launch {
+            if (!data.update()) {
+                Core.app.post {
+                    if (sender != null) {
+                        sender.err("command.setPerm.db.failed", data.name)
+                    } else {
+                        Log.warn(Bundle()["command.setPerm.db.failed", data.name])
+                    }
+                }
+            }
+        }
 
         if (sender != null) {
             sender.send("command.setPerm.success", data.name, group)
@@ -1864,6 +1994,10 @@ class Commands {
                     Vars.spawner.spawnEnemies()
                     Vars.state.wave++
                     Vars.state.wavetime = Vars.state.rules.waveSpacing
+                    // task-131/task-074: this advances the wave the same way the game's own timer does,
+                    // but never told anything listening for a wave to actually pass - wave-based records
+                    // (achievements, stats) silently missed every skipped wave.
+                    Events.fire(WaveEvent())
                 }
                 playerData.send("command.skip.process", previousWave, Vars.state.wave)
             }
@@ -1896,7 +2030,11 @@ class Commands {
                 if (unit != null) {
                     if (parameter is Int) {
                         if (!unit.hidden) {
-                            unit.useUnitCap = false
+                            // useUnitCap only gates Units.canCreate, which factory blocks (Reconstructor,
+                            // UnitAssembler, UnitFactory, UnitCargoLoader) consult before producing a unit.
+                            // UnitType.spawn/create - what this command actually calls - never reads it, so
+                            // setting it false here bought nothing for this command and left the cap
+                            // disabled for that unit type's factories server-wide until restart.
                             isCheated = true
                             repeat(parameter) {
                                 Tmp.v1.rnd(spread)
@@ -2075,11 +2213,20 @@ class Commands {
     }
 
     private fun applyTempBan(uuid: String, name: String, expire: LocalDateTime, reason: String?) {
-        val message = Bundle()["command.tempBan.banned", name, "Server", expire.toString()]
-        Vars.netServer.admins.banPlayerID(uuid)
+        val bundle = Bundle()
+        val message = bundle["command.tempBan.banned", name, "Server", expire.toString()]
+        // banPlayerID returns false when the id was already banned (permanently, or by an earlier
+        // tempban) and did nothing. The caller still moves the expiry, which is the deliberate part
+        // of a re-tempban; what must not happen is treating this as a fresh ban for Undo purposes,
+        // because Undo.unban lifts the ban outright and would wipe out a ban that predates this call.
+        val freshBan = Vars.netServer.admins.banPlayerID(uuid)
         Groups.player.find { it.uuid() == uuid }?.kick(reason ?: message)
-        Undo.record(null, "tempban", uuid, Undo.label(uuid)) { Undo.unban(it, false) }
-        Log.info(message)
+        if (freshBan) {
+            Undo.record(null, "tempban", uuid, Undo.label(uuid)) { Undo.unban(it, false) }
+            Log.info(message)
+        } else {
+            Log.warn(bundle["command.tempBan.already.banned", name, expire.toString()])
+        }
     }
 
     // todo tempban client -> server
@@ -2108,7 +2255,11 @@ class Commands {
 
         scope.launch {
             val target = PlayerLookup.offline(arg[0]) ?: return@launch
-            applyTempBan(target.uuid, target.name, expire, reason)
+            // applyTempBan mutates Vars.netServer.admins and kicks a Player; both are engine state the
+            // main thread also touches, and this coroutine is not that thread. setBanExpire has no
+            // ordering dependency on it (a database write, independent of the in-engine ban), so it is
+            // left running here rather than also bounced through Core.app.post.
+            Core.app.post { applyTempBan(target.uuid, target.name, expire, reason) }
             TempBan.setBanExpire(target.uuid, expire)
         }
     }
@@ -2195,17 +2346,21 @@ class Commands {
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
             TempBan.clearBanExpire(uuid)
 
-            if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
-                if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
-                    Log.warn(bundle[PlayerLookup.NOT_FOUND])
+            // unbanPlayerID/unbanPlayerIP mutate Vars.netServer.admins, engine state the main thread
+            // also reads and writes; this coroutine is not that thread.
+            Core.app.post {
+                if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
+                    if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
+                        Log.warn(bundle[PlayerLookup.NOT_FOUND])
+                    } else {
+                        Log.info(bundle["command.unban.ip", arg[0]])
+                    }
                 } else {
-                    Log.info(bundle["command.unban.ip", arg[0]])
+                    Log.info(bundle["command.unban.id", uuid])
+                    Undo.record(
+                        null, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                    ) { Undo.ban(it) }
                 }
-            } else {
-                Log.info(bundle["command.unban.id", uuid])
-                Undo.record(
-                    null, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
-                ) { Undo.ban(it) }
             }
         }
     }
@@ -2218,17 +2373,21 @@ class Commands {
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
             TempBan.clearBanExpire(uuid)
 
-            if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
-                if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
-                    playerData.err(PLAYER_NOT_FOUND)
+            // unbanPlayerID/unbanPlayerIP mutate Vars.netServer.admins, engine state the main thread
+            // also reads and writes; this coroutine is not that thread.
+            Core.app.post {
+                if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
+                    if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
+                        playerData.err(PLAYER_NOT_FOUND)
+                    } else {
+                        playerData.send("command.unban.ip", arg[0])
+                    }
                 } else {
-                    playerData.send("command.unban.ip", arg[0])
+                    playerData.send("command.unban.id", uuid)
+                    Undo.record(
+                        playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                    ) { Undo.ban(it) }
                 }
-            } else {
-                playerData.send("command.unban.id", uuid)
-                Undo.record(
-                    playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
-                ) { Undo.ban(it) }
             }
         }
     }
@@ -2388,7 +2547,17 @@ class Commands {
         }
 
         val solo = players.size == 1 && arg[0] == "map"
-        if (!solo && players.filter { !it.afk }.size <= 3 && !Permission.check(playerData, "vote.admin")) {
+        // Mirrors VoteSystem.check()'s own electorate: team-scoped non-afk on a PvP map, server-wide
+        // otherwise. The gate and the pass threshold have to count the same electorate, or a team that
+        // is mostly eliminated (marked afk once unable to respawn - Team.derelict, a core wipe) can be
+        // blocked from starting any vote by players elsewhere on the map who were never going to vote
+        // in it anyway.
+        val eligibleVoters = if (Vars.state.rules.pvp) {
+            players.count { it.player.team() == playerData.player.team() && !it.afk }
+        } else {
+            players.count { !it.afk }
+        }
+        if (!solo && eligibleVoters <= 3 && !Permission.check(playerData, "vote.admin")) {
             playerData.err("command.vote.enough")
             return
         }
@@ -2407,11 +2576,15 @@ class Commands {
                         // The poll below is scoped to the starter's team, so a target on another team
                         // would be kicked by a vote that team never saw - and a player alone on a team
                         // would decide it unopposed. Vanilla refuses a cross-team votekick outright.
-                        // The admin key is reused because its text is the generic refusal and a new one
-                        // means editing every locale file, which is nobody's cluster in this run.
                         playerData.err("command.vote.kick.target.admin", target.plainName())
                     } else if (targetData != null && Permission.check(targetData, "kick.admin")) {
-                        playerData.err("command.vote.kick.target.admin")
+                        // A dedicated key: the reused admin key takes {0} and this call never supplied
+                        // one, so the refusal rendered a literal "{0}" placeholder.
+                        playerData.err("command.vote.kick.target.kickAdmin")
+                    } else if (!nextVoteAvailable.hasPassedNow()) {
+                        // gg/skip/random/draw all obey this cooldown; kick did not, exempting it from the
+                        // same anti-spam limit every other vote type is held to.
+                        playerData.err(coolTime)
                     } else {
                         val voteData = VoteData(
                             target = target,
@@ -2423,6 +2596,7 @@ class Commands {
                         if (Vars.state.rules.pvp) {
                             voteData.team = playerData.player.team()
                         }
+                        nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                         start(voteData)
                     }
                 }
@@ -2439,9 +2613,11 @@ class Commands {
                     playerData.err(noReason)
                     return
                 }
-                if (arg[1].toIntOrNull() != null) {
-                    try {
-                        var target: Map? = null
+                try {
+                    var target: Map? = null
+                    // Index lookup only applies when arg[1] is numeric; the name search below must run
+                    // regardless, or a real map name never reaches it and this branch always fails.
+                    if (arg[1].toIntOrNull() != null) {
                         val list = Vars.maps.all().sortedBy { a -> a.name() }
                         val arr = HashMap<Map, Int>()
                         list.forEachIndexed { index, map ->
@@ -2453,38 +2629,43 @@ class Commands {
                                 return@forEach
                             }
                         }
+                    }
 
-                        if (target == null) {
-                            target = Vars.maps.all().find { e -> e.plainName().contains(arg[1]) }
-                        }
+                    if (target == null) {
+                        target = Vars.maps.all().find { e -> e.plainName().contains(arg[1]) }
+                    }
 
-                        if (target != null) {
-                            if (players.size != 1) {
+                    if (target != null) {
+                        if (players.size != 1) {
+                            // gg/skip/random/draw all obey this cooldown; map did not. The solo path below
+                            // is a direct change with no vote and is rightly exempt, same as the gate above.
+                            if (!nextVoteAvailable.hasPassedNow()) {
+                                playerData.err(coolTime)
+                            } else {
                                 val voteData = VoteData(
                                     type = VoteType.Map,
                                     map = target,
                                     reason = arg[2],
                                     starter = playerData
                                 )
+                                nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                                 start(voteData)
-                            } else {
-                                isSurrender = true
-                                val currentRule = Vars.state.rules.mode()
-                                val reloader = WorldReloader()
-                                reloader.begin()
-                                Vars.world.loadMap(target, target.applyRules(currentRule))
-                                Vars.state.rules = Vars.state.map.applyRules(currentRule)
-                                Vars.logic.play()
-                                reloader.end()
-                                discardWorldHistory()
                             }
                         } else {
-                            playerData.err(mapNotFound)
+                            isSurrender = true
+                            val currentRule = Vars.state.rules.mode()
+                            val reloader = WorldReloader()
+                            reloader.begin()
+                            Vars.world.loadMap(target, target.applyRules(currentRule))
+                            Vars.state.rules = Vars.state.map.applyRules(currentRule)
+                            Vars.logic.play()
+                            reloader.end()
+                            discardWorldHistory()
                         }
-                    } catch (_: IndexOutOfBoundsException) {
+                    } else {
                         playerData.err(mapNotFound)
                     }
-                } else {
+                } catch (_: IndexOutOfBoundsException) {
                     playerData.err(mapNotFound)
                 }
             }
@@ -2546,11 +2727,17 @@ class Commands {
                     playerData.send(noReason)
                     return
                 }
+                // gg/skip/random/draw all obey this cooldown; back did not.
+                if (!nextVoteAvailable.hasPassedNow()) {
+                    playerData.err(coolTime)
+                    return
+                }
                 val voteData = VoteData(
                     type = VoteType.Back,
                     reason = arg[1],
                     starter = playerData
                 )
+                nextVoteAvailable = timeSource.markNow().plus(2.minutes)
                 start(voteData)
             }
 
@@ -2654,12 +2841,21 @@ class Commands {
 
             if (target != null) {
                 val playerUuid = playerData.uuid
+                // mapVotes only empties between rounds (the game-over handler clears it), so seeing it
+                // empty right before this vote lands means a fresh round is starting and any earlier
+                // admin override no longer applies to it.
+                if (mapVotes.isEmpty()) {
+                    nextMapAdminOverride = null
+                }
 
                 // Check if player already voted for this map
                 if (mapVotes[playerUuid] == target) {
                     // Cancel the vote
                     mapVotes.remove(playerUuid)
                     playerData.send("command.nextmap.vote.canceled", target.plainName())
+                    if (nextMapAdminOverride == target) {
+                        nextMapAdminOverride = null
+                    }
                 } else {
                     // Record the vote
                     val previousVote = mapVotes.put(playerUuid, target)
@@ -2670,22 +2866,27 @@ class Commands {
                         playerData.send("command.nextmap.vote.cast", target.plainName())
                     }
 
-                    // If admin, they can still override the next map
+                    // If admin, they can still override the next map. That choice is remembered so the
+                    // tally below - which runs after every vote from here on, including someone else's -
+                    // re-affirms it instead of silently recomputing over it.
                     if (Permission.check(playerData, "nextmap.admin")) {
+                        nextMapAdminOverride = target
                         Vars.maps.setNextMapOverride(target)
                         playerData.send("command.nextmap.set", target.plainName())
+                        return
                     }
                 }
 
                 if (mapVotes.isNotEmpty()) {
-                    val voteCount = HashMap<Map, Int>()
-                    mapVotes.values.forEach { map ->
-                        voteCount[map] = voteCount.getOrDefault(map, 0) + 1
+                    val winner = nextMapAdminOverride ?: run {
+                        val voteCount = HashMap<Map, Int>()
+                        mapVotes.values.forEach { map ->
+                            voteCount[map] = voteCount.getOrDefault(map, 0) + 1
+                        }
+                        voteCount.maxByOrNull { it.value }?.key
                     }
-
-                    val mostVotedMap = voteCount.maxByOrNull { it.value }?.key
-                    if (mostVotedMap != null) {
-                        Vars.maps.setNextMapOverride(mostVotedMap)
+                    if (winner != null) {
+                        Vars.maps.setNextMapOverride(winner)
                     }
                 }
             } else {
@@ -2771,6 +2972,10 @@ class Commands {
                     playerData.err("command.ws.no.selection")
                     return
                 }
+                if (getRegionSize(selection) > conf.command.worldEdit.maxRegionSize) {
+                    playerData.err("command.ws.region.too.large", getRegionSize(selection), conf.command.worldEdit.maxRegionSize)
+                    return
+                }
                 val blockName = parsedArgs[1]
                 val block = findBlockByName(blockName)
                 if (block == null) {
@@ -2788,6 +2993,10 @@ class Commands {
                 }
                 if (selection == null || !selection.selectionComplete) {
                     playerData.err("command.ws.no.selection")
+                    return
+                }
+                if (getRegionSize(selection) > conf.command.worldEdit.maxRegionSize) {
+                    playerData.err("command.ws.region.too.large", getRegionSize(selection), conf.command.worldEdit.maxRegionSize)
                     return
                 }
                 val fromName = parsedArgs[1]
@@ -2809,6 +3018,10 @@ class Commands {
                 // Delete: /ws d
                 if (selection == null || !selection.selectionComplete) {
                     playerData.err("command.ws.no.selection")
+                    return
+                }
+                if (getRegionSize(selection) > conf.command.worldEdit.maxRegionSize) {
+                    playerData.err("command.ws.region.too.large", getRegionSize(selection), conf.command.worldEdit.maxRegionSize)
                     return
                 }
                 deleteRegion(playerData, selection)
@@ -2890,7 +3103,7 @@ class Commands {
         val maxY = maxOf(selection.startY, selection.endY)
         for (x in minX..maxX) {
             for (y in minY..maxY) {
-                Tile.setTile(Vars.world.tile(x, y), Blocks.air, playerData.player.team(), 0)
+                Call.setTile(Vars.world.tile(x, y), Blocks.air, playerData.player.team(), 0)
             }
         }
     }

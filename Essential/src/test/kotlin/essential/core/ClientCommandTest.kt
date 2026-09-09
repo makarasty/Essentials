@@ -965,6 +965,16 @@ class ClientCommandTest {
         assertEquals(1000, Vars.state.teams.cores(Team.sharded).first().items.get(Items.copper))
     }
 
+    // task-129: Team.core() returns null for a team with no core, and this used to dereference it twice
+    // with no check - a deterministic NPE. blue never gets a core built in these tests, so it exercises
+    // the same "no core" path client_setitem's own comment says it is dodging for sharded.
+    @Test
+    fun client_setitem_teamWithNoCoreReportsAnErrorInsteadOfThrowing() {
+        setPermission("owner", true)
+        clientCommand.handleMessage("/setitem copper 1000 blue", player)
+        assertEquals(err("command.setItem.no.core", "blue"), playerData.lastReceivedMessage)
+    }
+
     @Test
     fun client_setperm() {
         setPermission("owner", true)
@@ -989,8 +999,14 @@ class ClientCommandTest {
         // Test skip command requires owner permission
         setPermission("owner", true)
 
+        // task-131: /skip advanced Vars.state.wave without firing WaveEvent, so wave-based records
+        // (achievements, stats) silently missed every skipped wave.
+        var waveEvents = 0
+        Events.on(EventType.WaveEvent::class.java) { waveEvents++ }
+
         // Test skipping to a specific wave
         clientCommand.handleMessage("/skip 5", player)
+        assertEquals(5, waveEvents, "each skipped wave should fire WaveEvent, same as the game's own timer")
 
         // Test with invalid wave number
         clientCommand.handleMessage("/skip invalid", player)
@@ -1012,6 +1028,10 @@ class ClientCommandTest {
 
         // Test spawning a unit with amount and team
         clientCommand.handleMessage("/spawn unit dagger 5 sharded", player)
+
+        // task-132: spawning used to flip the shared UnitType's useUnitCap to false with nothing ever
+        // resetting it, disabling the unit cap for every dagger-producing factory server-wide.
+        assertTrue(UnitTypes.dagger.useUnitCap, "spawning a unit must not disable its type's unit cap")
 
         // Test spawning a block
         clientCommand.handleMessage("/spawn block router", player)
