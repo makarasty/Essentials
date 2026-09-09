@@ -1224,6 +1224,11 @@ fun worldLoad(event: WorldLoadEvent) {
     for (data in players) {
         data.currentPlayTime = 0
         data.viewHistoryMode = false
+        // earnEXP reads these into the score every game over; a player connected across several
+        // maps otherwise carries one map's kills and destruction into the next map's EXP calculation.
+        data.currentUnitDestroyedCount = 0
+        data.currentBuildDestroyedCount = 0
+        data.currentBuildAttackCount = 0
     }
 }
 
