@@ -41,6 +41,7 @@ import mindustry.content.Blocks
 import mindustry.content.Weathers
 import mindustry.core.GameState
 import mindustry.game.EventType.GameOverEvent
+import mindustry.game.EventType.WaveEvent
 import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.gen.Call
@@ -1993,6 +1994,10 @@ class Commands {
                     Vars.spawner.spawnEnemies()
                     Vars.state.wave++
                     Vars.state.wavetime = Vars.state.rules.waveSpacing
+                    // task-131/task-074: this advances the wave the same way the game's own timer does,
+                    // but never told anything listening for a wave to actually pass - wave-based records
+                    // (achievements, stats) silently missed every skipped wave.
+                    Events.fire(WaveEvent())
                 }
                 playerData.send("command.skip.process", previousWave, Vars.state.wave)
             }

@@ -999,8 +999,14 @@ class ClientCommandTest {
         // Test skip command requires owner permission
         setPermission("owner", true)
 
+        // task-131: /skip advanced Vars.state.wave without firing WaveEvent, so wave-based records
+        // (achievements, stats) silently missed every skipped wave.
+        var waveEvents = 0
+        Events.on(EventType.WaveEvent::class.java) { waveEvents++ }
+
         // Test skipping to a specific wave
         clientCommand.handleMessage("/skip 5", player)
+        assertEquals(5, waveEvents, "each skipped wave should fire WaveEvent, same as the game's own timer")
 
         // Test with invalid wave number
         clientCommand.handleMessage("/skip invalid", player)
