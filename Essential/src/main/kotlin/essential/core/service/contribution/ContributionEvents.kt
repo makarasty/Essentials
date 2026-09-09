@@ -166,7 +166,9 @@ fun buildDamage(event: BuildDamageEvent) {
     // Value of the damage: scaled by the building's resource cost relative to its max health.
     val maxHp = building.maxHealth()
     if (maxHp <= 0f) return
-    val value = (event.source.damage() / maxHp) * resourceCost(building.block)
+    // bullet, not event.source: Building.bulletDamageEvent is one reused instance that set()
+    // overwrites, so a listener ahead of this one that damages a building swaps it under us.
+    val value = (bullet.damage() / maxHp) * resourceCost(building.block)
     if (value <= 0.0) return
 
     // Identify the controlling player.
