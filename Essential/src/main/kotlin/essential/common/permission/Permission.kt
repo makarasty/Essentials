@@ -115,7 +115,9 @@ object Permission {
                 }
                 val inheritedRole = main[next] ?: break
                 for (permission in inheritedRole.permission) {
-                    if (!permission.contains("all", true) && !roleConfig.permission.contains(permission)) {
+                    // equals, not contains: a substring test also excludes killall, kickall and any
+                    // later node with those three letters in it, and does it silently.
+                    if (!permission.equals("all", true) && !roleConfig.permission.contains(permission)) {
                         roleConfig.permission.add(permission)
                     }
                 }
