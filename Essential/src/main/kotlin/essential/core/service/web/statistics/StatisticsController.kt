@@ -11,6 +11,7 @@ import essential.common.systemTimezone
 import essential.common.util.size
 import essential.common.util.toHString
 import essential.core.service.web.auth.UserSession
+import essential.core.service.web.onGameThread
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
@@ -89,7 +90,8 @@ class StatisticsController {
             while (true) {
                 delay(60000.milliseconds)
                 try {
-                    recordStatusPoint()
+                    // Groups and Vars.state belong to the game thread; this loop runs on a coroutine one.
+                    onGameThread { recordStatusPoint() }
                 } catch (e: Exception) {
                     Log.err("Error recording status point", e)
                 }
@@ -102,9 +104,11 @@ class StatisticsController {
 
             // Add the chat message to the chat history
             val chatMessage = ChatMessage(player.name(), message, isWeb = false)
-            chatHistory.add(chatMessage)
-            if (chatHistory.size > 100) {
-                chatHistory.removeAt(0)
+            synchronized(chatHistory) {
+                chatHistory.add(chatMessage)
+                if (chatHistory.size > 100) {
+                    chatHistory.removeAt(0)
+                }
             }
 
             Log.debug("Chat message added to history: ${player.name()}: $message")
@@ -264,24 +268,32 @@ class StatisticsController {
         }
         // Live: current online players, each with this game's contribution and their overall average.
         // In PvP, include team so the client can group players by team.
-        val isPvp = Vars.state != null && !Vars.state.isMenu && Vars.state.rules.pvp
-        val snapshot = players.toList()
-        val entries = snapshot.map { data ->
-            val team = if (isPvp) data.player.team() else null
-            ContributionEntry(
-                name = data.name,
-                current = data.currentContribution,
-                average = getAverageContribution(data),
-                games = getContributionCount(data),
-                team = team?.name,
-                teamColor = team?.color?.toString()?.let { "#$it" }
-            )
+        // The rules and a player's team are read on the game thread; the database lookups below are
+        // not, because they must not run inside a server frame.
+        val snapshot = onGameThread {
+            val isPvp = Vars.state != null && !Vars.state.isMenu && Vars.state.rules.pvp
+            players.toList().map { data ->
+                val team = if (isPvp) data.player.team() else null
+                data to ContributionEntry(
+                    name = data.name,
+                    current = data.currentContribution,
+                    average = 0.0,
+                    games = 0,
+                    team = team?.name,
+                    teamColor = team?.color?.toString()?.let { "#$it" }
+                )
+            }
+        }
+        val entries = snapshot.map { (data, entry) ->
+            entry.copy(average = getAverageContribution(data), games = getContributionCount(data))
         }.sortedByDescending { it.current }
         call.respond(entries)
     }
 
     suspend fun handleGetChat(call: ApplicationCall) {
-        val messages = chatHistory.filter { !it.message.startsWith("/") }.sortedBy { it.time }
+        val messages = synchronized(chatHistory) { chatHistory.toList() }
+            .filter { !it.message.startsWith("/") }
+            .sortedBy { it.time }
         call.respond(messages)
     }
 
@@ -298,14 +310,17 @@ class StatisticsController {
         // Sanitize message to prevent code injection
         val sanitizedMessage = sanitizeMessage(message)
 
-        // Send message to server
-        Call.sendMessage("[cyan]<WEB>[white] ${session.username}: $sanitizedMessage")
+        // Send message to server, from the thread that owns the game state, and only then record it:
+        // a broadcast that failed must not show up in the web history as if it had gone out.
+        onGameThread { Call.sendMessage("[cyan]<WEB>[white] ${session.username}: $sanitizedMessage") }
 
         // Add to chat history
         val chatMessage = ChatMessage(session.username, sanitizedMessage, isWeb = true)
-        chatHistory.add(chatMessage)
-        if (chatHistory.size > 100) {
-            chatHistory.removeAt(0)
+        synchronized(chatHistory) {
+            chatHistory.add(chatMessage)
+            if (chatHistory.size > 100) {
+                chatHistory.removeAt(0)
+            }
         }
 
         call.respond(HttpStatusCode.OK)
@@ -317,22 +332,24 @@ class StatisticsController {
     }
 
     suspend fun handleGetServerStatus(call: ApplicationCall) {
-        val status = getServerStatus()
+        val status = onGameThread { getServerStatus() }
         call.respond(status)
     }
 }
 
 fun Route.statisticsRoutes(controller: StatisticsController) {
     route("/api/server") {
-        get("/status") {
-            controller.handleGetServerStatus(call)
-        }
-
-        get("/contribution") {
-            controller.handleGetContribution(call)
-        }
-
+        // Every route here reports on the players currently online, so all of them belong inside the
+        // authenticate block: authenticate wraps only the routes declared in its own lambda.
         authenticate("auth-session") {
+            get("/status") {
+                controller.handleGetServerStatus(call)
+            }
+
+            get("/contribution") {
+                controller.handleGetContribution(call)
+            }
+
             get("/chat") {
                 controller.handleGetChat(call)
             }

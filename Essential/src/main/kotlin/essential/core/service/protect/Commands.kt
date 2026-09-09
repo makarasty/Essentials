@@ -83,10 +83,7 @@ class Commands {
 
                 scope.launch {
                     try {
-                        if (hasConflict) {
-                            deletePlayerData(currentUuid)
-                        }
-                        rebindAccountUuid(target.id, currentUuid)
+                        moveAccountToDevice(target.id, currentUuid, hasConflict)
                         target.uuid = currentUuid
                         Core.app.post {
                             val activePlayer = Groups.player.find { p -> p.uuid() == currentUuid }
@@ -196,5 +193,22 @@ class Commands {
         Log.info(Bundle()["command.report.received", player.plainName(), name, reason])
         playerData.send("command.report.done", name)
         Events.fire(PlayerReported(player.plainName(), name, reason))
+    }
+}
+
+/**
+ * Binds the account [targetId] to [uuid], dropping the data this device already holds when
+ * [deleteExisting] is set.
+ *
+ * Both statements share one transaction: run apart, a rebind that failed after the delete had
+ * committed left the player with neither their old data nor the account they logged in to. A rebind
+ * that matches no row is that same loss with no error, so it fails the transaction instead.
+ */
+internal suspend fun moveAccountToDevice(targetId: UInt, uuid: String, deleteExisting: Boolean) {
+    suspendTransaction {
+        if (deleteExisting) {
+            deletePlayerData(uuid)
+        }
+        check(rebindAccountUuid(targetId, uuid)) { "No account row $targetId to bind to $uuid" }
     }
 }

@@ -9,6 +9,7 @@ import essential.common.log.writeLog
 import essential.common.rootPath
 import essential.core.service.web.WebService.Companion.conf
 import essential.core.service.web.auth.UserSession
+import essential.core.service.web.onGameThread
 import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.application.*
@@ -57,6 +58,15 @@ class MapController {
     private companion object {
         const val MAX_QUEUED_FETCHES = 32
     }
+
+    /**
+     * A copy of the engine's map list, taken on the game thread.
+     *
+     * `Vars.maps.all()` hands back the engine's own live Seq, and this module's upload and delete
+     * handlers post `Vars.maps.reload()` - which clears it - to the game thread. Searching a copy
+     * also keeps the file hashing that some of those searches do off the game thread.
+     */
+    private suspend fun allMaps(): List<mindustry.maps.Map> = onGameThread { Vars.maps.all().toList() }
 
     private class FetchTask(
         val hash: String,
@@ -251,7 +261,7 @@ class MapController {
             return
         }
 
-        val map = Vars.maps.all().find { it.name() == mapName }
+        val map = allMaps().find { it.name() == mapName }
         if (map == null) {
             call.respond(HttpStatusCode.NotFound, "Map not found")
             return
@@ -318,7 +328,7 @@ class MapController {
     }
 
     suspend fun handleMapDownload(call: ApplicationCall, mapName: String) {
-        val map = Vars.maps.all().find { it.name() == mapName }
+        val map = allMaps().find { it.name() == mapName }
         if (map == null) {
             call.respond(HttpStatusCode.NotFound, "Map not found")
             return
@@ -357,13 +367,14 @@ class MapController {
             }
         }
 
+        val maps = allMaps()
         val map = if (isHash) {
-            Vars.maps.all().find { map ->
+            maps.find { map ->
                 val hash = getMapHash(File(map.file.absolutePath()))
                 hash.equals(nameOrHash, ignoreCase = true)
             }
         } else {
-            Vars.maps.all().find { it.name() == nameOrHash }
+            maps.find { it.name() == nameOrHash }
         }
 
         if (map == null) {
@@ -423,7 +434,7 @@ class MapController {
 
     private suspend fun warmupMapImageCache() {
         try {
-            val maps = Vars.maps.all().filter { it.custom }
+            val maps = allMaps().filter { it.custom }
             if (maps.isEmpty()) {
                 Log.debug("Warmup: no custom maps found")
                 return
@@ -672,7 +683,7 @@ class MapController {
 
     suspend fun getMaps(): List<MapInfo> {
         val mapsList = mutableListOf<MapInfo>()
-        Vars.maps.all().filter { it.custom }.forEach { map ->
+        allMaps().filter { it.custom }.forEach { map ->
             val mapName = map.name()
             val ratings = getMapRatings(mapName)
             val upvotes = ratings.count { it.rating >= 3 }

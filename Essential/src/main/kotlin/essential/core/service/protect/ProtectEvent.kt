@@ -47,7 +47,9 @@ import kotlin.math.min
 var pvpCount: Int = 0
 var originalBlockMultiplier: Float = 0f
 var originalUnitMultiplier: Float = 0f
-var coldData: Array<String> = arrayOf()
+/** Every uuid known to the database when new user blocking was switched on, or null while that list is unknown. */
+@Volatile
+var coldData: Set<String>? = null
 
 @Event
 fun worldLoadEnd(event: EventType.WorldLoadEndEvent) {
@@ -274,26 +276,36 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
         )
     }
 
+    // Each rule is its own check, guarded by whether an earlier rule already rejected. Chaining on the
+    // configuration flags instead let an enabled rule that did not reject swallow every rule below it.
     var kickReason = ""
-    if (!conf.rules.mobile && event.connection.mobile) {
+    // The packet, not the connection: the engine copies mobile onto the connection only after this
+    // event has fired, so the connection's own flag is always false here.
+    if (conf.rules.mobile && event.packet.mobile) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.not.allow.mobile"], 0L)
         kickReason = "mobile"
-    } else if (conf.rules.minimalName.enabled && conf.rules.minimalName.length > event.packet.name.length) {
+    }
+    if (kickReason.isEmpty() && conf.rules.minimalName.enabled && conf.rules.minimalName.length > event.packet.name.length) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.name.short"], 0L)
         kickReason = "name.short"
-    } else if (conf.rules.vpn) {
+    }
+    if (kickReason.isEmpty() && conf.rules.vpn) {
         for (ip in pluginData.vpnList) {
-            val match = IpAddressMatcher(ip)
-            if (match.matches(event.connection.address)) {
+            // IpAddressMatcher throws on a line it cannot parse, and the list is downloaded. Letting
+            // that escape would skip every rule below, which is the defect this chain just lost.
+            val matched = runCatching { IpAddressMatcher(ip).matches(event.connection.address) }.getOrDefault(false)
+            if (matched) {
                 event.connection.kick(Bundle(event.packet.locale)["anti-grief.vpn"])
                 kickReason = "vpn"
                 break
             }
         }
-    } else if (conf.rules.blockNewUser && !listOf<String?>(*coldData).contains(event.packet.uuid)) {
+    }
+    if (kickReason.isEmpty() && conf.rules.blockNewUser && coldData?.contains(event.packet.uuid) == false) {
         event.connection.kick(Bundle(event.packet.locale)["event.player.new.blocked"], 0L)
         kickReason = "newuser"
-    } else if (coreConf.ban.useDatabase) {
+    }
+    if (kickReason.isEmpty() && coreConf.ban.useDatabase) {
         scope.launch {
             try {
                 if (checkPlayerBanned(event.packet.uuid, event.connection.address, event.packet.name)) {
@@ -313,26 +325,16 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
     }
 }
 
-fun start() {
-    if (conf.rules.blockNewUser) {
-        enableBlockNewUser()
-    }
-}
-
 fun enableBlockNewUser() {
     scope.launch {
         try {
-            suspendTransaction {
-                val list = PlayerTable.select(PlayerTable.uuid).toList()
-
-                var size = 0
-                for (playerData in list) {
-                    coldData[size++] = playerData[PlayerTable.uuid]
-                }
+            coldData = suspendTransaction {
+                PlayerTable.select(PlayerTable.uuid).toList().mapTo(HashSet()) { it[PlayerTable.uuid] }
             }
         } catch (e: Exception) {
+            // Without the list there is no way to tell a returning player from a new one, so the rule
+            // stands down rather than kicking everyone who connects. Any list already loaded is kept.
             Log.err("Failed to load player UUIDs for new user blocking", e)
-            coldData = arrayOf()
         }
     }
 }

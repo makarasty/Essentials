@@ -770,6 +770,9 @@ function loadFeaturedMaps() {
         .then(response => {
             if (response.ok) {
                 return response.json();
+            } else if (response.status === 401) {
+                // Not logged in
+                throw new Error(window.i18n.translate('error.auth.required'));
             } else {
                 throw new Error(window.i18n.translate('error.load.status'));
             }
