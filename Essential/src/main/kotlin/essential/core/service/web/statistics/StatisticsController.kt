@@ -268,8 +268,8 @@ class StatisticsController {
         }
         // Live: current online players, each with this game's contribution and their overall average.
         // In PvP, include team so the client can group players by team.
-        // The rules and a player's team are read on the game thread; the database lookups below are
-        // not, because they must not run inside a server frame.
+        // The rules and a player's team are read on the game thread; the database lookups are kept
+        // out of that block, because they must not run inside a server frame.
         val snapshot = onGameThread {
             val isPvp = Vars.state != null && !Vars.state.isMenu && Vars.state.rules.pvp
             players.toList().map { data ->
@@ -310,8 +310,8 @@ class StatisticsController {
         // Sanitize message to prevent code injection
         val sanitizedMessage = sanitizeMessage(message)
 
-        // Send message to server, from the thread that owns the game state, and only then record it:
-        // a broadcast that failed must not show up in the web history as if it had gone out.
+        // Broadcast before recording: a send that failed must not show up in the web history as if
+        // it had gone out.
         onGameThread { Call.sendMessage("[cyan]<WEB>[white] ${session.username}: $sanitizedMessage") }
 
         // Add to chat history

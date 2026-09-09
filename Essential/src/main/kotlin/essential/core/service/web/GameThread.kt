@@ -6,8 +6,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Runs [block] on the game thread and waits for what it returns.
- *
  * Ktor dispatches handlers on Netty's worker threads, and Arc's `Seq` and `EntityGroup` are plain
  * array-backed collections with no synchronisation. A handler that walks one of them while the game
  * thread adds or removes entries gets a torn read, not an error. Every read of live game state from

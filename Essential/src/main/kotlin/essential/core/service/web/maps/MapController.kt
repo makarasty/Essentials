@@ -60,8 +60,6 @@ class MapController {
     }
 
     /**
-     * A copy of the engine's map list, taken on the game thread.
-     *
      * `Vars.maps.all()` hands back the engine's own live Seq, and this module's upload and delete
      * handlers post `Vars.maps.reload()` - which clears it - to the game thread. Searching a copy
      * also keeps the file hashing that some of those searches do off the game thread.

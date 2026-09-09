@@ -171,9 +171,8 @@ private fun writeBatch(batch: List<LogLine>, allowRotate: Boolean = true) = sync
 }
 
 /**
- * A report file is named after a player, and a player picks their own name. Anything that is not a
- * letter, a combining mark, a digit, a space, an underscore or a hyphen becomes an underscore, so
- * separators and `..` cannot walk the write out of log/report.
+ * A report file is named after a player, and a player picks their own name, so separators and `..`
+ * are replaced rather than allowed to walk the write out of log/report.
  */
 private fun reportFileName(name: String?): String {
     val safe = name?.replace(unsafeInFileName, "_")?.trim()

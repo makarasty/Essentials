@@ -197,9 +197,6 @@ class Commands {
 }
 
 /**
- * Binds the account [targetId] to [uuid], dropping the data this device already holds when
- * [deleteExisting] is set.
- *
  * Both statements share one transaction: run apart, a rebind that failed after the delete had
  * committed left the player with neither their old data nor the account they logged in to. A rebind
  * that matches no row is that same loss with no error, so it fails the transaction instead.
