@@ -37,8 +37,8 @@ private var isDuoTurretFailed = false
 /**
  * Players who left the current pvp game, with the team they left on, consumed by [gameover].
  *
- * The award cannot be made in the leave handler itself, because whether the team lost is only known
- * at the game over, and by then the player is out of `players`.
+ * The award cannot be made in the leave handler: whether the team lost is only known at game over,
+ * and by then the player is out of `players`.
  */
 private val pvpLeavers = LinkedHashMap<String, Pair<PlayerData, Team>>()
 
@@ -349,8 +349,6 @@ fun gameover(event: GameOverEvent) {
         }
     }
 
-    // LeaveAndLosePvP, for the players who left this game on a team that then lost. Recorded in
-    // playerLeave, because by the time the game ends they are no longer in `players`.
     for ((data, team) in pvpLeavers.values) {
         if (event.winner != team) {
             val leaveCount = data.status.getOrDefault("record.pvp.leave.lose", "0").toInt() + 1
@@ -596,8 +594,6 @@ fun updateSecond() {
 }
 
 /**
- * One pass of the per-second achievement sweep.
- *
  * Groups.player, Groups.build and PlayerData.status all belong to the game loop, and the caller is
  * Arc's Timer daemon thread, so the work is handed to the game thread rather than done here.
  */

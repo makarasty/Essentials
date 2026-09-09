@@ -85,8 +85,7 @@ class AchievementController {
         // Hide secret achievements until unlocked
         val visible = Achievement.entries.filter { !it.isHidden || completed.contains(it.name.lowercase()) }
 
-        // Progress comes out of live player data, whose map and list the game thread mutates while an
-        // achievement is awarded, so it is read there rather than from Netty's worker thread.
+        // The game thread mutates this player's status map as achievements are awarded.
         val progress = onGameThread {
             visible.filterNot { completed.contains(it.name.lowercase()) }
                 .associateWith { ach -> runCatching { ach.current(data) }.getOrDefault(0) }

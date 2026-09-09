@@ -83,7 +83,6 @@ class ProtectService : Plugin() {
             pluginData.vpnList = list.split("\n".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
         }
 
-        // 신규 유저 차단 목록
         if (conf.rules.blockNewUser) {
             enableBlockNewUser()
         }

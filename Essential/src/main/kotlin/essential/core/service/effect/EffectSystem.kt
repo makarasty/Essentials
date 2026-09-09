@@ -30,7 +30,6 @@ class EffectSystem : Timer.Task() {
     /** Which player the next pass starts at when the ceiling cuts it short. */
     private var groupCursor = 0
 
-    /** Whether a pass is already queued on the game thread. */
     @Volatile
     private var pending = false
 
@@ -318,8 +317,8 @@ class EffectSystem : Timer.Task() {
             this.cancel()
             return
         }
-        // One pass may be queued at a time. Without this a stalled game thread drains every pass it
-        // missed in a single frame, which is the packet burst this ceiling exists to prevent.
+        // Without this a stalled game thread drains every pass it missed in a single frame, which is
+        // the packet burst this ceiling exists to prevent.
         if (pending) return
 
         // Unit positions, and the packets built from them, belong to the game loop; Timer calls this
@@ -366,14 +365,13 @@ class EffectSystem : Timer.Task() {
     /**
      * The effects this pass may send to [targets] viewers without going over [ceiling] packets.
      *
-     * A pass sends every buffered effect to every watching player, so the cost is the product of two
-     * player counts: sixty players at level 200 buffer 480 effects, which uncapped is 28,800 packets
-     * in one 50 ms tick.
+     * The cost is the product of two player counts: sixty players at level 200 buffer 480 effects,
+     * which uncapped is 28,800 packets in one 50 ms tick.
      *
-     * [groups] holds one entry per emitting player, and the ceiling is applied to whole groups: a
-     * tier draws a shape out of four or five effects, and half a shape looks broken rather than
-     * thinned. When the groups do not all fit, the next pass starts at the group this one stopped
-     * at, so everyone is shown, just not everyone in the same tick.
+     * [groups] holds one entry per emitting player, and the ceiling is applied to whole groups,
+     * because a tier draws a shape out of four or five effects and half a shape looks broken rather
+     * than thinned. The next pass resumes at the group this one stopped at, so everyone is shown,
+     * just not in the same tick.
      */
     internal fun nextSlice(
         groups: List<List<EffectPos>>,
