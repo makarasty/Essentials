@@ -227,7 +227,6 @@ class TableProcessor(
             sb.append("    // reached afterwards as persisted would drop whatever changed in between.\n")
             sb.append("    val written = data.snapshotOfRow()\n")
         }
-        // Untracked classes have no snapshot, so they write straight from the live object as before.
         val source = if (tracked) "written" else "data"
         if (db.isNotEmpty()) {
             sb.append("    val rows = suspendTransaction(db = $db) {\n")

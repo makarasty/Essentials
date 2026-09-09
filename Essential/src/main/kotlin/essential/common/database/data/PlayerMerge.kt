@@ -26,13 +26,7 @@ import kotlin.time.ExperimentalTime
  * - ban_expire_date: latest of the two; isBanned adjusted to whether ban not expired
  * - status_data: achievement counters summed, see [mergeRecordCounters]
  */
-/**
- * The target's achievement progress with the source's added to it.
- *
- * Only `record.*` keys are considered, since they are the only part of `status` the row carries, and
- * only the ones [isRunningTotalRecordKey] accepts are added - the windows and timestamps it rejects
- * keep the target's own value. A source value that is not a number is left alone.
- */
+/** The target's achievement progress with the source's running totals added to it. */
 internal fun mergeRecordCounters(
     to: Map<String, String>,
     from: Map<String, String>
