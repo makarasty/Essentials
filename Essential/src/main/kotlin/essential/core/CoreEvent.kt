@@ -575,33 +575,58 @@ fun serverLoad(event: ServerLoadEvent) {
         }
     })
 
-    if (!conf.module.protect) {
-        Events.on(PlayerJoin::class.java, Cons<PlayerJoin> {
-            // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
+    syncProtectFallbackJoinListener()
+}
 
-            val player = it.player
-            val name = player.name
-            val locale = player.locale()
-            val con = player.con
+private var protectFallbackJoinListener: Cons<PlayerJoin>? = null
 
-            scope.launch {
-                val result = loadJoinedPlayerData(player, name)
+/**
+ * Registers or unregisters essential.core's own player-join handler, which is only meant to run
+ * while the protect module is off. This used to be registered once at serverLoad and never
+ * revisited, so toggling `module.protect` in config.yaml did nothing until a restart: the fallback
+ * kept running after protect was enabled, or stayed missing after protect was disabled. Called from
+ * serverLoad and again from every config reload so the running state always matches the config.
+ */
+fun syncProtectFallbackJoinListener() {
+    val shouldRun = !conf.module.protect
+    val current = protectFallbackJoinListener
+    if (shouldRun == (current != null)) return
 
-                when {
-                    result.duplicateName -> Core.app.post {
-                        Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
-                    }
-
-                    result.data != null -> {
-                        result.data.player = player
-                        firePlayerDataLoad(result.data)
-                    }
-
-                    else -> useTemporaryPlayerData(player, name)
-                }
-            }
-        }.also { listener -> eventListeners[PlayerJoin::class.java] = listener })
+    if (current != null) {
+        Events.remove(PlayerJoin::class.java, current)
+        protectFallbackJoinListener = null
+        eventListeners.remove(PlayerJoin::class.java)
+        return
     }
+
+    val listener = Cons<PlayerJoin> {
+        // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
+
+        val player = it.player
+        val name = player.name
+        val locale = player.locale()
+        val con = player.con
+
+        scope.launch {
+            val result = loadJoinedPlayerData(player, name)
+
+            when {
+                result.duplicateName -> Core.app.post {
+                    Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
+                }
+
+                result.data != null -> {
+                    result.data.player = player
+                    firePlayerDataLoad(result.data)
+                }
+
+                else -> useTemporaryPlayerData(player, name)
+            }
+        }
+    }
+    Events.on(PlayerJoin::class.java, listener)
+    protectFallbackJoinListener = listener
+    eventListeners[PlayerJoin::class.java] = listener
 }
 
 class JoinedPlayerData(val data: PlayerData?, val duplicateName: Boolean)
