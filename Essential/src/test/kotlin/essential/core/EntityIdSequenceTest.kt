@@ -1,52 +1,45 @@
 package essential.core
 
-import essential.common.playerNumber
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
+import PluginTest.Companion.createPlayer
+import PluginTest.Companion.loadGame
+import essential.common.database.data.createPlayerData
+import kotlinx.coroutines.runBlocking
+import kotlin.test.BeforeTest
 import kotlin.test.Test
-import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 
 /**
- * task-067: entityId used to be `val entityId = playerNumber` (a plain, unsynchronised Int) read at
- * PlayerData construction time - inside the join coroutine - while the increment ran later, on the
- * game thread, in a different file. Two constructions that interleaved before either increment
- * produced equal entityIds, and every '#<id>' lookup (including /votekick) then resolved to
- * whichever of the two collided players sorted first.
+ * task-067: entityId used to be `val entityId = playerNumber`, reading a plain, unsynchronised Int
+ * at PlayerData construction time. The increment that made the next construction see a different
+ * value ran later, in a different file - attachPlayerData's `playerNumber++`, on the game thread,
+ * after the object was already added to `players`. So two PlayerData objects constructed back to
+ * back, before either had gone through attachPlayerData, both read the same un-incremented value
+ * and got the same entityId. '#<id>' lookups (including /votekick) then resolved to whichever of
+ * the two collided players sorted first, silently.
  *
- * playerNumber is now an AtomicInteger and PlayerData.entityId reads it via getAndIncrement() at
- * construction, so the id is handed out as one atomic operation with no separate increment step to
- * race against. This drives many concurrent callers at the same instant, the way two players joining
- * within the same second used to, and checks none of them ever gets the same id twice.
+ * playerNumber is now an AtomicInteger and entityId reads it via getAndIncrement() directly in the
+ * PlayerData constructor - the id is handed out as the single atomic step that used to be two.
+ * Constructing two PlayerData with nothing in between (never touching attachPlayerData, exactly the
+ * window the finding described) must never produce the same id.
  */
 class EntityIdSequenceTest {
+    @BeforeTest
+    fun setup() {
+        loadGame(true)
+    }
+
     @Test
-    fun concurrentAllocationsNeverCollide() {
-        val threads = 64
-        val pool = Executors.newFixedThreadPool(threads)
-        val start = CountDownLatch(1)
-        val ready = CountDownLatch(threads)
-        val done = CountDownLatch(threads)
-        val ids = CopyOnWriteArrayList<Int>()
+    fun twoPlayersConstructedBackToBackNeverShareAnEntityId() = runBlocking {
+        // createPlayerData is what the join coroutine calls to build the row; deliberately not
+        // going anywhere near attachPlayerData, which is where the old increment used to live.
+        val first = createPlayerData(createPlayer())
+        val second = createPlayerData(createPlayer())
 
-        repeat(threads) {
-            pool.submit {
-                ready.countDown()
-                start.await()
-                ids.add(playerNumber.getAndIncrement())
-                done.countDown()
-            }
-        }
-
-        ready.await()
-        start.countDown()
-        done.await()
-        pool.shutdown()
-
-        assertEquals(
-            threads,
-            ids.toSet().size,
-            "every concurrent allocation must be unique - a duplicate here is the entityId collision task-067 reported"
+        assertNotEquals(
+            first.entityId,
+            second.entityId,
+            "two players constructed before either was attached must not collide on the same " +
+                    "entityId - this is the exact window task-067 reported"
         )
     }
 }
