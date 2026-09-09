@@ -2137,6 +2137,55 @@ class Commands {
         playerData.send("command.track.toggle$msg")
     }
 
+    @ServerCommand("permaban", "<player>", "Make an existing ban permanent by clearing its expiry")
+    fun permaban(arg: Array<out String>) {
+        val bundle = Bundle()
+        scope.launch {
+            val found = PlayerLookup.findExact(arg[0])
+            if (PlayerLookup.ambiguous(found, arg[0], null)) return@launch
+            val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
+
+            val data = findPlayerData(uuid)?.takeIf { !it.temporary } ?: getPlayerData(uuid)
+            val orphan = pluginData.data.tempBans[uuid]
+            val previous = data?.banExpireDate
+                ?: orphan?.let { runCatching { LocalDateTime.parse(it) }.getOrNull() }
+
+            if (found !is PlayerLookup.Result.Found && data == null && orphan == null) {
+                Log.warn(bundle[PlayerLookup.NOT_FOUND])
+                return@launch
+            }
+
+            // Only the expiry. Not unbanPlayerID, which drops every ip ban the player has and does not
+            // put them back when the id is banned again, and not the scheduler's lifting token, which
+            // would be spent here and turn the next genuine unban into a no-op.
+            TempBan.clearBanExpire(uuid)
+
+            // That call logs a database failure and carries on, so the row is read back rather than
+            // telling a moderator the ban is permanent when the write never landed. This is the whole
+            // reason the command exists: the bot already reports things that did not happen.
+            val cleared = getPlayerData(uuid)?.banExpireDate == null && !pluginData.data.tempBans.containsKey(uuid)
+
+            when {
+                !cleared -> Log.warn(bundle["command.permaban.failed", uuid])
+                previous == null -> Log.info(bundle["command.permaban.none", uuid])
+                else -> {
+                    Log.info(bundle["command.permaban.done", uuid])
+                    Undo.record(null, "permaban", uuid, Undo.label(uuid)) {
+                        scope.launch { TempBan.setBanExpire(it, previous) }
+                    }
+                }
+            }
+
+            // The ban list is game state, and this server may not be the one holding the ban: the expiry
+            // is shared through the database, the ban is not.
+            Core.app.post {
+                if (cleared && !Vars.netServer.admins.isIDBanned(uuid)) {
+                    Log.warn(bundle["command.permaban.not.banned", uuid])
+                }
+            }
+        }
+    }
+
     @ServerCommand("unban", "<player>", "Unban player")
     fun unban(arg: Array<out String>) {
         val bundle = Bundle()
