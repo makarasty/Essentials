@@ -4,7 +4,7 @@ WHERE player_id IN (
         SELECT id, ROW_NUMBER() OVER (
             PARTITION BY uuid
             ORDER BY
-                CASE WHEN last_login_date IS NULL OR last_login_date = '' THEN 1 ELSE 0 END ASC,
+                CASE WHEN last_login_date IS NULL THEN 1 ELSE 0 END ASC,
                 last_login_date DESC,
                 level DESC,
                 id ASC
@@ -20,7 +20,7 @@ WHERE id IN (
         SELECT id, ROW_NUMBER() OVER (
             PARTITION BY uuid
             ORDER BY
-                CASE WHEN last_login_date IS NULL OR last_login_date = '' THEN 1 ELSE 0 END ASC,
+                CASE WHEN last_login_date IS NULL THEN 1 ELSE 0 END ASC,
                 last_login_date DESC,
                 level DESC,
                 id ASC
@@ -31,7 +31,7 @@ WHERE id IN (
 );
 
 /* Fix NULL last_login_date left by v4 migration */
-UPDATE players SET last_login_date = CURRENT_TIMESTAMP WHERE last_login_date IS NULL OR last_login_date = '';
+UPDATE players SET last_login_date = CURRENT_TIMESTAMP WHERE last_login_date IS NULL;
 
 ALTER TABLE map_ratings DROP INDEX map_ratings_map_hash_unique;
 ALTER TABLE map_ratings ADD COLUMN difficulty INT DEFAULT 3;
