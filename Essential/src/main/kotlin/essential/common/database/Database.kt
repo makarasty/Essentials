@@ -108,25 +108,53 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     upgradeLegacyDatabase()
 
-    suspendTransaction {
-        val tablesToCreate = listOf(
-            PlayerTable,
-            PluginTable,
-            PlayerBannedTable,
-            AchievementTable,
-            ContributionTable,
-            MapRatingTable,
-            ServerRoutingTable
-        )
+    val tablesToCreate = listOf(
+        PlayerTable,
+        PluginTable,
+        PlayerBannedTable,
+        AchievementTable,
+        ContributionTable,
+        MapRatingTable,
+        ServerRoutingTable
+    )
 
-        SchemaUtils.create(*tablesToCreate.toTypedArray())
+    // One table per call, because as a single call it is all or nothing: one table this build cannot
+    // create beside a legacy one - a foreign key whose two sides disagree on width, say - took the other
+    // six down with it and ended the boot. Each in its own transaction, since on PostgreSQL a failed
+    // statement poisons the transaction it is in.
+    //
+    // The order of the list is now load bearing. The batched call sorted these by their references; one
+    // table at a time does not, so a parent has to be declared ahead of anything pointing at it.
+    // PlayerTable is first because AchievementTable and ContributionTable both reference it.
+    val existingTables = tablesToCreate.filter { table ->
+        runCatching { suspendTransaction { SchemaUtils.create(table) } }
+            .onFailure { Log.err("[Database] could not create ${table.tableName}: ${it.message}") }
+            .isSuccess
+    }
 
-        SchemaUtils.addMissingColumnsStatements(*tablesToCreate.toTypedArray())
-            .filter { statement -> listOf("CONSTRAINT", "INDEX").none { statement.contains(it, ignoreCase = true) } }
-            .forEach { statement ->
-                Log.info("[Database] $statement")
-                exec(statement)
-            }
+    // Only the tables that are actually there: asking Exposed which columns a missing table is short of
+    // throws out of the metadata read, which would undo the whole point of surviving the create above.
+    val repairStatements = runCatching {
+        suspendTransaction {
+            SchemaUtils.addMissingColumnsStatements(*existingTables.toTypedArray())
+                .filter { statement ->
+                    listOf("CONSTRAINT", "INDEX").none { statement.contains(it, ignoreCase = true) }
+                }
+        }
+    }.onFailure {
+        Log.err("[Database] could not work out which columns are missing: ${it.message}")
+    }.getOrDefault(emptyList())
+
+    // A repair statement the engine refuses used to leave databaseInit, which stops the plugin loading
+    // at all. Every statement here is a repair, so the schema without it is the one this server was
+    // already running on, and logging the refusal is the smaller of the two failures. The column that
+    // did it was plugin_data.id: v4.sql left it keyless, so the auto-increment Exposed offers for it is
+    // one no MySQL or MariaDB will accept.
+    for (statement in repairStatements) {
+        Log.info("[Database] $statement")
+        runCatching { suspendTransaction { exec(statement) } }.onFailure {
+            Log.err("[Database] schema repair refused: $statement: ${it.message}")
+        }
     }
 
     reshapeMapRatingIndex()
