@@ -61,7 +61,7 @@ data class ProtectConfig(
     data class Protect(
         @YamlComment("Make all cores indestructible (health set to 100 million)")
         var unbreakableCore: Boolean = false,
-        @YamlComment("Detect and prevent power graph manipulation exploits")
+        @YamlComment("Detect power graph manipulation exploits (deprecated - not implemented)")
         var powerDetect: Boolean = false
     )
 

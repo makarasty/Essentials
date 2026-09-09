@@ -24,26 +24,20 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import ksp.event.Event
 import mindustry.Vars
-import mindustry.content.Blocks
 import mindustry.content.Fx
 import mindustry.entities.Damage
 import mindustry.game.EventType
-import mindustry.gen.Building
 import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.net.ArcNetProvider
 import mindustry.net.NetworkIO
 import mindustry.net.Packets
-import mindustry.world.Tile
-import mindustry.world.blocks.power.PowerGraph
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.net.InetAddress
 import java.net.UnknownHostException
 import java.nio.ByteBuffer
-import kotlin.math.max
-import kotlin.math.min
 
 var pvpCount: Int = 0
 var originalBlockMultiplier: Float = 0f
@@ -144,32 +138,6 @@ fun update() {
     }
     if (conf.protect.unbreakableCore) {
         Vars.state.teams.active.forEach { t -> t.cores.forEach { c -> c.health(1.0E8f) } }
-    }
-}
-
-@Event
-fun config(e: EventType.ConfigEvent) {
-    if (conf.protect.powerDetect && e.value is Int) {
-        val entity: Building = e.tile
-        val other: Tile? = Vars.world.tile(e.value as Int)
-        val valid =
-            other != null && entity.power != null && other.block().hasPower && other.block().outputsPayload && other.block() !== Blocks.massDriver && other.block() === Blocks.payloadMassDriver && other.block() === Blocks.largePayloadMassDriver
-        if (valid) {
-            val oldGraph: PowerGraph = entity.power.graph
-            val newGraph: PowerGraph = other.build.power.graph
-            val oldGraphCount = 0
-            val newGraphCount = 0
-
-            players.forEach { a ->
-                a.send(
-                    "event.antiGrief.node",
-                    e.player.name,
-                    max(oldGraphCount, newGraphCount),
-                    min(oldGraphCount, newGraphCount),
-                    "${e.tile.x},${e.tile.y}"
-                )
-            }
-        }
     }
 }
 
