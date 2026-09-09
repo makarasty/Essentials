@@ -2024,10 +2024,16 @@ class Commands {
 
     @ClientCommand("t", "<message...>", "Send a meaage only to your teammates.")
     fun t(playerData: PlayerData, arg: Array<out String>) {
-        if (!playerData.chatMuted) {
-            Groups.player.each({ p -> p.team() === playerData.player.team() }) { o ->
-                o.sendMessage("[#" + playerData.player.team().color.toString() + "]<T>[] ${playerData.player.coloredName()} [orange]>[white] ${arg[0]}")
-            }
+        // Team chat went straight to sendMessage, so none of the five registered chat filters saw it:
+        // this plugin's mute and global-mute check, the word blacklist, the keyboard-layout rewrite, a
+        // running vote, and the engine's own anti-spam. filterMessage is the only thing that runs them,
+        // and vanilla's own /t calls it, so this restores what replacing that command had removed.
+        // The chatMuted check that used to stand here is the first of those filters and, unlike this
+        // command, tells the player why they were refused. A message beginning with "/" is dropped, as
+        // it is in public chat.
+        val message = Vars.netServer.admins.filterMessage(playerData.player.self(), arg[0]) ?: return
+        Groups.player.each({ p -> p.team() === playerData.player.team() }) { o ->
+            o.sendMessage("[#" + playerData.player.team().color.toString() + "]<T>[] ${playerData.player.coloredName()} [orange]>[white] $message")
         }
     }
 
