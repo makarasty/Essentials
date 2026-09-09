@@ -787,6 +787,67 @@ private fun soleSurvivingTeam(): Team? {
     return if (alive.size == 1) alive[0].team else null
 }
 
+private class MapRateSession(
+    val data: PlayerData,
+    val mapName: String,
+    val currentMap: Map,
+    val roundId: Int,
+    var difficulty: Int = 0,
+)
+
+/** One rating flow per uuid at a time; a later game over overwrites rather than accumulates. */
+private val mapRateSessions = ConcurrentHashMap<String, MapRateSession>()
+
+private val mapRateDifficultyMenu: Int by lazy {
+    Menus.registerMenu { player, select ->
+        val session = mapRateSessions[player.uuid()] ?: return@registerMenu
+        if (gameOverCount != session.roundId) {
+            mapRateSessions.remove(player.uuid())
+            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
+            return@registerMenu
+        }
+        if (mapRatings.containsKey(session.data.uuid)) {
+            mapRateSessions.remove(player.uuid())
+            return@registerMenu
+        }
+        if (select !in 0..4) return@registerMenu
+
+        session.difficulty = select + 1
+        Call.menu(
+            session.data.player.con(),
+            mapRateRatingMenu,
+            Bundle(session.data.player.locale())["command.map.rate.rating.title"],
+            Bundle(session.data.player.locale())["command.map.rate.rating.text", session.mapName],
+            arrayOf(
+                arrayOf("1", "2", "3", "4", "5"),
+                arrayOf(Bundle(session.data.player.locale())["command.map.rate.cancel"])
+            )
+        )
+    }
+}
+
+private val mapRateRatingMenu: Int by lazy {
+    Menus.registerMenu { player, select ->
+        val session = mapRateSessions.remove(player.uuid()) ?: return@registerMenu
+        if (gameOverCount != session.roundId) {
+            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
+            return@registerMenu
+        }
+        if (mapRatings.containsKey(session.data.uuid)) return@registerMenu
+        if (select !in 0..4) return@registerMenu
+
+        val rating = select + 1
+        val mapHash = calculateMapMD5Hash(session.currentMap)
+        mapRatings[session.data.uuid] = true
+        scope.launch {
+            updateOrCreateMapRating(session.mapName, mapHash, session.data.uuid, session.difficulty, rating)
+            Core.app.post {
+                session.data.send("command.map.rate.success", session.mapName, session.difficulty, rating)
+            }
+        }
+    }
+}
+
 @Event
 fun gameOver(event: GameOverEvent) {
     MatchClock.reset()
@@ -825,57 +886,15 @@ fun gameOver(event: GameOverEvent) {
                     if (rated.contains(data.uuid) || mapRatings.containsKey(data.uuid)) return@post
                     val con = Groups.player.find { p -> p.uuid() == data.uuid }?.con() ?: return@post
 
-                    val difficultyMenu = Menus.registerMenu { player, select ->
-                        // The rating is recorded under data.uuid, so anyone else answering this menu
-                        // rates the map in their name and locks them out of rating it themselves.
-                        if (player.uuid() != data.uuid) return@registerMenu
-                        if (gameOverCount != currentCount) {
-                            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
-                            return@registerMenu
-                        }
-
-                        if (mapRatings.containsKey(data.uuid)) return@registerMenu
-
-                        if (select in 0..4) {
-                            val difficulty = select + 1
-                            val ratingMenu = Menus.registerMenu { player2, select2 ->
-                                if (player2.uuid() != data.uuid) return@registerMenu
-                                if (gameOverCount != currentCount) {
-                                    player2.sendMessage(Bundle(player2.locale())["command.map.rate.timeout"])
-                                    return@registerMenu
-                                }
-
-                                if (mapRatings.containsKey(data.uuid)) return@registerMenu
-
-                                if (select2 in 0..4) {
-                                    val rating = select2 + 1
-                                    val mapHash = calculateMapMD5Hash(currentMap)
-                                    mapRatings[data.uuid] = true
-                                    scope.launch {
-                                        updateOrCreateMapRating(mapName, mapHash, data.uuid, difficulty, rating)
-                                        Core.app.post {
-                                            data.send("command.map.rate.success", mapName, difficulty, rating)
-                                        }
-                                    }
-                                }
-                            }
-
-                            Call.menu(
-                                data.player.con(),
-                                ratingMenu,
-                                Bundle(data.player.locale())["command.map.rate.rating.title"],
-                                Bundle(data.player.locale())["command.map.rate.rating.text", mapName],
-                                arrayOf(
-                                    arrayOf("1", "2", "3", "4", "5"),
-                                    arrayOf(Bundle(data.player.locale())["command.map.rate.cancel"])
-                                )
-                            )
-                        }
-                    }
+                    // A per-round Menus.registerMenu here used to register a new, permanent listener
+                    // every time an unrated player saw a game over - the engine has no unregister, so
+                    // the list only grew. mapRateDifficultyMenu/mapRateRatingMenu are registered once;
+                    // the session map is what carries this round's state, and it is bounded by uuid.
+                    mapRateSessions[data.uuid] = MapRateSession(data, mapName, currentMap, currentCount)
 
                     Call.menu(
                         con,
-                        difficultyMenu,
+                        mapRateDifficultyMenu,
                         Bundle(data.player.locale())["command.map.rate.difficulty.title"],
                         Bundle(data.player.locale())["command.map.rate.difficulty.text", mapName],
                         arrayOf(
@@ -1117,6 +1136,7 @@ fun playerLeave(event: PlayerLeave) {
         }
         players.removeIf { it.uuid == data.uuid }
         worldEditSelection.remove(data.uuid)
+        mapRateSessions.remove(data.uuid)
     }
 }
 
