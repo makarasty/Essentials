@@ -1305,29 +1305,52 @@ fun connectPacket(event: ConnectPacketEvent) {
     }
 }
 
+/**
+ * Runs the async ban check for [player]. Returns false when the check itself failed to complete
+ * (a database round trip that threw), which is a different outcome from completing and finding
+ * the player clean - the caller retries on false, admission on a genuinely failed check is not
+ * given up on after one shared-MySQL hiccup.
+ */
+private suspend fun checkBanState(player: Player): Boolean {
+    return try {
+        if (conf.ban.useDatabase && checkPlayerBannedByIpOrUuid(player.uuid(), player.ip())) {
+            Core.app.post { player.kick(Packets.KickReason.banned) }
+            return true
+        }
+
+        val playerData = getPlayerDataSync(player.uuid())
+        val banExpireDate = playerData?.banExpireDate
+        if (banExpireDate != null) {
+            // A past expiry already means the ban is over; don't clear it here. The server that
+            // issued the ban still needs to see this timestamp in its own sweep to lift the local ban.
+            if (banExpireDate > Clock.System.now().toLocalDateTime(systemTimezone)) {
+                val reason = Bundle(player.locale())["command.tempBan.banned", playerData.name, "Admin", banExpireDate.toString()]
+                Core.app.post { player.con.kick(reason) }
+            }
+        }
+        true
+    } catch (e: Exception) {
+        Log.err("Failed to check the ban state of ${player.plainName()} (${player.uuid()})", e)
+        false
+    }
+}
+
 @Event
 fun playerConnect(event: PlayerConnect) {
     val player = event.player
 
     scope.launch {
-        try {
-            if (conf.ban.useDatabase && checkPlayerBannedByIpOrUuid(player.uuid(), player.ip())) {
-                Core.app.post { player.kick(Packets.KickReason.banned) }
-                return@launch
+        // answers/7-1.md accepted the window where a check that completes late admits a player who
+        // turns out to be banned - do not block the game thread on it, do not build a local mirror.
+        // A check that never completes at all is a different defect: left as it was, one exception
+        // means this player is never checked again for the rest of their session. One retry closes
+        // that without touching the accepted window; a warn only fires when both attempts fail, so
+        // this stays silent on a healthy server.
+        if (!checkBanState(player)) {
+            delay(5.seconds)
+            if (isPlayerOnline(player) && !checkBanState(player)) {
+                Log.warn("Could not verify the ban state of ${player.plainName()} (${player.uuid()}) after two attempts; the join was admitted unverified.")
             }
-
-            val playerData = getPlayerDataSync(player.uuid())
-            val banExpireDate = playerData?.banExpireDate
-            if (banExpireDate != null) {
-                // A past expiry already means the ban is over; don't clear it here. The server that
-                // issued the ban still needs to see this timestamp in its own sweep to lift the local ban.
-                if (banExpireDate > Clock.System.now().toLocalDateTime(systemTimezone)) {
-                    val reason = Bundle(player.locale())["command.tempBan.banned", playerData.name, "Admin", banExpireDate.toString()]
-                    Core.app.post { player.con.kick(reason) }
-                }
-            }
-        } catch (e: Exception) {
-            Log.err("Failed to check the ban state of ${player.plainName()} (${player.uuid()})", e)
         }
     }
 
