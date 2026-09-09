@@ -457,15 +457,30 @@ class PluginTest {
                             // Said out loud, because a delete that quietly did nothing is the defect
                             // this loop was just repaired for: the next class boots on a database this
                             // one meant to destroy, and the symptom surfaces as somebody else's
-                            // precondition failing three classes later. On Windows a file still held
-                            // open by a connection pool an earlier databaseInit replaced without
-                            // disposing is exactly how that happens.
+                            // precondition failing three classes later.
                             //
-                            // Windows-shaped, and knowingly so: a POSIX filesystem unlinks a file H2
-                            // still holds open, so there the delete succeeds, this stays quiet, and an
-                            // H2 kept alive by DB_CLOSE_DELAY=-1 goes on writing to an inode with no
-                            // name. That is a different hazard and not one this line can see. It has
-                            // never fired on this machine - zero across all 64 classes.
+                            // A reviewer predicted this would fire routinely, and the reasoning is
+                            // worth keeping because every link of it is true but the last: the four
+                            // live-database classes null defaultDatabase before calling stopPlugin, so
+                            // the SHUTDOWN above reaches only worldHistory; their databaseInit has
+                            // already replaced defaultConnectionPool without disposing the H2 pool an
+                            // earlier class opened; and DB_CLOSE_DELAY=-1 is set. On Windows, deleting
+                            // a file somebody still holds open fails.
+                            //
+                            // Measured, it does not. ConcurrentInsertRaceTest booting H2 and then
+                            // SharedMariaDbTest repointing at a real MariaDB - 13 tests, none skipped,
+                            // so the repoint really happened - leaves this directory empty and prints
+                            // this line zero times, as do three whole-suite runs across all 64
+                            // classes. The leaked pool does not in fact hold the file. So there is no
+                            // SHUTDOWN-by-URL here: the hardening would be for a failure nobody has
+                            // been able to produce, and if it ever does happen this line now says so
+                            // instead of the run going quietly wrong.
+                            //
+                            // One asymmetry it cannot see, recorded rather than fixed: a POSIX
+                            // filesystem unlinks a file H2 still holds open, so there the delete
+                            // succeeds, this stays quiet, and a database kept alive by
+                            // DB_CLOSE_DELAY=-1 goes on writing to an inode with no name. CI only
+                            // runs shadowJar, so that is a dev-machine question today.
                             if (!path.toFile().delete() && Files.exists(path)) {
                                 Log.warn("[test] stopPlugin could not delete $path; the next class will boot on it")
                             }
