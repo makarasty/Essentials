@@ -43,7 +43,7 @@ admin:
     - weather
 user:
   permission:
-    - achievements
+    - ach
     - changepw
     - contribution
     - discord
