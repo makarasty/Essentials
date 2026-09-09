@@ -34,7 +34,13 @@ object Permission {
     private var userRaw: Map<String, YamlNode> = mapOf()
     private var userFileValid = true
     private var userFileError: String? = null
-    var default = "user"
+    // permission.yaml owns fileDefault and the permission_user.yaml decode reads it through
+    // PermissionData.group; the account service owns authDefault and answers for a player whose data
+    // could not be loaded. One field carried both, so every reload answered the second question with
+    // the first answer: load() runs again on reload and the service inits only once, at boot.
+    private var fileDefault = "user"
+    private var authDefault: String? = null
+    val default: String get() = authDefault ?: fileDefault
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
     private val userBackupFile: Fi = rootPath.child("permission_user.yaml.bak")
@@ -80,8 +86,8 @@ object Permission {
     }
 
     fun load() {
-        default = "user"
-        // permission.yaml first: PermissionData.group falls back to `default` at the moment
+        fileDefault = "user"
+        // permission.yaml first: PermissionData.group falls back to `fileDefault` at the moment
         // kotlinx.serialization builds each entry, so the user file can only be decoded once
         // the role marked `default: true` has been read out of permission.yaml.
         try {
@@ -95,8 +101,8 @@ object Permission {
         }
 
         for ((name, roleConfig) in main) {
-            if (default == "user" && roleConfig.default == true) {
-                default = name
+            if (fileDefault == "user" && roleConfig.default == true) {
+                fileDefault = name
             }
 
             var inheritance: String? = roleConfig.inheritance
@@ -249,6 +255,15 @@ object Permission {
 
     fun userFileProblem(): String? = if (userFileValid) null else userFileError.orEmpty()
 
+    /**
+     * Record the default group the account service derives from its configured auth type, or null when
+     * no such service is running. Held apart from the permission.yaml default because [load] recomputes
+     * that one on every reload while the service that answers this one inits only at boot.
+     */
+    fun setAuthDefault(group: String?) {
+        authDefault = group
+    }
+
     fun setGroup(uuid: String, group: String): Boolean {
         if (!writeUser { it[uuid] = patchGroup(it[uuid], group) }) return false
 
@@ -271,7 +286,16 @@ object Permission {
         return true
     }
 
-    private fun applyGroup(uuid: String, group: String) {
+    /**
+     * Apply [group] to a player that permission_user.yaml carries no entry for, without going near the
+     * file. An entry in that file wins over [group] everywhere a permission is actually decided -
+     * [isAdmin], [groupOf] and [get] all prefer it - so calling this for a uuid that has one leaves
+     * PlayerData.permission saying one thing and every check answering with another.
+     *
+     * It is not free of side effects: [syncVanillaAdmin] reaches Mindustry own admin database, and for
+     * an unknown uuid Administration.unAdminPlayer creates and saves an empty PlayerInfo row there.
+     */
+    fun applyGroup(uuid: String, group: String) {
         syncVanillaAdmin(uuid, group)
 
         players.find { data -> data.uuid == uuid }?.let { data ->
@@ -288,6 +312,14 @@ object Permission {
 
         val next = userRaw.toMutableMap()
         edit(next)
+
+        // An edit that changes nothing still cost the operator their backup and every comment and blank
+        // line in the file, because the write re-serialises from the parsed form. Node equality carries
+        // the YamlPath, and patchGroup builds its nodes at the root, so the comparison has to be
+        // equivalentContentTo rather than ==.
+        if (next.keys == userRaw.keys && next.all { (uuid, node) -> userRaw.getValue(uuid).equivalentContentTo(node) }) {
+            return true
+        }
 
         if (userFile.exists()) userFile.copyTo(userBackupFile)
         userFile.writeString(comment + "\n" + yaml.encodeToString(rawSerializer, next), false)
@@ -344,7 +376,7 @@ object Permission {
     @Serializable
     data class PermissionData(
         var name: String = "",
-        var group: String = default,
+        var group: String = fileDefault,
         var admin: Boolean = false,
         var isAlert: Boolean = false,
         var alertMessage: String = "",

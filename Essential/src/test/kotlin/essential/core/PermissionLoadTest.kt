@@ -121,4 +121,76 @@ class PermissionLoadTest {
             Permission.load()
         }
     }
+
+    @Test
+    fun permission_reloadKeepsTheAccountServiceDefault() {
+        val mainFile = rootPath.child("permission.yaml")
+        val userFile = rootPath.child("permission_user.yaml")
+        val goodMain = mainFile.readString()
+        val goodUser = userFile.readString()
+        val uuid = "uuid-reloaded-without-a-group"
+
+        try {
+            mainFile.writeString(
+                """
+                user:
+                    permission:
+                        - rtv
+                visitor:
+                    default: true
+                    permission:
+                        - login
+                """.trimIndent(),
+                false
+            )
+            userFile.writeString("$uuid:\n    name: Bob\n", false)
+
+            // What ProtectService.init does once at boot when account authentication is configured.
+            Permission.setAuthDefault("user")
+            Permission.load()
+
+            assertEquals(
+                "user",
+                Permission.default,
+                "a reload must not answer for the account service with the permission.yaml default"
+            )
+            assertEquals(
+                "visitor",
+                Permission.groupOf(uuid, "owner"),
+                "and it must not answer for permission.yaml with the account service default either: an entry with no group: key still belongs to the role permission.yaml marks default"
+            )
+        } finally {
+            Permission.setAuthDefault(null)
+            mainFile.writeString(goodMain, false)
+            userFile.writeString(goodUser, false)
+            Permission.load()
+        }
+    }
+
+
+    @Test
+    fun permission_aUserFileEditThatChangesNothingKeepsTheFileAndItsBackup() {
+        val userFile = rootPath.child("permission_user.yaml")
+        val backupFile = rootPath.child("permission_user.yaml.bak")
+        val goodUser = userFile.readString()
+        val uuid = "uuid-with-no-entry"
+
+        try {
+            userFile.writeString("# an operator comment, and an entry for nobody\n---\n", false)
+            Permission.load()
+            if (backupFile.exists()) backupFile.delete()
+            val before = userFile.readString()
+
+            // What /setperm does for a player the file carries no entry for: it wants the live effect
+            // and nothing else, and there is no other way to ask for it.
+            Permission.removeUserEntry(uuid, "visitor")
+
+            assertFalse(backupFile.exists(), "an edit that removes nothing must not overwrite the backup")
+            assertEquals(before, userFile.readString(), "and must leave the operator's own comments alone")
+        } finally {
+            if (backupFile.exists()) backupFile.delete()
+            userFile.writeString(goodUser, false)
+            Permission.load()
+        }
+    }
 }
