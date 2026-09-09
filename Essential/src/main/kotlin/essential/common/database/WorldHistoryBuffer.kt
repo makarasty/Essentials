@@ -42,8 +42,21 @@ object WorldHistoryBuffer {
 
     private val lastBlockCache = ConcurrentHashMap<Int, String>()
 
-    fun clear() {
-        lastBlockCache.clear()
+    /**
+     * Empties the table and the buffer as one step under the flush lock, so nothing recorded before the
+     * call can reach the table after it. Clearing the cache alone left `queue` pending, and the next
+     * flush tick inserted those rows into the table that had just been truncated.
+     *
+     * The truncate goes first so a failing one leaves both the table and the buffer as they were.
+     */
+    suspend fun discard() {
+        flushMutex.withLock {
+            suspendTransaction(db = worldHistoryDatabase) {
+                exec("TRUNCATE TABLE world_history")
+            }
+            queue.clear()
+            lastBlockCache.clear()
+        }
     }
 
     suspend fun reload() {
