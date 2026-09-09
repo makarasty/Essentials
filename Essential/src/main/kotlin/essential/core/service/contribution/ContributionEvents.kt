@@ -145,8 +145,12 @@ fun unitCreate(event: UnitCreateEvent) {
 @Event
 fun unitControl(event: UnitControlEvent) {
     if (!conf.enabled) return
+    // Null on release: InputHandler.unitControl fires this event straight from its clearUnit branch.
+    // The field is arc.util.Nullable, which Kotlin does not read, so the non-null type compiled to an
+    // assertion that threw on the game thread every time a player let go of a unit.
+    val unit = event.unit ?: return
     // Player took direct control of a unit; remember the controller.
-    unitController[event.unit.id()] = event.player.uuid()
+    unitController[unit.id()] = event.player.uuid()
 }
 
 @Event
