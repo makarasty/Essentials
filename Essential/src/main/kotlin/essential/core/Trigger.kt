@@ -202,7 +202,7 @@ class Trigger {
                                             val str = info.players.toString()
                                             val digits = IntArray(str.length)
                                             for (a in str.indices) digits[a] = str[a] - '0'
-                                            val tile = value.tile
+                                            val tile = value.tile ?: continue
                                             if (value.players != info.players) {
                                                 Core.app.post {
                                                     for (px in 0..2) {
@@ -216,12 +216,12 @@ class Trigger {
 
                                             val updated = WarpCount(
                                                 Vars.state.map.name(),
-                                                value.tile.pos(),
+                                                value.pos,
                                                 value.ip,
-                                                value.port,
-                                                info.players,
-                                                digits.size
+                                                value.port
                                             )
+                                            updated.numberSize = digits.size
+                                            updated.players = info.players
                                             // The position this entry had in the copy is not necessarily
                                             // its position in the live list, so the write back happens on
                                             // the main thread and finds the entry by identity.
@@ -406,6 +406,7 @@ class Trigger {
 
                                 for (value in warpTotal) {
                                     if (Vars.state.map.name() == value.mapName) {
+                                        val tile = value.tile ?: continue
                                         if (value.totalPlayers != total) {
                                             when (total) {
                                                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 -> {
@@ -413,8 +414,8 @@ class Trigger {
                                                         for (py in 0..4) {
                                                             Core.app.post {
                                                                 Vars.world.tile(
-                                                                    value.tile.x + px,
-                                                                    value.tile.y + py
+                                                                    tile.x + px,
+                                                                    tile.y + py
                                                                 )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
                                                             }
                                                         }
@@ -426,8 +427,8 @@ class Trigger {
                                                         for (py in 0..4) {
                                                             Core.app.post {
                                                                 Vars.world.tile(
-                                                                    value.tile.x + 4 + px,
-                                                                    value.tile.y + py
+                                                                    tile.x + 4 + px,
+                                                                    tile.y + py
                                                                 )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
                                                             }
                                                         }

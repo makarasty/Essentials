@@ -1674,7 +1674,7 @@ class Commands {
                         if (ip.isEmpty()) {
                             playerData.err("command.hub.address.invalid")
                         } else {
-                            pluginData.data.warpCount.add(WarpCount(name, Vars.world.tile(x, y).pos(), ip, port, 0, 1))
+                            pluginData.data.warpCount.add(WarpCount(name, Vars.world.tile(x, y).pos(), ip, port))
                             playerData.send("command.hub.count", "$x:$y", arg[1])
                         }
                     }
