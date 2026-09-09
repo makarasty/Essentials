@@ -9,11 +9,12 @@ import arc.util.Log
 import arc.util.Time
 import arc.util.Timer
 import essential.common.bundle.Bundle
-import essential.common.database.data.PluginData
 import essential.common.event.CustomEvents
 import essential.common.database.data.cleanupExpiredRoutingPermissions
 import essential.common.database.data.grantRoutingPermission
+import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.data.plugin.WarpCount
+import essential.common.database.data.plugin.WarpZone
 import essential.common.permission.Permission
 import essential.common.players
 import essential.common.pluginData
@@ -94,6 +95,8 @@ class Trigger {
 
     class PingThread: Runnable {
         private var ping = 0.000
+        private var lastFailure: String? = null
+        private var lastFailureLoggedAt = 0L
 
         private fun calculateCenter(startTile: Tile, endTile: Tile): Pair<Int, Int> {
             data class Point(val x: Int, val y: Int)
@@ -152,229 +155,263 @@ class Trigger {
             return findMedianCoordinates(startTile, endTile)
         }
 
+        /**
+         * The four warp lists are plain ArrayLists that /warp adds to, removes from and clears from
+         * another thread, and ArrayList iterators are fail-fast, so this thread reads a copy rather
+         * than the live list. A copy taken while the list is shrinking can carry nulls, because the
+         * size and the backing array are not read together; that is what the filter drops.
+         */
+        private fun <T : Any> snapshot(list: List<T>): List<T> = ArrayList<T?>(list).filterNotNull()
+
         override fun run() {
             var isNotTargetMap: Boolean
             try {
                 while (currentThread().isInterrupted.not()) {
-                    val data = pluginData.data
+                    // The warp display is decorative; a failure in one cycle must not end the
+                    // round for everyone on the server. Log it and try again on the next cycle.
+                    try {
+                        val data = pluginData.data
+                        val warpCount = snapshot(data.warpCount)
+                        val warpTotal = snapshot(data.warpTotal)
+                        val warpZone = snapshot(data.warpZone)
+                        val warpBlock = snapshot(data.warpBlock)
 
-                    isNotTargetMap = false
-                    if (data.warpCount.none { f -> f.mapName == Vars.state.map.name() } &&
-                        data.warpTotal.none { f -> f.mapName == Vars.state.map.name() } &&
-                        data.warpZone.none { f -> f.mapName == Vars.state.map.name() } &&
-                        data.warpBlock.none { f -> f.mapName == Vars.state.map.name() }
-                    ) {
-                        isNotTargetMap = true
-                    }
-
-                    if (!isNotTargetMap) {
-                        var total = 0
-                        val serverInfo = getServerInfo(pluginData)
-                        for (a in serverInfo) {
-                            total += a.players
+                        isNotTargetMap = false
+                        if (warpCount.none { f -> f.mapName == Vars.state.map.name() } &&
+                            warpTotal.none { f -> f.mapName == Vars.state.map.name() } &&
+                            warpZone.none { f -> f.mapName == Vars.state.map.name() } &&
+                            warpBlock.none { f -> f.mapName == Vars.state.map.name() }
+                        ) {
+                            isNotTargetMap = true
                         }
 
-                        if (Vars.state.isPlaying) {
-                            for (i in data.warpCount.indices) {
-                                if (Vars.state.map.name() == data.warpCount[i].mapName) {
-                                    val value = data.warpCount[i]
-                                    val info = serverInfo.find { a -> a.address == value.ip && a.port == value.port }
-                                    if (info != null) {
-                                        val str = info.players.toString()
-                                        val digits = IntArray(str.length)
-                                        for (a in str.indices) digits[a] = str[a] - '0'
-                                        val tile = value.tile
-                                        if (value.players != info.players) {
-                                            Core.app.post {
-                                                for (px in 0..2) {
-                                                    for (py in 0..4) {
-                                                        Vars.world.tile(tile.x + 4 + px, tile.y + py)
-                                                            .setBlock(Blocks.air)
+                        if (!isNotTargetMap) {
+                            var total = 0
+                            val serverInfo = getServerInfo(warpBlock, warpCount, warpZone)
+                            for (a in serverInfo) {
+                                total += a.players
+                            }
+
+                            if (Vars.state.isPlaying) {
+                                for (value in warpCount) {
+                                    if (Vars.state.map.name() == value.mapName) {
+                                        val info = serverInfo.find { a -> a.address == value.ip && a.port == value.port }
+                                        if (info != null) {
+                                            val str = info.players.toString()
+                                            val digits = IntArray(str.length)
+                                            for (a in str.indices) digits[a] = str[a] - '0'
+                                            val tile = value.tile
+                                            if (value.players != info.players) {
+                                                Core.app.post {
+                                                    for (px in 0..2) {
+                                                        for (py in 0..4) {
+                                                            Vars.world.tile(tile.x + 4 + px, tile.y + py)
+                                                                ?.setBlock(Blocks.air)
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
 
-                                        data.warpCount[i] = WarpCount(
-                                            Vars.state.map.name(),
-                                            value.tile.pos(),
-                                            value.ip,
-                                            value.port,
-                                            info.players,
-                                            digits.size
-                                        )
+                                            val updated = WarpCount(
+                                                Vars.state.map.name(),
+                                                value.tile.pos(),
+                                                value.ip,
+                                                value.port,
+                                                info.players,
+                                                digits.size
+                                            )
+                                            // The position this entry had in the copy is not necessarily
+                                            // its position in the live list, so the write back happens on
+                                            // the main thread and finds the entry by identity.
+                                            Core.app.post {
+                                                val index = data.warpCount.indexOfFirst { it === value }
+                                                if (index != -1) data.warpCount[index] = updated
+                                            }
+                                        }
                                     }
                                 }
-                            }
 
-                            val memory = mutableListOf<Pair<Playerc, Triple<String, Float, Float>>>()
-                            val iterator = data.warpBlock.iterator()
-                            while (iterator.hasNext()) {
-                                val value = iterator.next()
-                                if (Vars.state.map.name() == value.mapName) {
-                                    val tile = Vars.world.tile(value.x, value.y)
-                                    if (tile.block() == Blocks.air) {
-                                        iterator.remove()
-                                    } else {
-                                        var margin = 0f
-                                        var isDup = false
-                                        val x = tile.build.getX()
+                                val memory = mutableListOf<Pair<Playerc, Triple<String, Float, Float>>>()
+                                val stale = mutableListOf<WarpBlock>()
+                                for (value in warpBlock) {
+                                    if (Vars.state.map.name() == value.mapName) {
+                                        // Out of bounds means the loaded map is a different one that
+                                        // happens to share this name, not that the block was broken.
+                                        // Six servers share one plugin_data row, so removing here would
+                                        // wipe another server's warp blocks.
+                                        val tile = Vars.world.tile(value.x, value.y) ?: continue
+                                        // A non-air block with no building is either scenery or a block
+                                        // being replaced right now, and setBlock assigns the block before
+                                        // it assigns the building. Neither is proof the entry is stale.
+                                        val build = tile.build
+                                        if (build == null) {
+                                            if (tile.block() == Blocks.air) stale.add(value)
+                                        } else {
+                                            var margin = 0f
+                                            var isDup = false
+                                            val x = build.getX()
 
-                                        when (value.size) {
-                                            1 -> margin = 8f
-                                            2 -> {
-                                                margin = 16f
-                                                isDup = true
+                                            when (value.size) {
+                                                1 -> margin = 8f
+                                                2 -> {
+                                                    margin = 16f
+                                                    isDup = true
+                                                }
+
+                                                3 -> margin = 16f
+                                                4 -> {
+                                                    margin = 24f
+                                                    isDup = true
+                                                }
+
+                                                5 -> margin = 24f
+                                                6 -> {
+                                                    margin = 32f
+                                                    isDup = true
+                                                }
+
+                                                7 -> margin = 32f
                                             }
 
-                                            3 -> margin = 16f
-                                            4 -> {
-                                                margin = 24f
-                                                isDup = true
+                                            var y = build.getY() + if (isDup) margin - 8 else margin
+
+                                            var alive = false
+                                            var alivePlayer = 0
+                                            var currentMap = ""
+                                            serverInfo.forEach {
+                                                try {
+                                                    val address = InetAddress.getByName(value.ip).hostAddress
+                                                    if ((it.address == value.ip || it.address == address) && it.port == value.port) {
+                                                        alive = true
+                                                        alivePlayer = it.players
+                                                        currentMap = it.mapname
+                                                    }
+                                                } catch (_: UnknownHostException) {
+                                                    Log.warn("Could not find a matching address $value.ip:$value.port")
+                                                } catch (_: Exception) {
+
+                                                }
                                             }
 
-                                            5 -> margin = 24f
-                                            6 -> {
-                                                margin = 32f
-                                                isDup = true
+                                            if (alive) {
+                                                if (isDup) y += 4
+                                                Groups.player.forEach { a ->
+                                                    memory.add(
+                                                        a to Triple(
+                                                            "$currentMap\n[white][yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
+                                                            x,
+                                                            y
+                                                        )
+                                                    )
+                                                }
+                                                value.online = true
+                                            } else {
+                                                Groups.player.forEach { a ->
+                                                    memory.add(
+                                                        a to Triple(
+                                                            Bundle(a.locale)["event.server.warp.offline"],
+                                                            x,
+                                                            y
+                                                        )
+                                                    )
+                                                }
+                                                value.online = false
                                             }
 
-                                            7 -> margin = 32f
+                                            if (isDup) margin -= 4
+                                            Groups.player.forEach { a ->
+                                                memory.add(a to Triple(value.description, x, build.getY() - margin))
+                                            }
                                         }
+                                    }
+                                }
 
-                                        var y = tile.build.getY() + if (isDup) margin - 8 else margin
+                                if (stale.isNotEmpty()) {
+                                    // By identity, not by equals: WarpBlock is a data class, so two
+                                    // entries describing the same block are equal and removeAll would
+                                    // take both.
+                                    Core.app.post { data.warpBlock.removeAll { b -> stale.any { it === b } } }
+                                }
+
+                                for (value in warpZone) {
+                                    if (Vars.state.map.name() == value.mapName) {
+                                        val center = calculateCenter(value.startTile, value.finishTile)
 
                                         var alive = false
                                         var alivePlayer = 0
-                                        var currentMap = ""
+                                        // A hostname that stopped resolving must not take the thread down,
+                                        // and the lookup does not depend on which host we are comparing to.
+                                        val address = runCatching { InetAddress.getByName(value.ip).hostAddress }.getOrNull()
                                         serverInfo.forEach {
-                                            try {
-                                                val address = InetAddress.getByName(value.ip).hostAddress
-                                                if ((it.address == value.ip || it.address == address) && it.port == value.port) {
-                                                    alive = true
-                                                    alivePlayer = it.players
-                                                    currentMap = it.mapname
-                                                }
-                                            } catch (_: UnknownHostException) {
-                                                Log.warn("Could not find a matching address $value.ip:$value.port")
-                                            } catch (_: Exception) {
-
+                                            if ((it.address == value.ip || (address != null && it.address == address)) && it.port == value.port) {
+                                                alive = true
+                                                alivePlayer = it.players
                                             }
                                         }
 
+                                        // todo 중앙 정렬 안됨
                                         if (alive) {
-                                            if (isDup) y += 4
-                                            Groups.player.forEach { a ->
+                                            for (a in Groups.player) {
                                                 memory.add(
                                                     a to Triple(
-                                                        "$currentMap\n[white][yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
-                                                        x,
-                                                        y
+                                                        "[yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
+                                                        (center.first * 8).toFloat(),
+                                                        (center.second * 8).toFloat()
                                                     )
                                                 )
                                             }
-                                            value.online = true
                                         } else {
-                                            Groups.player.forEach { a ->
+                                            for (a in Groups.player) {
                                                 memory.add(
                                                     a to Triple(
                                                         Bundle(a.locale)["event.server.warp.offline"],
-                                                        x,
-                                                        y
+                                                        (center.first * 8).toFloat(),
+                                                        (center.second * 8).toFloat()
                                                     )
                                                 )
                                             }
-                                            value.online = false
-                                        }
-
-                                        if (isDup) margin -= 4
-                                        Groups.player.forEach { a ->
-                                            memory.add(a to Triple(value.description, x, tile.build.getY() - margin))
                                         }
                                     }
                                 }
-                            }
 
-                            for (value in data.warpZone) {
-                                if (Vars.state.map.name() == value.mapName) {
-                                    val center = calculateCenter(value.startTile, value.finishTile)
-
-                                    var alive = false
-                                    var alivePlayer = 0
-                                    serverInfo.forEach {
-                                        if ((it.address == value.ip || it.address == InetAddress.getByName(value.ip).hostAddress) && it.port == value.port) {
-                                            alive = true
-                                            alivePlayer = it.players
-                                        }
-                                    }
-
-                                    // todo 중앙 정렬 안됨
-                                    if (alive) {
-                                        for (a in Groups.player) {
-                                            memory.add(
-                                                a to Triple(
-                                                    "[yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
-                                                    (center.first * 8).toFloat(),
-                                                    (center.second * 8).toFloat()
-                                                )
-                                            )
-                                        }
-                                    } else {
-                                        for (a in Groups.player) {
-                                            memory.add(
-                                                a to Triple(
-                                                    Bundle(a.locale)["event.server.warp.offline"],
-                                                    (center.first * 8).toFloat(),
-                                                    (center.second * 8).toFloat()
-                                                )
-                                            )
-                                        }
+                                for (m in memory) {
+                                    Core.app.post {
+                                        Call.label(
+                                            m.first.con(),
+                                            m.second.first,
+                                            ping.toFloat() + 3f,
+                                            m.second.second,
+                                            m.second.third
+                                        )
                                     }
                                 }
-                            }
 
-                            for (m in memory) {
-                                Core.app.post {
-                                    Call.label(
-                                        m.first.con(),
-                                        m.second.first,
-                                        ping.toFloat() + 3f,
-                                        m.second.second,
-                                        m.second.third
-                                    )
-                                }
-                            }
-
-                            for (i in data.warpTotal.indices) {
-                                val value = data.warpTotal[i]
-                                if (Vars.state.map.name() == value.mapName) {
-                                    if (value.totalPlayers != total) {
-                                        when (total) {
-                                            0, 1, 2, 3, 4, 5, 6, 7, 8, 9 -> {
-                                                for (px in 0..2) {
-                                                    for (py in 0..4) {
-                                                        Core.app.post {
-                                                            Call.setTile(
+                                for (value in warpTotal) {
+                                    if (Vars.state.map.name() == value.mapName) {
+                                        if (value.totalPlayers != total) {
+                                            when (total) {
+                                                0, 1, 2, 3, 4, 5, 6, 7, 8, 9 -> {
+                                                    for (px in 0..2) {
+                                                        for (py in 0..4) {
+                                                            Core.app.post {
                                                                 Vars.world.tile(
                                                                     value.tile.x + px,
                                                                     value.tile.y + py
-                                                                ), Blocks.air, Team.sharded, 0
-                                                            )
+                                                                )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
+                                                            }
                                                         }
                                                     }
                                                 }
-                                            }
 
-                                            else -> {
-                                                for (px in 0..5) {
-                                                    for (py in 0..4) {
-                                                        Core.app.post {
-                                                            Call.setTile(
+                                                else -> {
+                                                    for (px in 0..5) {
+                                                        for (py in 0..4) {
+                                                            Core.app.post {
                                                                 Vars.world.tile(
                                                                     value.tile.x + 4 + px,
                                                                     value.tile.y + py
-                                                                ), Blocks.air, Team.sharded, 0
-                                                            )
+                                                                )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -383,10 +420,26 @@ class Trigger {
                                     }
                                 }
                             }
+
+                            if (conf.feature.count) {
+                                Core.settings.put("totalPlayers", total + Groups.player.size())
+                            }
                         }
 
-                        if (conf.feature.count) {
-                            Core.settings.put("totalPlayers", total + Groups.player.size())
+                        lastFailure = null
+                    } catch (e: Exception) {
+                        // A warp entry that is permanently broken - a zone one tile wide, a host
+                        // that will never resolve - fails every three seconds for as long as it is
+                        // configured. Mindustry keeps every log file it rotates, so printing the
+                        // same trace 1200 times an hour would cost an operator real disk. The first
+                        // of each distinct failure is printed in full, then once every five minutes
+                        // until it changes or a cycle succeeds.
+                        val signature = "${e::class.qualifiedName}:${e.stackTrace.firstOrNull()}"
+                        val now = System.currentTimeMillis()
+                        if (signature != lastFailure || now - lastFailureLoggedAt > 300000) {
+                            lastFailure = signature
+                            lastFailureLoggedAt = now
+                            Log.err(e)
                         }
                     }
 
@@ -401,21 +454,24 @@ class Trigger {
                 currentThread().interrupt()
             } catch (e: Exception) {
                 Log.err(e)
-                Core.app.exit()
             }
         }
 
-        private fun getServerInfo(pluginData: PluginData): MutableSet<Host> {
+        private fun getServerInfo(
+            warpBlock: List<WarpBlock>,
+            warpCount: List<WarpCount>,
+            warpZone: List<WarpZone>
+        ): MutableSet<Host> {
             val total = mutableSetOf<Host>()
             var buf = arrayOf<Pair<String, Int>>()
 
-            for (it in pluginData.data.warpBlock) {
+            for (it in warpBlock) {
                 buf += Pair(it.ip, it.port)
             }
-            for (it in pluginData.data.warpCount) {
+            for (it in warpCount) {
                 buf += Pair(it.ip, it.port)
             }
-            for (it in pluginData.data.warpZone) {
+            for (it in warpZone) {
                 buf += Pair(it.ip, it.port)
             }
             for (a in buf) {
@@ -566,9 +622,12 @@ class Trigger {
                     }
                 }
 
+                // A player with no unit (dead on a team that has no core left to respawn from) keeps
+                // unit() at null indefinitely, and tileOn() is nullable in its own right.
+                val unitTile = data.player.unit()?.tileOn()
                 for (two in pluginData.data.warpZone) {
-                    if (two.mapName == Vars.state.map.name() && !two.click && isUnitInside(
-                            data.player.unit().tileOn(),
+                    if (unitTile != null && two.mapName == Vars.state.map.name() && !two.click && isUnitInside(
+                            unitTile,
                             two.startTile,
                             two.finishTile
                         )
