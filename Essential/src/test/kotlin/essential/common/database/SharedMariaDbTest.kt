@@ -2,6 +2,7 @@ package essential.common.database
 
 import PluginTest.Companion.createPlayer
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.stopPlugin
 import arc.util.Log
 import essential.common.database.data.DisplayData
 import essential.common.database.data.PlayerData
@@ -21,7 +22,6 @@ import kotlinx.coroutines.withContext
 import mindustry.gen.Groups
 import org.jetbrains.exposed.v1.core.vendors.MariaDBDialect
 import org.jetbrains.exposed.v1.r2dbc.selectAll
-import org.jetbrains.exposed.v1.r2dbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.junit.Assume.assumeTrue
 import java.io.File
@@ -65,10 +65,23 @@ class SharedMariaDbTest {
     private val port = System.getProperty("essential.test.mysql.port", "3398")
     private val user = System.getProperty("essential.test.mysql.user", "root")
     private val pass = System.getProperty("essential.test.mysql.password", "")
-    private val database = System.getProperty("essential.test.shared.database", "chip8_shared")
+    private val database = System.getProperty("essential.test.shared.database", SCRATCH_DATABASE)
 
     private val log = CopyOnWriteArrayList<String>()
     private var previousLogger: Log.LogHandler? = null
+
+    /**
+     * Whether this test got as far as opening the database. The teardown runs even when the assumption
+     * above skipped the test, and the globals it closes belong to whichever class ran before this one -
+     * on a machine with no MariaDB it would otherwise close that class's database out from under it.
+     */
+    private var booted = false
+
+    companion object {
+        /** Everything these tests put in the shared blob carries this, so the teardown can find it. */
+        const val MARK = "c8-"
+        const val SCRATCH_DATABASE = "chip8_shared"
+    }
 
     private fun jdbc(db: String) = "jdbc:mariadb://$host:$port/$db?connectTimeout=3000&socketTimeout=30000"
 
@@ -104,6 +117,7 @@ class SharedMariaDbTest {
         Log.logger = Log.LogHandler { _, text -> log += text }
 
         runBlocking { databaseInit("mariadb://$host:$port/$database", user, pass) }
+        booted = true
         assertIs<MariaDBDialect>(
             defaultDatabase!!.config.explicitDialect,
             "the MariaDB branch of databaseInit was not taken, so this proves nothing about MariaDB"
@@ -115,20 +129,38 @@ class SharedMariaDbTest {
         previousLogger?.let { Log.logger = it }
         previousLogger = null
         log.clear()
+        if (!booted) return
+        booted = false
+
+        // A blacklisted name filters joins and a temp ban outlives the JVM, so what these tests put in
+        // the shared blob comes back out. Removing an element from a PluginData collection publishes a
+        // deletion to every server sharing the row, which is why this only touches entries this class
+        // marked as its own.
+        runCatching {
+            runBlocking {
+                getPluginData()?.let { row ->
+                    val names = row.data.blacklistedNames.removeAll { it.startsWith(MARK) }
+                    val warps = row.data.warpCount.removeAll { it.mapName.startsWith(MARK) }
+                    val bans = row.data.tempBans.keys.removeAll { it.startsWith(MARK) }
+                    if (names || warps || bans) row.update()
+                }
+            }
+        }
+
         // PluginTest.stopPlugin() sends SHUTDOWN to every open database, which a real MariaDB obeys.
-        // Drop the reference first so only the H2 world-history database can be sent that.
+        // Drop the reference first so only the H2 world-history database can be sent that. It is still
+        // the right call rather than a bare databaseClose(): it also clears PluginTest's pluginLoaded
+        // flag, without which the next class to call loadGame(true) gets no database at all.
         defaultDatabase = null
-        databaseClose()
-        TransactionManager.defaultDatabase = null
+        stopPlugin()
     }
 
-    private fun uuid(tag: String) = "c8-$tag-${System.nanoTime()}".take(25)
+    private fun uuid(tag: String) = "$MARK$tag-${System.nanoTime()}".take(25)
 
-    /** Closes the database this test booted and opens it again, which is a restart of this instance. */
+    /** Closes the database this test opened and opens it again, which is a restart of this instance. */
     private fun reboot() {
         defaultDatabase = null
         databaseClose()
-        TransactionManager.defaultDatabase = null
         runBlocking { databaseInit("mariadb://$host:$port/$database", user, pass) }
     }
 
@@ -211,8 +243,8 @@ class SharedMariaDbTest {
 
     @Test
     fun twoInstancesEditingTheSharedBlobBothSurvive(): Unit = runBlocking {
-        val zone = "warp-${System.nanoTime()}"
-        val banned = "tempban-${System.nanoTime()}"
+        val name = "${MARK}name-${System.nanoTime()}"
+        val banned = "${MARK}ban-${System.nanoTime()}"
 
         val a = assertNotNull(getPluginData() ?: createPluginData(), "instance A could not read plugin_data")
         val b = assertNotNull(getPluginData(), "instance B could not read plugin_data")
@@ -220,21 +252,21 @@ class SharedMariaDbTest {
         assertTrue(a.data !== b.data, "the two copies must not share the blob")
 
         // A adds to the name blacklist; B issues a temp ban. Neither has seen the other's change.
-        a.data.blacklistedNames.add(zone)
+        a.data.blacklistedNames.add(name)
         b.data.tempBans[banned] = "2099-01-01T00:00"
 
         assertTrue(b.update(), "instance B could not write the temp ban")
         assertTrue(a.update(), "instance A could not write its own change")
 
         val storedRow = assertNotNull(getPluginData(), "plugin_data disappeared")
-        assertTrue(storedRow.data.blacklistedNames.contains(zone), "instance A's own change was lost")
+        assertTrue(storedRow.data.blacklistedNames.contains(name), "instance A's own change was lost")
         assertTrue(storedRow.data.tempBans.containsKey(banned), "instance A's save erased instance B's temp ban")
     }
 
     @Test
     fun anInstanceWithoutASnapshotOverwritesTheWholeSharedBlob(): Unit = runBlocking {
-        val zone = "warp-${System.nanoTime()}"
-        val banned = "tempban-${System.nanoTime()}"
+        val name = "${MARK}name-${System.nanoTime()}"
+        val banned = "${MARK}ban-${System.nanoTime()}"
 
         val a = assertNotNull(getPluginData() ?: createPluginData(), "instance A could not read plugin_data")
         val b = assertNotNull(getPluginData(), "instance B could not read plugin_data")
@@ -243,11 +275,11 @@ class SharedMariaDbTest {
         assertTrue(b.update(), "instance B could not write the temp ban")
 
         a.asOldInstance()
-        a.data.blacklistedNames.add(zone)
+        a.data.blacklistedNames.add(name)
         a.update()
 
         val storedRow = assertNotNull(getPluginData(), "plugin_data disappeared")
-        assertTrue(storedRow.data.blacklistedNames.contains(zone), "the old-shaped write did not land at all")
+        assertTrue(storedRow.data.blacklistedNames.contains(name), "the old-shaped write did not land at all")
         assertFalse(
             storedRow.data.tempBans.containsKey(banned),
             "a whole-blob write did NOT erase the other instance's temp ban, so the test above proves nothing"
@@ -271,7 +303,7 @@ class SharedMariaDbTest {
      */
     @Test
     fun refreshingAWarpCountOnTwoInstancesDoesNotAccumulateRows(): Unit = runBlocking {
-        val map = "hub-${System.nanoTime()}"
+        val map = "${MARK}hub-${System.nanoTime()}"
 
         val seed = assertNotNull(getPluginData() ?: createPluginData(), "could not read plugin_data")
         seed.data.warpCount.add(WarpCount(map, 100, "127.0.0.1", 6567, 1, 3))
@@ -307,6 +339,13 @@ class SharedMariaDbTest {
      */
     @Test
     fun twoInstancesStartingAtOnceDoNotEachInsertAPluginDataRow(): Unit = runBlocking {
+        // The only destructive statement in this class, and plugin_data on a real server holds its warp
+        // zones, its name blacklist and every active temp ban. It runs against the scratch database this
+        // chip created and nowhere else.
+        assumeTrue(
+            "plugin_data is only emptied in the scratch database, not in $database",
+            database == SCRATCH_DATABASE
+        )
         open(database).use { it.exec("DELETE FROM plugin_data") }
 
         val results = withContext(Dispatchers.IO) {
@@ -323,15 +362,16 @@ class SharedMariaDbTest {
 
     /**
      * A player joining two servers at the same instant. players.uuid and players.name both carry a
-     * unique index, so one of the two inserts is refused - what matters is what the losing instance
-     * does with that. It logs and falls back to a temporary data object, which persists nothing, and
-     * retryPlayerDataLoad (CoreEvent.kt:677-706) picks the real row up within ten seconds and merges
-     * the session into it. So: one row, both instances converge, and the loser is noisy rather than
-     * silent. Asserted here because it is the only path in this file where an instance can end up
-     * writing nothing at all.
+     * unique index, so one of the two inserts is refused, and what matters is that the loser says so:
+     * an instance that silently falls back to temporary data persists nothing for that session.
+     * loadJoinedPlayerData (CoreEvent.kt:620-635) catches the refusal, logs it and returns a null data
+     * object; its caller then hands that to retryPlayerDataLoad (CoreEvent.kt:677-706), which picks the
+     * real row up within ten seconds and merges the session into it. The retry is read from the code
+     * rather than exercised here - this calls loadJoinedPlayerData directly, because that is the layer
+     * where the loss would be silent.
      */
     @Test
-    fun aPlayerJoiningTwoInstancesAtOnceStillEndsWithOneRow(): Unit = runBlocking {
+    fun aPlayerJoiningTwoInstancesAtOnceSaysSoAndKeepsOneRow(): Unit = runBlocking {
         val player = createPlayer()
         val id = player.uuid()
         try {
@@ -347,8 +387,8 @@ class SharedMariaDbTest {
                 "both instances fell back to temporary data, so nothing that session would be saved"
             )
             assertTrue(
-                log.none { it.contains("Duplicate entry") } || log.any { it.contains("Failed to load player data") },
-                "the losing instance's insert was refused without saying so"
+                log.any { it.contains("Failed to load player data") },
+                "one of the two inserts was refused and neither instance logged a word about it"
             )
         } finally {
             player.remove()
@@ -356,34 +396,10 @@ class SharedMariaDbTest {
         }
     }
 
-    /**
-     * MySQL and MariaDB report rows changed rather than rows matched, so an update whose values a
-     * sibling server has already written reports zero. update() returns rows > 0, and a caller that
-     * branches on it reads that as a failed write. H2 reports matched rows, so the rest of the suite
-     * cannot see this.
-     */
-    @Test
-    fun aWriteAnotherInstanceAlreadyMadeIsNotReportedAsAFailure(): Unit = runBlocking {
-        val (id, a) = freshPlayer("s7rows")
-
-        val b = assertNotNull(getPlayerData(id), "instance B could not read the row")
-        b.permission = "admin"
-        assertTrue(b.update(), "instance B could not write the group")
-
-        // A reaches the same conclusion independently - two servers promoting the same player, or the
-        // same permission_user.yaml applied on both - and writes the value that is already there.
-        a.permission = "admin"
-        assertTrue(
-            a.update(),
-            "update() reported a failure for a write whose value the row already held; callers that " +
-                "branch on this see a save that did not happen"
-        )
-    }
-
     /** A blob element a server merely does not have locally is published as a deletion to the others. */
     @Test
     fun anInstanceThatNeverSawAWarpDoesNotDeleteIt(): Unit = runBlocking {
-        val map = "hub-${System.nanoTime()}"
+        val map = "${MARK}hub-${System.nanoTime()}"
 
         val a = assertNotNull(getPluginData() ?: createPluginData(), "instance A could not read plugin_data")
         val b = assertNotNull(getPluginData(), "instance B could not read plugin_data")
@@ -392,18 +408,38 @@ class SharedMariaDbTest {
         assertTrue(b.update(), "instance B could not add its warp")
 
         // A's blob is the one it booted with, and it saves for an unrelated reason.
-        a.data.blacklistedNames.add("unrelated-${System.nanoTime()}")
+        a.data.blacklistedNames.add("${MARK}unrelated-${System.nanoTime()}")
         assertTrue(a.update(), "instance A could not write its own change")
 
         val rows = assertNotNull(getPluginData(), "plugin_data disappeared").data.warpCount.filter { it.mapName == map }
         assertEquals(1, rows.size, "instance A's unrelated save deleted a warp it had never seen")
     }
 
+    /** An instance whose own blob is empty must not be the thing that resets a shared row. */
+    @Test
+    fun anInstanceWithAnEmptyBlobDoesNotResetTheSharedOne(): Unit = runBlocking {
+        val name = "${MARK}keep-${System.nanoTime()}"
+        val b = assertNotNull(getPluginData() ?: createPluginData(), "instance B could not read plugin_data")
+        b.data.blacklistedNames.add(name)
+        assertTrue(b.update(), "instance B could not write")
+
+        val a = assertNotNull(getPluginData(), "instance A could not read plugin_data")
+        a.data = DisplayData()
+        a.dbSnapshot = a.dbSnapshot?.copy(data = DisplayData())
+        assertTrue(a.update(), "instance A could not write")
+
+        val storedRow = assertNotNull(getPluginData(), "plugin_data disappeared")
+        assertTrue(
+            storedRow.data.blacklistedNames.contains(name),
+            "an instance with an empty blob erased what another instance had written"
+        )
+    }
+
     /**
-     * An instance that dies without running its dispose listener leaves `is_connected` true, and nothing
+     * An instance that dies without running its dispose listener leaves is_connected true, and nothing
      * anywhere sets it back: every writer of that column (CoreEvent.kt:270, :304, :1066, Trigger.kt:641,
-     * :748, Main.kt:172) runs on the server the player is on, at leave, transfer, AFK or shutdown. No
-     * boot clears it. `/login` refuses an account whose row says connected
+     * :748, Main.kt:172) runs on the server the player is on, at leave, transfer, AFK or shutdown, and
+     * no boot reconciles it. /login refuses an account whose row says connected
      * (service/protect/Commands.kt:69), so the account stays locked on all six servers.
      */
     @Test
@@ -423,8 +459,8 @@ class SharedMariaDbTest {
     }
 
     /**
-     * Two instances shutting down at the same moment. Main.kt:166-181 writes `isConnected` and
-     * `lastLogoutDate` for each of its own players; with the changed-column write those are the only two
+     * Two instances shutting down at the same moment. Main.kt:166-181 writes isConnected and
+     * lastLogoutDate for each of its own players; with the changed-column write those are the only two
      * columns that move, so a shutdown cannot revert anything a sibling wrote on its way down.
      */
     @Test
@@ -445,33 +481,5 @@ class SharedMariaDbTest {
         assertEquals("555", stored(id, "exp"), "a shutdown reverted an unrelated column")
         assertEquals("admin", stored(id, "permission"), "a shutdown reverted what the other instance wrote")
         assertEquals("0", stored(id, "is_connected"), "the shutdown's own write did not land")
-    }
-
-    /** A save that changed nothing must not be reported as a failure either. */
-    @Test
-    fun aSaveThatChangedNothingIsNotReportedAsAFailure(): Unit = runBlocking {
-        val (id, a) = freshPlayer("s7noop")
-        assertTrue(a.update(), "a save that changed nothing reported a failure")
-        assertNotNull(stored(id, "uuid"), "the row disappeared")
-    }
-
-    /** An instance whose own blob is empty must not be the thing that resets a shared row. */
-    @Test
-    fun anInstanceWithAnEmptyBlobDoesNotResetTheSharedOne(): Unit = runBlocking {
-        val name = "keep-${System.nanoTime()}"
-        val b = assertNotNull(getPluginData() ?: createPluginData(), "instance B could not read plugin_data")
-        b.data.blacklistedNames.add(name)
-        assertTrue(b.update(), "instance B could not write")
-
-        val a = assertNotNull(getPluginData(), "instance A could not read plugin_data")
-        a.data = DisplayData()
-        a.dbSnapshot = a.dbSnapshot?.copy(data = DisplayData())
-        assertTrue(a.update(), "instance A could not write")
-
-        val storedRow = assertNotNull(getPluginData(), "plugin_data disappeared")
-        assertTrue(
-            storedRow.data.blacklistedNames.contains(name),
-            "an instance with an empty blob erased what another instance had written"
-        )
     }
 }

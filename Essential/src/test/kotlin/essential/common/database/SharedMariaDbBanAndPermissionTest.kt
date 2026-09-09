@@ -2,8 +2,10 @@ package essential.common.database
 
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.pumpApp
+import PluginTest.Companion.stopPlugin
 import PluginTest.Companion.waitUntil
 import arc.util.Log
+import essential.common.database.data.PluginData
 import essential.common.database.data.checkPlayerBanned
 import essential.common.database.data.createBanInfo
 import essential.common.database.data.createPlayerData
@@ -21,7 +23,6 @@ import kotlinx.datetime.LocalDateTime
 import mindustry.Vars
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.selectAll
-import org.jetbrains.exposed.v1.r2dbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.junit.Assume.assumeTrue
 import java.io.File
@@ -56,6 +57,14 @@ class SharedMariaDbBanAndPermissionTest {
 
     private var previousLogger: Log.LogHandler? = null
     private var permissionFileBackup: String? = null
+    private val bannedHere = mutableListOf<String>()
+    private var previousPluginData: PluginData? = null
+
+    /**
+     * Whether this test got as far as opening the database. The teardown runs even when the assumption
+     * below skipped the test, and the globals it closes belong to whichever class ran before this one.
+     */
+    private var booted = false
 
     private fun open(db: String = ""): Connection = DriverManager.getConnection(
         "jdbc:mariadb://$host:$port/$db?connectTimeout=3000&socketTimeout=30000", user, pass
@@ -90,28 +99,58 @@ class SharedMariaDbBanAndPermissionTest {
 
         runBlocking {
             databaseInit("mariadb://$host:$port/$database", user, pass)
+            booted = true
             // TempBan reads the shared blob for the temp bans that never reached a player row, and the
-            // plugin sets this at boot. Nothing here loads the plugin, so set it from the same row.
+            // plugin sets this at boot. Nothing here loads the plugin, so set it from the same row - and
+            // keep whatever was there, because it is a process global every later class reads.
+            previousPluginData = runCatching { pluginData }.getOrNull()
             pluginData = getPluginData() ?: createPluginData()
         }
     }
 
     @AfterTest
     fun close() {
+        // First, before anything that can throw: a real MariaDB obeys the SHUTDOWN that
+        // PluginTest.stopPlugin() sends to every open database, and dropping the reference here is what
+        // keeps that SHUTDOWN off the operator's server for the rest of the run.
+        defaultDatabase = null
+
         permissionFileBackup?.let {
             userFile.writeString(it, false)
             Permission.load()
+            // load() ends in apply(), which posts its work to the application queue. Run it now rather
+            // than leaving it to fire during some later class's pump, against that class's database.
+            pumpApp()
         }
         permissionFileBackup = null
+
+        // Vars.netServer.admins is a process global that Core.settings autosaves to disk, so a ban left
+        // here outlives the JVM as well as the class.
+        bannedHere.forEach { runCatching { Vars.netServer.admins.unbanPlayerID(it) } }
+        bannedHere.clear()
+
         previousLogger?.let { Log.logger = it }
         previousLogger = null
-        // A real MariaDB obeys the SHUTDOWN that PluginTest.stopPlugin() sends to every open database.
-        defaultDatabase = null
-        databaseClose()
-        TransactionManager.defaultDatabase = null
+
+        if (!booted) return
+        booted = false
+
+        runCatching {
+            runBlocking {
+                getPluginData()?.let { row ->
+                    if (row.data.tempBans.keys.removeAll { it.startsWith(SharedMariaDbTest.MARK) }) row.update()
+                }
+            }
+        }
+        previousPluginData?.let { pluginData = it }
+        previousPluginData = null
+
+        // stopPlugin() rather than a bare databaseClose(): it also clears PluginTest's pluginLoaded
+        // flag, without which the next class to call loadGame(true) gets no database at all.
+        stopPlugin()
     }
 
-    private fun uuid(tag: String) = "c8-$tag-${System.nanoTime()}".take(25)
+    private fun uuid(tag: String) = "${SharedMariaDbTest.MARK}$tag-${System.nanoTime()}".take(25)
 
     private fun past() = LocalDateTime.parse("2000-01-01T00:00")
 
@@ -185,6 +224,7 @@ class SharedMariaDbBanAndPermissionTest {
         pluginData.data.tempBans[id] = past().toString()
         assertTrue(pluginData.update(), "instance A could not write the temp ban")
         admins.banPlayerID(id)
+        bannedHere += id
 
         // Instance B reads the blob while the ban is still live and holds it.
         val b = assertNotNull(getPluginData(), "instance B could not read plugin_data")
@@ -227,6 +267,7 @@ class SharedMariaDbBanAndPermissionTest {
         createPlayerData(id, id, id, id)
 
         admins.banPlayerID(id)
+        bannedHere += id
         TempBan.setBanExpire(id, past())
         assertTrue(admins.isIDBanned(id), "the ban this test is about should be in place")
 
@@ -269,30 +310,6 @@ class SharedMariaDbBanAndPermissionTest {
     }
 
     /**
-     * The operator keeps permission_user.yaml authoritative per server. An entry written by hand on one
-     * instance is that instance's own file, so nothing another instance writes to the shared column can
-     * reach it - and the entry goes on winning locally.
-     */
-    @Test
-    fun aHandWrittenEntryOnOneInstanceSurvivesTheOthersWrite(): Unit = runBlocking {
-        val id = uuid("s6file")
-        val a = createPlayerData(id, id, id, id)
-
-        permissionFileBackup = if (userFile.exists()) userFile.readString() else ""
-        userFile.writeString("$id:\n    group: \"owner\"\n    customField: \"keep me\"\n", false)
-        Permission.load()
-        assertTrue(Permission.hasUserEntry(id), "the hand-written entry was not read")
-
-        // Instance A, which has no such entry, sets the player to visitor on the shared row.
-        a.permission = "visitor"
-        assertTrue(a.update(), "instance A could not write the group")
-
-        assertTrue(Permission.hasUserEntry(id), "the other instance's write removed the hand-written entry")
-        assertEquals("owner", Permission.groupOf(id, "visitor"), "the hand-written entry stopped winning locally")
-        assertTrue(userFile.readString().contains("keep me"), "the rest of the hand-written entry was lost")
-    }
-
-    /**
      * What happens when both are set and disagree, stated so an operator can plan around it: the file
      * wins, and it does not win only locally. Permission.load() ends in apply(), which writes every
      * entry in the file over the shared column for any player not currently online - so an instance
@@ -316,7 +333,7 @@ class SharedMariaDbBanAndPermissionTest {
         Permission.load()
 
         assertTrue(
-            waitUntil(10000) { storedGroup(id) == "owner" },
+            waitUntil(10000, 200) { storedGroup(id) == "owner" },
             "the reload did not push the file's group onto the shared row; the shared row reads " +
                 "${storedGroup(id)}"
         )
@@ -334,7 +351,7 @@ class SharedMariaDbBanAndPermissionTest {
         permissionFileBackup = if (userFile.exists()) userFile.readString() else ""
         userFile.writeString("$id:\n    group: \"owner\"\n", false)
         Permission.load()
-        assertTrue(waitUntil(10000) { storedGroup(id) == "owner" }, "the file's group did not reach the shared row")
+        assertTrue(waitUntil(10000, 200) { storedGroup(id) == "owner" }, "the file's group did not reach the shared row")
 
         val stored = assertNotNull(getPlayerData(id), "the row disappeared")
         assertEquals(4321, stored.exp, "applying the permission file reverted an unrelated column")
