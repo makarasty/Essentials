@@ -358,6 +358,9 @@ fun gameover(event: GameOverEvent) {
             if (Achievement.LeaveAndLosePvP.success(data)) {
                 Achievement.LeaveAndLosePvP.set(data)
             }
+            // Nothing else will save this player: their row was written when they left, before this
+            // counter moved, and the map entry below is the last reference to the object.
+            scope.launch { data.update() }
         }
     }
     pvpLeavers.clear()

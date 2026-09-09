@@ -4,6 +4,9 @@ import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.pumpApp
+import PluginTest.Companion.waitUntil
+import essential.common.database.data.getPlayerData
+import kotlinx.coroutines.runBlocking
 import essential.core.service.achievements.gameover as achievementGameover
 import essential.core.service.achievements.playerJoin as achievementPlayerJoin
 import mindustry.Vars
@@ -14,6 +17,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class AchievementLeaveTest {
     companion object {
@@ -57,6 +61,16 @@ class AchievementLeaveTest {
                 "1",
                 data.status["record.pvp.leave.lose"],
                 "A player who never came back must not be credited again by later games."
+            )
+
+            // The counter has to reach the row: the player left before it moved, so nothing else
+            // will ever write it, and a counter that only lives in memory can never reach 10.
+            assertTrue(
+                waitUntil(10000) {
+                    runBlocking { getPlayerData(player.uuid()) }
+                        ?.status?.get("record.pvp.leave.lose") == "1"
+                },
+                "The increment must be written to the players row."
             )
         } finally {
             Vars.state.rules.pvp = wasPvp
