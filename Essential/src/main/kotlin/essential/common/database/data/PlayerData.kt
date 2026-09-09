@@ -145,8 +145,9 @@ data class PlayerData(
     var viewHistoryMode = false
     var mouseTracking = false
 
-    // Used by voting
-    val entityId = playerNumber
+    // Used by voting. Assigned atomically at construction time so two players constructed close
+    // together (the join coroutine can run concurrently for both) never collide on the same id.
+    val entityId = playerNumber.getAndIncrement()
 
     // Statistics
     var currentUnitDestroyedCount = 0

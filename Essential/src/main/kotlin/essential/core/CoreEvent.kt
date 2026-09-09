@@ -18,7 +18,6 @@ import essential.common.database.table.PlayerTable
 import essential.common.event.CustomEvents
 import essential.common.log.LogType
 import essential.common.log.writeLog
-import essential.common.command.CommandRegistry
 import essential.common.permission.Permission
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
@@ -26,8 +25,12 @@ import essential.core.Commands.WorldEditSelection
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -44,6 +47,7 @@ import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.Playerc
+import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.Administration
 import mindustry.net.Packets
@@ -53,7 +57,6 @@ import mindustry.world.blocks.ConstructBlock
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
-import java.io.FileNotFoundException
 import java.io.IOException
 import java.math.BigInteger
 import java.nio.file.Files
@@ -204,22 +207,38 @@ fun config(event: ConfigEvent) {
     }
 }
 
+// Accepted: no engine-side rate limit exists on tap RPCs at all (checked mindustry.core.NetServer
+// and mindustry.net.Administration - neither has one), so a client can drive this handler at
+// whatever rate it can push packets, unthrottled, and every call reaches the world-history buffer
+// and the tap log before anything else in this function looks at who is tapping. Cap the logging
+// side per uuid rather than building real interaction throttling; upgrade if another action needs it.
+private val lastLoggedTap = HashMap<String, Long>()
+private const val TAP_LOG_INTERVAL_MS = 100L
+
 @Event
 fun tap(event: TapEvent) {
-    writeLog(LogType.Tap) { Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)] }
-    addLog(
-        TileLog(
-            System.currentTimeMillis(),
-            event.player.name,
-            "tap",
-            event.tile.x,
-            event.tile.y,
-            checkValidBlock(event.tile),
-            if (event.tile.build != null) event.tile.build.rotation else 0,
-            if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-            null
+    val uuid = event.player.uuid()
+    val now = System.currentTimeMillis()
+    val lastLogged = lastLoggedTap[uuid]
+    val shouldLog = lastLogged == null || now - lastLogged >= TAP_LOG_INTERVAL_MS
+    if (shouldLog) {
+        lastLoggedTap[uuid] = now
+        writeLog(LogType.Tap) { Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)] }
+        addLog(
+            TileLog(
+                System.currentTimeMillis(),
+                event.player.name,
+                "tap",
+                event.tile.x,
+                event.tile.y,
+                checkValidBlock(event.tile),
+                if (event.tile.build != null) event.tile.build.rotation else 0,
+                if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
+                null
+            )
         )
-    )
+    }
+
     val data = findPlayerData(event.player.uuid())
     if (data != null) {
         if (data.status.containsKey("chars_text")) {
@@ -347,7 +366,7 @@ fun tap(event: TapEvent) {
                 val str = StringBuilder()
                 val bundle = data.bundle
                 val coreBundle =
-                    Bundle(ResourceBundle.getBundle("bundles/mindustry/bundle", Locale.forLanguageTag(data.player.locale().replace("_", "-"))))
+                    Bundle(Bundle.resolve("bundles/mindustry/bundle", Locale.forLanguageTag(data.player.locale().replace("_", "-"))))
 
                 str.append(bundle["event.log.position", event.tile.x, event.tile.y]).append("\n")
 
@@ -435,7 +454,7 @@ fun tap(event: TapEvent) {
                 }
                 pluginData.data.warpZone.add(
                     WarpZone(
-                        Vars.state.map.plainName(),
+                        Vars.state.map.name(),
                         Vars.world.tile(x, y).pos(),
                         event.tile.pos(),
                         touch,
@@ -510,16 +529,6 @@ fun wave(event: WaveEvent) {
 
 @Event
 fun serverLoad(event: ServerLoadEvent) {
-    // Sub-nodes that no command carries: they are asked for directly in the code.
-    val known = hashSetOf(
-        "admin", "afk.admin", "chat.admin", "hub.build", "info.other", "kick.admin",
-        "kill.other", "nextmap.admin", "pm.other", "pvp.spector", "team.other",
-        "vote.admin", "vote.back", "vote.draw", "vote.gg", "vote.kick", "vote.pass",
-        "vote.map", "vote.random", "vote.random.bypass", "vote.reset", "vote.skip",
-    )
-    Vars.netServer.clientCommands.commandList.each { known.add(CommandRegistry.canonical(it.text)) }
-    Permission.validate(known)
-
     if (conf.command.layoutFix) KeyboardLayout.install()
     ServerDescription.start()
     TempBan.start()
@@ -571,33 +580,58 @@ fun serverLoad(event: ServerLoadEvent) {
         }
     })
 
-    if (!conf.module.protect) {
-        Events.on(PlayerJoin::class.java, Cons<PlayerJoin> {
-            // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
+    syncProtectFallbackJoinListener()
+}
 
-            val player = it.player
-            val name = player.name
-            val locale = player.locale()
-            val con = player.con
+private var protectFallbackJoinListener: Cons<PlayerJoin>? = null
 
-            scope.launch {
-                val result = loadJoinedPlayerData(player, name)
+/**
+ * Registers or unregisters essential.core's own player-join handler, which is only meant to run
+ * while the protect module is off. This used to be registered once at serverLoad and never
+ * revisited, so toggling `module.protect` in config.yaml did nothing until a restart: the fallback
+ * kept running after protect was enabled, or stayed missing after protect was disabled. Called from
+ * serverLoad and again from every config reload so the running state always matches the config.
+ */
+fun syncProtectFallbackJoinListener() {
+    val shouldRun = !conf.module.protect
+    val current = protectFallbackJoinListener
+    if (shouldRun == (current != null)) return
 
-                when {
-                    result.duplicateName -> Core.app.post {
-                        Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
-                    }
-
-                    result.data != null -> {
-                        result.data.player = player
-                        firePlayerDataLoad(result.data)
-                    }
-
-                    else -> useTemporaryPlayerData(player, name)
-                }
-            }
-        }.also { listener -> eventListeners[PlayerJoin::class.java] = listener })
+    if (current != null) {
+        Events.remove(PlayerJoin::class.java, current)
+        protectFallbackJoinListener = null
+        eventListeners.remove(PlayerJoin::class.java)
+        return
     }
+
+    val listener = Cons<PlayerJoin> {
+        // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
+
+        val player = it.player
+        val name = player.name
+        val locale = player.locale()
+        val con = player.con
+
+        scope.launch {
+            val result = loadJoinedPlayerData(player, name)
+
+            when {
+                result.duplicateName -> Core.app.post {
+                    Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
+                }
+
+                result.data != null -> {
+                    result.data.player = player
+                    firePlayerDataLoad(result.data)
+                }
+
+                else -> useTemporaryPlayerData(player, name)
+            }
+        }
+    }
+    Events.on(PlayerJoin::class.java, listener)
+    protectFallbackJoinListener = listener
+    eventListeners[PlayerJoin::class.java] = listener
 }
 
 class JoinedPlayerData(val data: PlayerData?, val duplicateName: Boolean)
@@ -612,8 +646,15 @@ suspend fun readJoinedPlayerData(player: Playerc, name: String): JoinedPlayerDat
     if (nameExists) return JoinedPlayerData(null, true)
 
     val newData = createPlayerData(player)
-    newData.permission = "user"
-    newData.update()
+    // createPlayerData's insert already committed with PlayerTable.permission's column default
+    // ("default", not "user"), and this call runs inside the caller's withTimeoutOrNull - if the
+    // deadline lands between that insert and this fix-up, the row is left behind with the wrong
+    // permission forever, because nothing else ever revisits a row that already exists. NonCancellable
+    // makes the fix-up durable even when the timeout has already fired around it.
+    withContext(NonCancellable) {
+        newData.permission = "user"
+        newData.update()
+    }
     return JoinedPlayerData(newData, false)
 }
 
@@ -752,6 +793,67 @@ private fun soleSurvivingTeam(): Team? {
     return if (alive.size == 1) alive[0].team else null
 }
 
+private class MapRateSession(
+    val data: PlayerData,
+    val mapName: String,
+    val currentMap: Map,
+    val roundId: Int,
+    var difficulty: Int = 0,
+)
+
+/** One rating flow per uuid at a time; a later game over overwrites rather than accumulates. */
+private val mapRateSessions = ConcurrentHashMap<String, MapRateSession>()
+
+private val mapRateDifficultyMenu: Int by lazy {
+    Menus.registerMenu { player, select ->
+        val session = mapRateSessions[player.uuid()] ?: return@registerMenu
+        if (gameOverCount != session.roundId) {
+            mapRateSessions.remove(player.uuid())
+            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
+            return@registerMenu
+        }
+        if (mapRatings.containsKey(session.data.uuid)) {
+            mapRateSessions.remove(player.uuid())
+            return@registerMenu
+        }
+        if (select !in 0..4) return@registerMenu
+
+        session.difficulty = select + 1
+        Call.menu(
+            session.data.player.con(),
+            mapRateRatingMenu,
+            Bundle(session.data.player.locale())["command.map.rate.rating.title"],
+            Bundle(session.data.player.locale())["command.map.rate.rating.text", session.mapName],
+            arrayOf(
+                arrayOf("1", "2", "3", "4", "5"),
+                arrayOf(Bundle(session.data.player.locale())["command.map.rate.cancel"])
+            )
+        )
+    }
+}
+
+private val mapRateRatingMenu: Int by lazy {
+    Menus.registerMenu { player, select ->
+        val session = mapRateSessions.remove(player.uuid()) ?: return@registerMenu
+        if (gameOverCount != session.roundId) {
+            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
+            return@registerMenu
+        }
+        if (mapRatings.containsKey(session.data.uuid)) return@registerMenu
+        if (select !in 0..4) return@registerMenu
+
+        val rating = select + 1
+        val mapHash = calculateMapMD5Hash(session.currentMap)
+        mapRatings[session.data.uuid] = true
+        scope.launch {
+            updateOrCreateMapRating(session.mapName, mapHash, session.data.uuid, session.difficulty, rating)
+            Core.app.post {
+                session.data.send("command.map.rate.success", session.mapName, session.difficulty, rating)
+            }
+        }
+    }
+}
+
 @Event
 fun gameOver(event: GameOverEvent) {
     MatchClock.reset()
@@ -790,57 +892,15 @@ fun gameOver(event: GameOverEvent) {
                     if (rated.contains(data.uuid) || mapRatings.containsKey(data.uuid)) return@post
                     val con = Groups.player.find { p -> p.uuid() == data.uuid }?.con() ?: return@post
 
-                    val difficultyMenu = Menus.registerMenu { player, select ->
-                        // The rating is recorded under data.uuid, so anyone else answering this menu
-                        // rates the map in their name and locks them out of rating it themselves.
-                        if (player.uuid() != data.uuid) return@registerMenu
-                        if (gameOverCount != currentCount) {
-                            player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
-                            return@registerMenu
-                        }
-
-                        if (mapRatings.containsKey(data.uuid)) return@registerMenu
-
-                        if (select in 0..4) {
-                            val difficulty = select + 1
-                            val ratingMenu = Menus.registerMenu { player2, select2 ->
-                                if (player2.uuid() != data.uuid) return@registerMenu
-                                if (gameOverCount != currentCount) {
-                                    player2.sendMessage(Bundle(player2.locale())["command.map.rate.timeout"])
-                                    return@registerMenu
-                                }
-
-                                if (mapRatings.containsKey(data.uuid)) return@registerMenu
-
-                                if (select2 in 0..4) {
-                                    val rating = select2 + 1
-                                    val mapHash = calculateMapMD5Hash(currentMap)
-                                    mapRatings[data.uuid] = true
-                                    scope.launch {
-                                        updateOrCreateMapRating(mapName, mapHash, data.uuid, difficulty, rating)
-                                        Core.app.post {
-                                            data.send("command.map.rate.success", mapName, difficulty, rating)
-                                        }
-                                    }
-                                }
-                            }
-
-                            Call.menu(
-                                data.player.con(),
-                                ratingMenu,
-                                Bundle(data.player.locale())["command.map.rate.rating.title"],
-                                Bundle(data.player.locale())["command.map.rate.rating.text", mapName],
-                                arrayOf(
-                                    arrayOf("1", "2", "3", "4", "5"),
-                                    arrayOf(Bundle(data.player.locale())["command.map.rate.cancel"])
-                                )
-                            )
-                        }
-                    }
+                    // A per-round Menus.registerMenu here used to register a new, permanent listener
+                    // every time an unrated player saw a game over - the engine has no unregister, so
+                    // the list only grew. mapRateDifficultyMenu/mapRateRatingMenu are registered once;
+                    // the session map is what carries this round's state, and it is bounded by uuid.
+                    mapRateSessions[data.uuid] = MapRateSession(data, mapName, currentMap, currentCount)
 
                     Call.menu(
                         con,
-                        difficultyMenu,
+                        mapRateDifficultyMenu,
                         Bundle(data.player.locale())["command.map.rate.difficulty.title"],
                         Bundle(data.player.locale())["command.map.rate.difficulty.text", mapName],
                         arrayOf(
@@ -872,6 +932,16 @@ fun gameOver(event: GameOverEvent) {
         }
         for (data in offlinePlayers) {
             earnEXP(event.winner, data.player, data, false)
+        }
+        // An online player's exp mutation above rides along on whatever next persists that PlayerData -
+        // their own eventual leave, if nothing sooner. A player already offline has no such next write:
+        // this object is dropped for good below, so the EXP earnEXP just computed for them has to be
+        // persisted here or it never reaches the database at all.
+        if (offlinePlayers.isNotEmpty()) {
+            val toPersist = offlinePlayers.toList()
+            scope.launch {
+                for (data in toPersist) data.update()
+            }
         }
     }
     offlinePlayers.clear()
@@ -980,28 +1050,32 @@ fun buildSelect(event: BuildSelectEvent) {
     }
 }
 
-@Event
-fun blockDestroy(event: BlockDestroyEvent) {
-    if (Vars.state.rules.attackMode) {
-        for (a in players) {
-            if (event.tile.team() != Vars.state.rules.defaultTeam) {
-                a.currentBuildAttackCount++
-            } else {
-                a.currentBuildDestroyedCount++
-            }
-        }
-    }
-}
+// blockDestroy(BlockDestroyEvent) used to credit every connected player's
+// currentBuildAttackCount/currentBuildDestroyedCount in attack mode, with no attribution at all -
+// BlockDestroyEvent carries no owner. Removed: task-083's attribution now runs entirely off
+// buildingBulletDestroy below, which has a Bullet and can name one.
 
+// unitDestroy(UnitDestroyEvent) used to credit every connected player not on the victim's team,
+// the same way, off an event that also carries no owner. Removed for the same reason: task-092's
+// attribution now runs entirely off unitBulletDestroy below.
+
+/**
+ * task-092's attribution. unitDestroy used to credit currentUnitDestroyedCount to every connected
+ * player not on the victim's team, with no attribution at all - a player who never fired a shot
+ * earned the same credit as whoever actually got the kill, and that feeds earnEXP's erekirAttack
+ * term. Per the attribution rule this file and AchievementEvents.kt share: credit only replaces
+ * broadcast where a Bullet actually names an owner, and where none exists - fire, poison, a
+ * self-destruct with no weapon - credit nobody rather than everybody. Also collapses the old
+ * O(players)-per-kill loop into a single lookup.
+ */
 @Event
-fun unitDestroy(event: UnitDestroyEvent) {
-    if (!Vars.state.rules.pvp) {
-        for (a in players) {
-            if (event.unit.team() != a.player.team()) {
-                a.currentUnitDestroyedCount++
-            }
-        }
-    }
+fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
+    if (Vars.state.rules.pvp) return
+    val owner = event.bullet.owner as? Unit ?: return
+    val player = owner.player ?: return
+    if (event.unit.team() == player.team()) return
+    val data = findPlayerData(player.uuid()) ?: return
+    data.currentUnitDestroyedCount++
 }
 
 @Event
@@ -1072,6 +1146,7 @@ fun playerLeave(event: PlayerLeave) {
         }
         players.removeIf { it.uuid == data.uuid }
         worldEditSelection.remove(data.uuid)
+        mapRateSessions.remove(data.uuid)
     }
 }
 
@@ -1224,6 +1299,11 @@ fun worldLoad(event: WorldLoadEvent) {
     for (data in players) {
         data.currentPlayTime = 0
         data.viewHistoryMode = false
+        // earnEXP reads these into the score every game over; a player connected across several
+        // maps otherwise carries one map's kills and destruction into the next map's EXP calculation.
+        data.currentUnitDestroyedCount = 0
+        data.currentBuildDestroyedCount = 0
+        data.currentBuildAttackCount = 0
     }
 }
 
@@ -1268,7 +1348,10 @@ fun connectPacket(event: ConnectPacketEvent) {
                     consumeRoutingPermission(event.packet.uuid, targetServerName, targetPort)
 
                 if (!hasRoutingPermission) {
-                    event.connection.kick("Direct connection denied - must route through hub server", 0L)
+                    // This closure runs on Dispatchers.IO, unlike a Timer.Task body - a real other
+                    // thread, so the kick has to reach the connection the way its siblings in
+                    // playerConnect do: posted to the game thread rather than called from here.
+                    Core.app.post { event.connection.kick("Direct connection denied - must route through hub server", 0L) }
                     writeLog(
                         LogType.Player,
                         Bundle()["event.player.kick", event.packet.name, event.packet.uuid, event.connection.address, "Direct connection denied - must route through hub"]
@@ -1285,29 +1368,52 @@ fun connectPacket(event: ConnectPacketEvent) {
     }
 }
 
+/**
+ * Runs the async ban check for [player]. Returns false when the check itself failed to complete
+ * (a database round trip that threw), which is a different outcome from completing and finding
+ * the player clean - the caller retries on false, admission on a genuinely failed check is not
+ * given up on after one shared-MySQL hiccup.
+ */
+private suspend fun checkBanState(player: Player): Boolean {
+    return try {
+        if (conf.ban.useDatabase && checkPlayerBannedByIpOrUuid(player.uuid(), player.ip())) {
+            Core.app.post { player.kick(Packets.KickReason.banned) }
+            return true
+        }
+
+        val playerData = getPlayerDataSync(player.uuid())
+        val banExpireDate = playerData?.banExpireDate
+        if (banExpireDate != null) {
+            // A past expiry already means the ban is over; don't clear it here. The server that
+            // issued the ban still needs to see this timestamp in its own sweep to lift the local ban.
+            if (banExpireDate > Clock.System.now().toLocalDateTime(systemTimezone)) {
+                val reason = Bundle(player.locale())["command.tempBan.banned", playerData.name, "Admin", banExpireDate.toString()]
+                Core.app.post { player.con.kick(reason) }
+            }
+        }
+        true
+    } catch (e: Exception) {
+        Log.err("Failed to check the ban state of ${player.plainName()} (${player.uuid()})", e)
+        false
+    }
+}
+
 @Event
 fun playerConnect(event: PlayerConnect) {
     val player = event.player
 
     scope.launch {
-        try {
-            if (conf.ban.useDatabase && checkPlayerBannedByIpOrUuid(player.uuid(), player.ip())) {
-                Core.app.post { player.kick(Packets.KickReason.banned) }
-                return@launch
+        // answers/7-1.md accepted the window where a check that completes late admits a player who
+        // turns out to be banned - do not block the game thread on it, do not build a local mirror.
+        // A check that never completes at all is a different defect: left as it was, one exception
+        // means this player is never checked again for the rest of their session. One retry closes
+        // that without touching the accepted window; a warn only fires when both attempts fail, so
+        // this stays silent on a healthy server.
+        if (!checkBanState(player)) {
+            delay(5.seconds)
+            if (isPlayerOnline(player) && !checkBanState(player)) {
+                Log.warn("Could not verify the ban state of ${player.plainName()} (${player.uuid()}) after two attempts; the join was admitted unverified.")
             }
-
-            val playerData = getPlayerDataSync(player.uuid())
-            val banExpireDate = playerData?.banExpireDate
-            if (banExpireDate != null) {
-                // A past expiry already means the ban is over; don't clear it here. The server that
-                // issued the ban still needs to see this timestamp in its own sweep to lift the local ban.
-                if (banExpireDate > Clock.System.now().toLocalDateTime(systemTimezone)) {
-                    val reason = Bundle(player.locale())["command.tempBan.banned", playerData.name, "Admin", banExpireDate.toString()]
-                    Core.app.post { player.con.kick(reason) }
-                }
-            }
-        } catch (e: Exception) {
-            Log.err("Failed to check the ban state of ${player.plainName()} (${player.uuid()})", e)
         }
     }
 
@@ -1341,6 +1447,23 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
             soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
         }
     }
+
+    // task-083's CoreEvent.kt half, on the attribution rule AchievementEvents.kt shares:
+    // credit only replaces broadcast where a Bullet actually names an owner, and where
+    // none exists - fire, poison, a self-destruct with no weapon - credit nobody rather than
+    // everybody. This also collapses the old O(players)-per-destruction loop into a single lookup.
+    if (Vars.state.rules.attackMode) {
+        val owner = event.bullet.owner as? Unit
+        val player = owner?.player
+        val data = player?.let { findPlayerData(it.uuid()) }
+        if (data != null) {
+            if (event.build.team != Vars.state.rules.defaultTeam) {
+                data.currentBuildAttackCount++
+            } else {
+                data.currentBuildDestroyedCount++
+            }
+        }
+    }
 }
 
 @Event
@@ -1348,18 +1471,24 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
     if (event.kind == StandardWatchEventKinds.ENTRY_MODIFY) {
         when (event.paths) {
             "config.yaml" -> {
-                try {
-                    val newConf = Config.load("config", CoreConfig.serializer(), CoreConfig())
-                    if (newConf != null) {
-                        conf = newConf
-                        // The description timer is built from the config; rebuild it with the new one.
-                        // Config events already arrive on the game thread, so this only defers start()
-                        // to the next frame rather than rendering inside the reload.
-                        Core.app.post { ServerDescription.start() }
-                    }
+                // Config.load already catches IOException/SerializationException itself and logs the
+                // specific failure at err level, then returns null - there is nothing left here that
+                // throws. A failed reload used to still print "reloaded" unconditionally below.
+                val newConf = Config.load("config", CoreConfig.serializer(), CoreConfig())
+                if (newConf != null) {
+                    conf = newConf
+                    // Toggling a module or a listener needs the services that read conf re-synced
+                    // explicitly - swapping the reference alone leaves every already-registered
+                    // listener and timer running against whichever conf it captured at registration.
+                    syncProtectFallbackJoinListener()
+                    // TODO(task-171 family): Main.syncClientCommands(Vars.netServer.clientCommands)
+                    // belongs here too, once it is on main - it is on another branch, not yet
+                    // merged, and Unresolved reference confirms it from this worktree. ask/10-4.md.
+                    // The description timer is built from the config; rebuild it with the new one.
+                    // Config events already arrive on the game thread, so this only defers start()
+                    // to the next frame rather than rendering inside the reload.
+                    Core.app.post { ServerDescription.start(); ModuleRuntime.reloadEnabledConfigurations() }
                     Log.info(Bundle()["config.reloaded"])
-                } catch (_: FileNotFoundException) {
-                    Log.debug(Bundle()["config.file.missing"])
                 }
             }
         }
@@ -1435,10 +1564,13 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
 
     playerData.isConnected = true
     players.removeIf { it.uuid == playerData.uuid }
+    // A rejoin leaves the leave-time snapshot parked in offlinePlayers (added at playerLeave) with
+    // nothing ever removing it, so an old entry for this uuid would sit there as a stale duplicate for
+    // the rest of the map and gameOver would earn this player's EXP twice.
+    offlinePlayers.removeIf { it.uuid == playerData.uuid }
     // Final guard: do not add if player already disconnected
     if (playerData.player.con() == null || playerData.player.con().hasDisconnected) return
     players.add(playerData)
-    playerNumber++
 
 
     // If the current mode is PvP
@@ -1511,6 +1643,52 @@ fun selectAutoTeam(playerData: PlayerData, targetPlayers: List<PlayerData> = pla
     return bestTeam
 }
 
+@Serializable
+private data class ExpRecord(
+    val name: String,
+    val uuid: String,
+    val date: String,
+    val erekirAttack: Int,
+    val erekirPvP: Int,
+    val time: Int,
+    val enemyBuildingDestroyed: Int,
+    val buildingsDestroyed: Int,
+    val wave: Int,
+    val multiplier: Double,
+    val score: Int,
+    val totalScore: Double
+)
+
+private val expJson = Json {
+    prettyPrint = true
+    ignoreUnknownKeys = true
+    isLenient = true
+}
+
+// Guards the read-modify-write below: earnEXP now fires one of these per player from a tight
+// gameOver loop, and without serialising them two concurrent writes would each read the file
+// before the other's record landed and the loser's record would be overwritten, not merged.
+private val expJsonMutex = Mutex()
+
+private suspend fun recordExpJson(record: ExpRecord) = expJsonMutex.withLock {
+    val file = rootPath.child("data/exp.json")
+    if (!file.exists()) file.writeString("[]")
+
+    val jsonString = file.readString("UTF-8")
+    val existingRecords = if (jsonString.isBlank() || jsonString == "[]") {
+        listOf()
+    } else {
+        try {
+            expJson.decodeFromString<List<ExpRecord>>(jsonString)
+        } catch (e: Exception) {
+            Log.err("Error parsing exp.json, creating new file", e)
+            listOf()
+        }
+    }
+
+    file.writeString(expJson.encodeToString(existingRecords + record))
+}
+
 fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) {
     val oldLevel = target.level
     var result: Int = target.currentExp
@@ -1546,47 +1724,10 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
         Commands.Exp[target]
         target.currentExp = 0
 
-        if (!rootPath.child("data/exp.json").exists()) {
-            rootPath.child("data/exp.json").writeString("[]")
-        }
-
-        @Serializable
-        data class ExpRecord(
-            val name: String,
-            val uuid: String,
-            val date: String,
-            val erekirAttack: Int,
-            val erekirPvP: Int,
-            val time: Int,
-            val enemyBuildingDestroyed: Int,
-            val buildingsDestroyed: Int,
-            val wave: Int,
-            val multiplier: Double,
-            val score: Int,
-            val totalScore: Double
-        )
-
-        // Read existing JSON array
-        val json = Json {
-            prettyPrint = true
-            ignoreUnknownKeys = true
-            isLenient = true
-        }
-
-        val jsonString = rootPath.child("data/exp.json").readString("UTF-8")
-        val existingRecords = if (jsonString.isBlank() || jsonString == "[]") {
-            listOf()
-        } else {
-            try {
-                json.decodeFromString<List<ExpRecord>>(jsonString)
-            } catch (e: Exception) {
-                Log.err("Error parsing exp.json, creating new file", e)
-                listOf()
-            }
-        }
-
-        // Create new record
-        val newRecord = ExpRecord(
+        // Everything this record needs is read from target/Vars now, on the game thread, and carried
+        // as plain values into the coroutine - the counters below are reset by worldLoad on the next
+        // map, and by the time an off-thread write got around to reading them they might already be.
+        val record = ExpRecord(
             name = target.name,
             uuid = target.uuid,
             date = currentTime(),
@@ -1600,10 +1741,7 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
             score = score,
             totalScore = score * target.expMultiplier
         )
-
-        // Add new record to list and write back to file
-        val updatedRecords = existingRecords + newRecord
-        rootPath.child("data/exp.json").writeString(json.encodeToString(updatedRecords))
+        scope.launch { recordExpJson(record) }
     }
 
     if (isConnected && conf.feature.level.levelNotify) target.send(
