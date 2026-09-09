@@ -2998,7 +2998,7 @@ class Commands {
         val maxY = maxOf(selection.startY, selection.endY)
         for (x in minX..maxX) {
             for (y in minY..maxY) {
-                Tile.setTile(Vars.world.tile(x, y), Blocks.air, playerData.player.team(), 0)
+                Call.setTile(Vars.world.tile(x, y), Blocks.air, playerData.player.team(), 0)
             }
         }
     }
