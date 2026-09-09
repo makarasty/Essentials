@@ -131,27 +131,62 @@ object PlayerLookup {
         text.toIntOrNull()?.let { id -> players.find { it.entityId == id }?.let { return Result.Found(it) } }
         players.find { it.uuid == text }?.let { return Result.Found(it) }
 
-        val (rows, truncated) = offlineRows(text)
+        val (rows, truncated, capped) = offlineRows(text)
         rows.find { it.uuid == text }?.let { return Result.Found(it) }
 
         val online = players.toList()
         val union = online + rows.filterNot { row -> online.any { it.uuid == row.uuid } }
-        return pick(union, text, ::nameOf, ::labelOf, exactOnly, truncated) { !isOnline(it) }
+        val result = pick(union, text, ::nameOf, ::labelOf, exactOnly, truncated) { !isOnline(it) }
+
+        // The query matched more accounts than it was allowed to read, so the row it happens to hold
+        // cannot be named as the match: callers act on Found directly and one of them bans it. Only the
+        // query's own cap counts. The whole-table scan is capped on every table over SCAN_LIMIT rows
+        // whatever the query was, and a match it recovers is as good as an uncapped one.
+        if (capped && result is Result.Found && !isOnline(result.value)) {
+            val hit = result.value
+            // The full uuid rather than labelOf's eight characters: the message tells them to use it.
+            return Result.Ambiguous(
+                listOf("${Strings.stripColors(hit.name)} (${hit.uuid})"),
+                spacedNames = nameOf(hit).contains(' '),
+                offline = true,
+                truncated = true
+            )
+        }
+        return result
     }
 
-    private suspend fun offlineRows(text: String): Pair<List<PlayerData>, Boolean> {
+    /**
+     * @property truncated part of the table went unread, which is what the user is told.
+     * @property capped this query's own result set hit [SCAN_LIMIT], so accounts matching it were left
+     *   behind. The scan below is capped on any table larger than [SCAN_LIMIT] whatever the query was,
+     *   so it never sets this.
+     */
+    private data class Rows(val rows: List<PlayerData>, val truncated: Boolean, val capped: Boolean)
+
+    private suspend fun offlineRows(text: String): Rows {
         val pattern = text.lowercase().escapeLike()
         val matched = suspendTransaction {
             PlayerTable.selectAll().where {
                 (PlayerTable.uuid eq text) or (PlayerTable.name.lowerCase() like LikePattern("%$pattern%", '\\'))
-            }.mapToPlayerDataList()
+            }.limit(SCAN_LIMIT).mapToPlayerDataList()
         }
-        if (matched.isNotEmpty()) return matched to false
+        // A leading-wildcard LIKE cannot use an index, so a one-character query matched most of a
+        // shared table and shipped every row back. Same cap as the scan below.
+        if (matched.isNotEmpty()) {
+            val capped = matched.size >= SCAN_LIMIT
+            return Rows(matched, capped, capped)
+        }
 
         val scanned = suspendTransaction {
             PlayerTable.selectAll().limit(SCAN_LIMIT).mapToPlayerDataList()
         }
-        return scanned.filter { Strings.stripColors(it.name).contains(text, true) } to (scanned.size >= SCAN_LIMIT)
+        // The raw name can hide the query behind colour codes, so this pass strips them before matching.
+        // Its cap is on the table rather than on the match, which is why it does not set capped.
+        return Rows(
+            scanned.filter { Strings.stripColors(it.name).contains(text, true) },
+            scanned.size >= SCAN_LIMIT,
+            false
+        )
     }
 
     fun online(query: String, playerData: PlayerData): Playerc? = report(findOnline(query), query, playerData, NOT_FOUND)
