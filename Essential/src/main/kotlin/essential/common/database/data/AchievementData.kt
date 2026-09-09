@@ -71,9 +71,18 @@ suspend fun setAchievement(playerData: PlayerData, achievementName: String) {
 
     // Told apart by re-reading the table rather than by the exception's text, because the code that
     // says "duplicate key" differs per engine and a refusal for any other reason has to stay an error.
-    if (refused != null && !hasAchievement(playerData, achievementName)) {
-        Log.err("Could not record achievement $achievementName for ${playerData.uuid}", refused)
-        return
+    //
+    // The report is on the far side of that read, not before it. `refused` is any exception this
+    // transaction threw - a dropped connection, a lock wait, a deadlock - so a line printed ahead of
+    // the read would print on a genuine failure too, one info ahead of the err, on exactly the incident
+    // an operator is chasing. Past the read the two are already separated: the row is there, so
+    // something else put it there, which is the concurrent award this function exists to tolerate.
+    if (refused != null) {
+        if (!hasAchievement(playerData, achievementName)) {
+            Log.err("Could not record achievement $achievementName for ${playerData.uuid}", refused)
+            return
+        }
+        Log.info("Achievement insert refused for ${playerData.uuid}/$achievementName, row is already there: ${refused.message}")
     }
 
     // Add to player's achievement status list

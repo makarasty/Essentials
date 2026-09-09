@@ -429,8 +429,24 @@ class PluginTest {
             }
             databaseClose()
 
-            val dataDir = rootPath.child("data").file().toPath()
-            if (Files.exists(dataDir)) {
+            // Two directories, because in this suite they are two. Database.kt opens H2 at a literal
+            // ./config/mods/Essentials/data/, while rootPath is Core.settings.dataDirectory +
+            // mods/Essentials - the same directory on a real server, whose data directory is config/,
+            // and a different one here, where loadGame sets the data directory to the working
+            // directory. Walking only rootPath meant this deleted nothing for the life of the suite:
+            // PluginTest.dbUpgradeTest_20 boots src/test/resources/database-v3.mv.db through the
+            // legacy scripts, which create no unique indexes, SchemaUtils.create skips tables that
+            // already exist and the boot declines every index repair by design - so every class after
+            // this one inherited a schema with no unique index on players.uuid, players.name or
+            // player_achievements (player_id, achievement_name).
+            //
+            // The literals in Database.kt are correct where they are and are not touched: where a live
+            // server opens its database is the operator's.
+            for (dataDir in listOf(
+                rootPath.child("data").file().toPath(),
+                Paths.get("config", "mods", "Essentials", "data")
+            )) {
+                if (!Files.exists(dataDir)) continue
                 try {
                     Files.walk(dataDir).use { stream ->
                         stream.filter { path ->
@@ -438,7 +454,21 @@ class PluginTest {
                             (name.startsWith("database") || name.startsWith("worldHistory")) &&
                             path != dataDir
                         }.sorted(Comparator.reverseOrder()).forEach { path ->
-                            path.toFile().delete()
+                            // Said out loud, because a delete that quietly did nothing is the defect
+                            // this loop was just repaired for: the next class boots on a database this
+                            // one meant to destroy, and the symptom surfaces as somebody else's
+                            // precondition failing three classes later. On Windows a file still held
+                            // open by a connection pool an earlier databaseInit replaced without
+                            // disposing is exactly how that happens.
+                            //
+                            // Windows-shaped, and knowingly so: a POSIX filesystem unlinks a file H2
+                            // still holds open, so there the delete succeeds, this stays quiet, and an
+                            // H2 kept alive by DB_CLOSE_DELAY=-1 goes on writing to an inode with no
+                            // name. That is a different hazard and not one this line can see. It has
+                            // never fired on this machine - zero across all 64 classes.
+                            if (!path.toFile().delete() && Files.exists(path)) {
+                                Log.warn("[test] stopPlugin could not delete $path; the next class will boot on it")
+                            }
                         }
                     }
                 } catch (_: Throwable) {

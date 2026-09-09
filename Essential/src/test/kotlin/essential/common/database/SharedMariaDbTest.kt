@@ -34,6 +34,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -375,6 +376,29 @@ class SharedMariaDbTest {
      */
     @Test
     fun aPlayerJoiningTwoInstancesAtOnceSaysSoAndKeepsOneRow(): Unit = runBlocking {
+        // The whole of the repair under test is the engine refusing the second insert. Earlier work
+        // measured that a schema the legacy scripts built carries none of the unique indexes the
+        // Kotlin tables declare - which is what the six live servers are running. So say which of the
+        // two worlds this run is in, from the engine's own catalogue, rather than passing or failing
+        // according to whatever shape `$database` happens to have been left in.
+        val uniqueOnUuid = open(database).use {
+            it.scalar(
+                // seq_in_index = 1 because a composite UNIQUE(name, uuid) would match on the column
+                // alone while enforcing nothing whatever about uuid by itself.
+                "SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = '$database' " +
+                    "AND table_name = 'players' AND column_name = 'uuid' AND non_unique = 0 " +
+                    "AND seq_in_index = 1"
+            )
+        }
+        // Not "exactly one": a schema that enforces uuid twice - a named index beside a primary key on
+        // the same column - enforces what this test needs and must not be called a failure.
+        assertNotEquals(
+            "0", uniqueOnUuid,
+            "players.uuid carries no unique index in `$database` on $host:$port, so nothing refuses a " +
+                "second insert and this test would prove nothing about what the loser of a race does. " +
+                "A schema built by resources/sql rather than by SchemaUtils looks exactly like this."
+        )
+
         val player = createPlayer()
         val id = player.uuid()
         try {

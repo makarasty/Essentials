@@ -25,7 +25,14 @@ class SharedRowWriteTest {
             // A fresh uuid per run, so a database left over from an earlier run cannot make this pass
             // vacuously with the ban and the count already in place. players.uuid is varchar(25).
             val uuid = "srw-" + System.nanoTime()
-            val serverA = getPlayerData(uuid) ?: createPlayerData("shared-row", uuid, "shared-row", "shared-row")
+            // The name carries the same nonce, and that is not tidying. players.name has a unique index
+            // of its own, so a fixed name here is a second row this insert can collide with. It could
+            // not collide while the suite ran on a legacy-shaped schema that had no unique index on
+            // name at all - which is why this went red exactly once, over a database.mv.db a
+            // half-dead run had left behind. stopPlugin() now really deletes that file, so the leftover
+            // row is gone; but the unique index is now really there, and a run that dies before any
+            // stopPlugin() still leaves the file. That is a newer failure than the one just removed.
+            val serverA = getPlayerData(uuid) ?: createPlayerData(uuid, uuid, uuid, uuid)
             assertNotNull(serverA)
 
             // Server B loads its own copy of the same row and bans the player.
