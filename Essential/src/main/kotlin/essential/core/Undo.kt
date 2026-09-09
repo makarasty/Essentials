@@ -190,9 +190,19 @@ object Undo {
 
     fun strict(uuid: String, strict: Boolean) = update(uuid) { it.strictMode = strict }
 
-    fun permission(uuid: String, group: String, hadUserEntry: Boolean) {
-        update(uuid) { it.permission = group }
-        if (hadUserEntry) Permission.setGroup(uuid, group) else Permission.removeUserEntry(uuid, group)
+    /**
+     * Put [group] back, in permission_user.yaml first and only then in the row.
+     *
+     * Both file writes refuse outright while permission_user.yaml does not parse, and the file wins
+     * over the row wherever a permission is decided, so writing the row first left the two stores
+     * disagreeing until somebody fixed the YAML - with the un-undone group the one still in effect.
+     * Returns whether the undo happened.
+     */
+    fun permission(uuid: String, group: String, hadUserEntry: Boolean): Boolean {
+        val restored =
+            if (hadUserEntry) Permission.setGroup(uuid, group) else Permission.removeUserEntry(uuid, group)
+        if (restored) update(uuid) { it.permission = group }
+        return restored
     }
 
     fun team(uuid: String, team: Team) {
