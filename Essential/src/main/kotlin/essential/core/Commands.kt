@@ -364,7 +364,7 @@ class Commands {
                         "add" -> data.exp += arg[1].toInt()
                         "remove" -> data.exp -= arg[1].toInt()
                     }
-                    playerData.update()
+                    data.update()
                     playerData.send("command.exp.result", previous, data.exp)
                 }
 
