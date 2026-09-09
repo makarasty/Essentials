@@ -12,6 +12,7 @@ import essential.common.database.data.consumeRoutingPermission
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.database.data.createTemporaryPlayerData
+import essential.common.database.data.getWorldHistoryByCoordinates
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.plugin.WarpBlock
@@ -1462,14 +1463,19 @@ class FeatureTest {
 
         worldLoad(WorldLoadEvent())
 
-        // This asserts the cache, which is what clearWorldHistory clears last and therefore only
-        // reaches if its TRUNCATE succeeded. It does not assert the table stays empty afterwards:
-        // WorldHistoryBuffer.clear() leaves the pending queue alone, so rows enqueued just before the
-        // map change are still inserted after the truncate. That gap is filed, and it is not in a file
-        // this chip owns.
+        // The cache is cleared last, so reaching this also proves the TRUNCATE ran.
         assertTrue(
             awaitPumped(10000L) { WorldHistoryBuffer.getLastBlock(x, y) == null },
             "A world load must clear the block history recorded on the map that was just replaced"
+        )
+
+        // The queue is the half that used to survive the clear: the row was still pending when the
+        // TRUNCATE ran, so the next flush wrote it into the table the world load had just emptied.
+        // This flush stands in for that tick, which makes the assertion below independent of timing.
+        runBlocking { WorldHistoryBuffer.flush() }
+        assertTrue(
+            runBlocking { getWorldHistoryByCoordinates(x, y) }.isEmpty(),
+            "A flush after a world load must not write back rows recorded on the map that was replaced"
         )
     }
 

@@ -51,8 +51,5 @@ suspend fun getWorldHistoryByCoordinates(x: Short, y: Short): List<WorldHistoryD
  * Clear all world history entries
  */
 suspend fun clearWorldHistory() {
-    suspendTransaction(db = worldHistoryDatabase) {
-        exec("TRUNCATE TABLE world_history")
-    }
-    WorldHistoryBuffer.clear()
+    WorldHistoryBuffer.discard()
 }
