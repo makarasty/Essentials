@@ -364,7 +364,7 @@ class Commands {
                         "add" -> data.exp += arg[1].toInt()
                         "remove" -> data.exp -= arg[1].toInt()
                     }
-                    playerData.update()
+                    data.update()
                     playerData.send("command.exp.result", previous, data.exp)
                 }
 
@@ -1674,7 +1674,7 @@ class Commands {
                         if (ip.isEmpty()) {
                             playerData.err("command.hub.address.invalid")
                         } else {
-                            pluginData.data.warpCount.add(WarpCount(name, Vars.world.tile(x, y).pos(), ip, port, 0, 1))
+                            pluginData.data.warpCount.add(WarpCount(name, Vars.world.tile(x, y).pos(), ip, port))
                             playerData.send("command.hub.count", "$x:$y", arg[1])
                         }
                     }
@@ -2024,10 +2024,16 @@ class Commands {
 
     @ClientCommand("t", "<message...>", "Send a meaage only to your teammates.")
     fun t(playerData: PlayerData, arg: Array<out String>) {
-        if (!playerData.chatMuted) {
-            Groups.player.each({ p -> p.team() === playerData.player.team() }) { o ->
-                o.sendMessage("[#" + playerData.player.team().color.toString() + "]<T>[] ${playerData.player.coloredName()} [orange]>[white] ${arg[0]}")
-            }
+        // Team chat went straight to sendMessage, so none of the five registered chat filters saw it:
+        // this plugin's mute and global-mute check, the word blacklist, the keyboard-layout rewrite, a
+        // running vote, and the engine's own anti-spam. filterMessage is the only thing that runs them,
+        // and vanilla's own /t calls it, so this restores what replacing that command had removed.
+        // The chatMuted check that used to stand here is the first of those filters and, unlike this
+        // command, tells the player why they were refused. A message beginning with "/" is dropped, as
+        // it is in public chat.
+        val message = Vars.netServer.admins.filterMessage(playerData.player.self(), arg[0]) ?: return
+        Groups.player.each({ p -> p.team() === playerData.player.team() }) { o ->
+            o.sendMessage("[#" + playerData.player.team().color.toString() + "]<T>[] ${playerData.player.coloredName()} [orange]>[white] $message")
         }
     }
 
@@ -2150,8 +2156,8 @@ class Commands {
             }
 
             // Only the expiry. Not unbanPlayerID, which drops every ip ban the player has and does not
-            // put them back when the id is banned again, and not the scheduler's lifting token, which
-            // would be spent here and turn the next genuine unban into a no-op.
+            // put them back when the id is banned again. Withdrawing the scheduler's lifting token is
+            // clearBanExpire's own business and is documented there.
             TempBan.clearBanExpire(uuid)
 
             // That call logs a database failure and carries on, so the row is read back rather than
@@ -2397,7 +2403,14 @@ class Commands {
                 val target = PlayerLookup.online(arg[1], playerData)
                 if (target != null) {
                     val targetData = players.find { it.uuid == target.uuid() }
-                    if (targetData != null && Permission.check(targetData, "kick.admin")) {
+                    if (Vars.state.rules.pvp && target.team() != playerData.player.team()) {
+                        // The poll below is scoped to the starter's team, so a target on another team
+                        // would be kicked by a vote that team never saw - and a player alone on a team
+                        // would decide it unopposed. Vanilla refuses a cross-team votekick outright.
+                        // The admin key is reused because its text is the generic refusal and a new one
+                        // means editing every locale file, which is nobody's cluster in this run.
+                        playerData.err("command.vote.kick.target.admin", target.plainName())
+                    } else if (targetData != null && Permission.check(targetData, "kick.admin")) {
                         playerData.err("command.vote.kick.target.admin")
                     } else {
                         val voteData = VoteData(
@@ -2407,6 +2420,9 @@ class Commands {
                             type = VoteType.Kick,
                             starter = playerData
                         )
+                        if (Vars.state.rules.pvp) {
+                            voteData.team = playerData.player.team()
+                        }
                         start(voteData)
                     }
                 }

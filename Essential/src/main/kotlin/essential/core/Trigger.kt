@@ -97,6 +97,8 @@ class Trigger {
         private var ping = 0.000
         private var lastFailure: String? = null
         private var lastFailureLoggedAt = 0L
+        private var lastWarpZoneWarning: String? = null
+        private var lastWarpZoneWarningAt = 0L
 
         private fun calculateCenter(startTile: Tile, endTile: Tile): Pair<Int, Int> {
             data class Point(val x: Int, val y: Int)
@@ -200,7 +202,7 @@ class Trigger {
                                             val str = info.players.toString()
                                             val digits = IntArray(str.length)
                                             for (a in str.indices) digits[a] = str[a] - '0'
-                                            val tile = value.tile
+                                            val tile = value.tile ?: continue
                                             if (value.players != info.players) {
                                                 Core.app.post {
                                                     for (px in 0..2) {
@@ -214,12 +216,12 @@ class Trigger {
 
                                             val updated = WarpCount(
                                                 Vars.state.map.name(),
-                                                value.tile.pos(),
+                                                value.pos,
                                                 value.ip,
-                                                value.port,
-                                                info.players,
-                                                digits.size
+                                                value.port
                                             )
+                                            updated.numberSize = digits.size
+                                            updated.players = info.players
                                             // The position this entry had in the copy is not necessarily
                                             // its position in the live list, so the write back happens on
                                             // the main thread and finds the entry by identity.
@@ -335,7 +337,23 @@ class Trigger {
 
                                 for (value in warpZone) {
                                     if (Vars.state.map.name() == value.mapName) {
-                                        val center = calculateCenter(value.startTile, value.finishTile)
+                                        val start = value.startTile
+                                        val finish = value.finishTile
+                                        if (start == null || finish == null) {
+                                            // A zone stored on a larger map of this name renders nothing here,
+                                            // while getServerInfo keeps pinging its address every three seconds.
+                                            // Its own rate-limit fields, so a permanently broken zone cannot hide
+                                            // a real exception from the cycle catch below.
+                                            val signature = "warpzone:${value.mapName}:${value.start}:${value.finish}"
+                                            val now = System.currentTimeMillis()
+                                            if (signature != lastWarpZoneWarning || now - lastWarpZoneWarningAt > 300000) {
+                                                lastWarpZoneWarning = signature
+                                                lastWarpZoneWarningAt = now
+                                                Log.warn("Warp zone for ${value.ip}:${value.port} has no tiles on the current map, skipping")
+                                            }
+                                            continue
+                                        }
+                                        val center = calculateCenter(start, finish)
 
                                         var alive = false
                                         var alivePlayer = 0
@@ -388,6 +406,7 @@ class Trigger {
 
                                 for (value in warpTotal) {
                                     if (Vars.state.map.name() == value.mapName) {
+                                        val tile = value.tile ?: continue
                                         if (value.totalPlayers != total) {
                                             when (total) {
                                                 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 -> {
@@ -395,8 +414,8 @@ class Trigger {
                                                         for (py in 0..4) {
                                                             Core.app.post {
                                                                 Vars.world.tile(
-                                                                    value.tile.x + px,
-                                                                    value.tile.y + py
+                                                                    tile.x + px,
+                                                                    tile.y + py
                                                                 )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
                                                             }
                                                         }
@@ -408,8 +427,8 @@ class Trigger {
                                                         for (py in 0..4) {
                                                             Core.app.post {
                                                                 Vars.world.tile(
-                                                                    value.tile.x + 4 + px,
-                                                                    value.tile.y + py
+                                                                    tile.x + 4 + px,
+                                                                    tile.y + py
                                                                 )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
                                                             }
                                                         }
@@ -624,12 +643,10 @@ class Trigger {
                 // unit() at null indefinitely, and tileOn() is nullable in its own right.
                 val unitTile = data.player.unit()?.tileOn()
                 for (two in pluginData.data.warpZone) {
-                    if (unitTile != null && two.mapName == Vars.state.map.name() && !two.click && isUnitInside(
-                            unitTile,
-                            two.startTile,
-                            two.finishTile
-                        )
-                    ) {
+                    if (unitTile == null || two.mapName != Vars.state.map.name() || two.click) continue
+                    val start = two.startTile ?: continue
+                    val finish = two.finishTile ?: continue
+                    if (isUnitInside(unitTile, start, finish)) {
                         Log.info(Bundle()["log.warp.move", data.player.plainName(), two.ip, two.port.toString()])
 
                         val currentMapName = Vars.state.map.name()

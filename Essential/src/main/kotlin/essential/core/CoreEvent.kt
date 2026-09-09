@@ -286,12 +286,10 @@ fun tap(event: TapEvent) {
         }
 
         for (two in pluginData.data.warpZone) {
-            if (two.mapName == Vars.state.map.name() && two.click && isUnitInside(
-                    event.tile,
-                    two.startTile,
-                    two.finishTile
-                )
-            ) {
+            if (two.mapName != Vars.state.map.name() || !two.click) continue
+            val start = two.startTile ?: continue
+            val finish = two.finishTile ?: continue
+            if (isUnitInside(event.tile, start, finish)) {
                 Log.info(Bundle()["log.warp.move", event.player.plainName(), two.ip, two.port.toString()])
 
                 val currentMapName = Vars.state.map.name()

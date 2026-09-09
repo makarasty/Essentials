@@ -13,6 +13,8 @@ import essential.core.Main.Companion.scope
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
@@ -28,8 +30,23 @@ import kotlin.time.ExperimentalTime
 object TempBan {
     private const val INTERVAL = 30f
 
-    /** Bans the scheduler is lifting right now; their unban event must not wipe the expiry. */
+    /**
+     * Bans the scheduler still intends to lift. Withdrawing a uuid cancels the posted unban, which is
+     * how a permaban landing between the sweep and its post survives; the unban that does go through
+     * must not wipe the expiry.
+     *
+     * The token is removed by [onUnban], never by the post that triggers it: `PlayerUnbanEvent` is
+     * fired inside `unbanPlayerID`, but its handler launches a coroutine, so a guard that consumed the
+     * token here would drain it before [onUnban] ever read it and the expiry would be wiped.
+     */
     private val lifting = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Held while a batch is chosen and while a ban is declared non-expiring. Without it the two
+     * overlap: the sweep reads a row whose expiry is still set, a permaban clears it and finds no
+     * token to withdraw, and the sweep then adds one and lifts the ban that was just made permanent.
+     */
+    private val sweep = Mutex()
 
     fun start() {
         // The ban list is game state, so it is read on the main thread and handed to the sweep.
@@ -50,21 +67,30 @@ object TempBan {
         // lifts what is expired in the database AND banned here. The expiry column is left
         // alone: a timestamp in the past already says "over", and clearing it would hide the
         // row from a sibling server that holds its own ban on the same player.
-        val stored = runCatching {
-            suspendTransaction {
-                PlayerTable.select(PlayerTable.uuid)
-                    .where { PlayerTable.banExpireDate lessEq now }
-                    .map { it[PlayerTable.uuid] }
-                    .toList()
-            }
-        }.onFailure { Log.err("Failed to read temp ban expiries from the database", it) }.getOrDefault(emptyList())
-        val orphanedExpired = orphaned().filterValues { it <= now }.keys
+        val (expired, orphanedExpired) = sweep.withLock {
+            val stored = runCatching {
+                suspendTransaction {
+                    PlayerTable.select(PlayerTable.uuid)
+                        .where { PlayerTable.banExpireDate lessEq now }
+                        .map { it[PlayerTable.uuid] }
+                        .toList()
+                }
+            }.onFailure { Log.err("Failed to read temp ban expiries from the database", it) }.getOrDefault(emptyList())
+            val orphanedExpired = orphaned().filterValues { it <= now }.keys
 
-        val expired = (stored + orphanedExpired).filter { it in banned }.toSet()
+            val expired = (stored + orphanedExpired).filter { it in banned }.toSet()
+            lifting += expired
+            expired to orphanedExpired
+        }
         if (expired.isEmpty()) return
-        lifting += expired
         // Lifting a ban changes game state and fires PlayerUnbanEvent; that belongs on the main thread.
-        Core.app.post { expired.forEach { Vars.netServer.admins.unbanPlayerID(it) } }
+        // A permaban can land between this batch being chosen and the post running, and it withdraws
+        // the token; unbanning anyway would lift the ban that was just made permanent. An unban that
+        // reports nothing to do fires no event, so its token is dropped here or it would strand and
+        // make the next genuine unban look like the scheduler's.
+        Core.app.post {
+            expired.forEach { if (it in lifting && !Vars.netServer.admins.unbanPlayerID(it)) lifting -= it }
+        }
         if (orphanedExpired.any { it in expired }) {
             expired.forEach { pluginData.data.tempBans.remove(it) }
             pluginData.update()
@@ -93,7 +119,11 @@ object TempBan {
         pluginData.update()
     }
 
-    suspend fun clearBanExpire(uuid: String) {
+    suspend fun clearBanExpire(uuid: String) = sweep.withLock {
+        // Whoever calls this has decided the ban is not expiring, so withdraw it from a sweep that is
+        // already in flight. onUnban has consumed the token by the time it reaches here, so this is a
+        // no-op on that path.
+        lifting -= uuid
         findPlayerData(uuid)?.banExpireDate = null
         runCatching {
             suspendTransaction {
