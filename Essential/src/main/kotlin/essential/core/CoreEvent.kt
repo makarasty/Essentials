@@ -1440,6 +1440,10 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
 
     playerData.isConnected = true
     players.removeIf { it.uuid == playerData.uuid }
+    // A rejoin leaves the leave-time snapshot parked in offlinePlayers (added at playerLeave) with
+    // nothing ever removing it, so an old entry for this uuid would sit there as a stale duplicate for
+    // the rest of the map and gameOver would earn this player's EXP twice.
+    offlinePlayers.removeIf { it.uuid == playerData.uuid }
     // Final guard: do not add if player already disconnected
     if (playerData.player.con() == null || playerData.player.con().hasDisconnected) return
     players.add(playerData)
