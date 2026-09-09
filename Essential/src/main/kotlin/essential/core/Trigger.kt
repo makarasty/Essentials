@@ -10,6 +10,7 @@ import arc.util.Time
 import arc.util.Timer
 import essential.common.bundle.Bundle
 import essential.common.event.CustomEvents
+import essential.common.database.data.PlayerData
 import essential.common.database.data.cleanupExpiredRoutingPermissions
 import essential.common.database.data.grantRoutingPermission
 import essential.common.database.data.plugin.WarpBlock
@@ -74,6 +75,27 @@ class Trigger {
             } catch (_: Exception) {
                 listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
             }
+        }
+
+        /**
+         * Where an afk player is sent, or null to kick them instead. The config documents an empty
+         * server as "disable teleport" and ships empty, while the reader tested for null, so the
+         * shipped default hopped the player to host "" on port 6567 rather than kicking. A value
+         * that will not parse gets the same answer: `parts[1].toInt()` used to throw out of a
+         * Timer body, which arc runs on the game thread with no handler above it, so one typo in
+         * this field took the server down the first time anybody idled.
+         */
+        fun afkTarget(server: String?): Pair<String, Int>? {
+            val parts = (server ?: return null).trim().split(":")
+            val host = parts[0].trim()
+            if (host.isEmpty()) return null
+            if (parts.size == 1) return host to 6567
+            val port = parts[1].trim().toIntOrNull()
+            if (port == null || port !in 1..65535) {
+                Log.warn("feature.afk.server is \"$server\", which carries no usable port; afk players are kicked instead")
+                return null
+            }
+            return host to port
         }
 
         fun saveMapBackup() {
@@ -747,7 +769,8 @@ class Trigger {
                     if (it.afkTime == conf.feature.afk.time.toUShort()) {
                         it.afk = true
                         if (conf.feature.afk.enabled) {
-                            if (conf.feature.afk.server == null) {
+                            val target = afkTarget(conf.feature.afk.server)
+                            if (target == null) {
                                 val kickedName = it.player.plainName()
                                 players.forEach { data ->
                                     if (data.uuid != it.uuid) {
@@ -756,12 +779,7 @@ class Trigger {
                                 }
                                 it.player.kick(it.bundle["event.player.afk"])
                             } else {
-                                val server = conf.feature.afk.server!!.split(":")
-                                val port = if (server.size == 1) {
-                                    6567
-                                } else {
-                                    server[1].toInt()
-                                }
+                                val (host, port) = target
 
                                 val currentMapName = Vars.state.map.name()
                                 val hubMapName = pluginData.hubMapName
@@ -773,12 +791,12 @@ class Trigger {
                                     it.update()
 
                                     if (hubMapName != null && currentMapName == hubMapName) {
-                                        val targetServerName = if (server.size == 1) "${server[0]}:6567" else "${server[0]}:${server[1]}"
+                                        val targetServerName = "$host:$port"
                                         val hubConnectionTime = Instant.fromEpochMilliseconds(it.player.con().connectTime).toLocalDateTime(systemTimezone)
                                         grantRoutingPermission(it.player.uuid(), hubMapName, targetServerName, port, hubConnectionTime)
                                         Log.debug("Granted routing permission for ${it.player.plainName()} to $targetServerName (AFK)")
                                     }
-                                    val transfer = CustomEvents.ServerTransfer(it.player, server[0], port)
+                                    val transfer = CustomEvents.ServerTransfer(it.player, host, port)
                                     Events.fire(transfer)
                                     if (!transfer.handled) {
                                         Call.connect(it.player.con(), transfer.ip, transfer.port)
