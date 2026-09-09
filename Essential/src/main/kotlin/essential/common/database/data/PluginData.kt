@@ -1,5 +1,6 @@
 package essential.common.database.data
 
+import arc.util.Log
 import essential.common.database.LEGACY_BASELINE_VERSION
 import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.data.plugin.WarpCount
@@ -47,8 +48,8 @@ data class PluginData(
             suspendTransaction {
                 val base = previous?.data
                 if (base != null) {
-                    // By id, not getPluginData()'s oldest row: when several servers have each inserted
-                    // their own row - which createPluginData only narrows, never prevents - the oldest
+                    // By id, not getPluginData()'s oldest row: on a legacy schema whose plugin_data.id
+                    // carries no key, createPluginData cannot be refused a second row, and the oldest
                     // is not necessarily the one updateRow() is about to write.
                     // Qualified: inside a transaction lambda, a bare `id` is the transaction's own.
                     val rowId = this@PluginData.id
@@ -132,23 +133,46 @@ suspend fun getPluginData(): PluginData? {
     }
 }
 
+/**
+ * The id every instance's `plugin_data` row is inserted under.
+ *
+ * This table holds one row shared by every server, so the primary key is what makes a second insert
+ * impossible. Re-checking inside the transaction only narrowed the race: two servers starting at once
+ * took ids 2 and 3, and because [getPluginData] reads the oldest row while [PluginData.update] writes
+ * by this row's id, the loser read one row and wrote another for as long as it ran.
+ *
+ * PostgreSQL declares the column `SERIAL`, and an explicit value does not advance its sequence. That
+ * only matters to a server still running the build that inserted without an id, whose `nextval` of 1
+ * is then refused - and which falls back to reading this row, which is the right answer anyway.
+ */
+private const val SINGLETON_ID: UInt = 1u
+
 /** Create plugin data */
 suspend fun createPluginData(): PluginData {
-    val displayData = DisplayData()
-    return suspendTransaction {
-        // Re-check inside the transaction: another server may have inserted its row between the
-        // caller's getPluginData() and this insert, so return that row instead of inserting a duplicate.
-        // This only narrows the race, it doesn't close it - there's no unique constraint or lock backing it.
-        getPluginData() ?: run {
+    getPluginData()?.let { return it }
+
+    // The loser of a simultaneous start is refused by the primary key rather than left holding a
+    // second row, so its own read below finds the winner's. The re-check inside the transaction stays
+    // as the cheaper half of the same guard: a server still on the build that inserts without an id
+    // cannot be refused by the key, and this is what stops its row being shadowed by an empty one.
+    val refused = runCatching {
+        suspendTransaction {
+            if (getPluginData() != null) return@suspendTransaction
             PluginTable.insert {
+                it[PluginTable.id] = SINGLETON_ID
                 // A row created here belongs to a schema SchemaUtils just built at the current shape,
                 // so it starts at the baseline. Zero sent the next start into the legacy upgrade path,
                 // whose scripts rename tables this database never had.
                 it[PluginTable.databaseVersion] = LEGACY_BASELINE_VERSION
                 it[PluginTable.hubMapName] = null
-                it[PluginTable.data] = Json.encodeToString(displayData)
+                it[PluginTable.data] = Json.encodeToString(DisplayData())
             }
-            getPluginData() ?: throw IllegalStateException("PluginData not found after creation")
         }
-    }
+    }.exceptionOrNull()
+    // Logged as well as carried: when the read below throws in its own right, the cause attached to
+    // the throw at the end of this function is the read's, and this one would go unreported.
+    if (refused != null) Log.info("[Database] plugin_data was inserted by another server: ${refused.message}")
+
+    return getPluginData()
+        ?: throw IllegalStateException("PluginData not found after creation", refused)
 }
