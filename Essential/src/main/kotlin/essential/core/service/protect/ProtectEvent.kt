@@ -29,6 +29,7 @@ import mindustry.content.Fx
 import mindustry.entities.Damage
 import mindustry.game.EventType
 import mindustry.gen.Building
+import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.net.ArcNetProvider
 import mindustry.net.NetworkIO
@@ -120,6 +121,9 @@ fun runEverySecond() {
             if (pvpCount == 0) {
                 Vars.state.rules.blockDamageMultiplier = originalBlockMultiplier
                 Vars.state.rules.unitDamageMultiplier = originalUnitMultiplier
+                // The rules reach a client once, with the world snapshot. Without this the client
+                // keeps predicting the peace multipliers and shows damage the server discards.
+                Call.setRules(Vars.state.rules)
                 players.forEach {
                     it.send("event.pvp.peace.end")
                 }
