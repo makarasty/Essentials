@@ -26,10 +26,12 @@ import essential.core.Commands.WorldEditSelection
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -614,8 +616,15 @@ suspend fun readJoinedPlayerData(player: Playerc, name: String): JoinedPlayerDat
     if (nameExists) return JoinedPlayerData(null, true)
 
     val newData = createPlayerData(player)
-    newData.permission = "user"
-    newData.update()
+    // createPlayerData's insert already committed with PlayerTable.permission's column default
+    // ("default", not "user"), and this call runs inside the caller's withTimeoutOrNull - if the
+    // deadline lands between that insert and this fix-up, the row is left behind with the wrong
+    // permission forever, because nothing else ever revisits a row that already exists. NonCancellable
+    // makes the fix-up durable even when the timeout has already fired around it.
+    withContext(NonCancellable) {
+        newData.permission = "user"
+        newData.update()
+    }
     return JoinedPlayerData(newData, false)
 }
 
