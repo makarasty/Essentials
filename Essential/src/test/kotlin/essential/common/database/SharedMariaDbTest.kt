@@ -362,13 +362,16 @@ class SharedMariaDbTest {
 
     /**
      * A player joining two servers at the same instant. players.uuid and players.name both carry a
-     * unique index, so one of the two inserts is refused, and what matters is that the loser says so:
-     * an instance that silently falls back to temporary data persists nothing for that session.
-     * loadJoinedPlayerData (CoreEvent.kt:620-635) catches the refusal, logs it and returns a null data
-     * object; its caller then hands that to retryPlayerDataLoad (CoreEvent.kt:677-706), which picks the
-     * real row up within ten seconds and merges the session into it. The retry is read from the code
-     * rather than exercised here - this calls loadJoinedPlayerData directly, because that is the layer
-     * where the loss would be silent.
+     * unique index, so one of the two inserts is refused - and this is the test that measures what the
+     * loser does with that.
+     *
+     * It used to assert that the loser logged "Failed to load player data": createPlayerData let the
+     * constraint violation out, loadJoinedPlayerData (CoreEvent.kt:620-635) caught it and returned a
+     * null data object, and retryPlayerDataLoad (CoreEvent.kt:677-706) picked the real row up within
+     * ten seconds. That was the defect, not the contract - for those ten seconds the session was on
+     * temporary data. createPlayerData now treats the refusal as the row-already-exists case it is and
+     * re-reads the winner's row, so both instances come away with data and there is nothing to log and
+     * nothing to retry. The assertion is now that neither instance fell back.
      */
     @Test
     fun aPlayerJoiningTwoInstancesAtOnceSaysSoAndKeepsOneRow(): Unit = runBlocking {
@@ -383,12 +386,14 @@ class SharedMariaDbTest {
             assertEquals("1", rows, "a simultaneous join left $rows rows for one uuid")
             assertNotNull(getPlayerData(id), "neither instance ended up with a row")
             assertTrue(
-                results.any { it.data != null },
-                "both instances fell back to temporary data, so nothing that session would be saved"
+                results.all { it.data != null },
+                "an instance fell back to temporary data over a row that was already in the table, so " +
+                    "nothing from that session would be saved until the ten-second retry caught up"
             )
             assertTrue(
-                log.any { it.contains("Failed to load player data") },
-                "one of the two inserts was refused and neither instance logged a word about it"
+                log.none { it.contains("Failed to load player data") },
+                "the loser of the insert race still reported a failure: " +
+                    log.filter { it.contains("Failed to load player data") }
             )
         } finally {
             player.remove()

@@ -1,5 +1,7 @@
 package essential.common.database.data
 
+import arc.util.Log
+import kotlinx.coroutines.CancellationException
 import essential.common.database.table.AchievementTable
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
@@ -40,29 +42,43 @@ suspend fun hasAchievement(playerData: PlayerData, achievementName: String): Boo
  * Set an achievement as completed for a player
  */
 suspend fun setAchievement(playerData: PlayerData, achievementName: String) {
-    suspendTransaction {
-        // Check if the achievement is already completed
-        val query = AchievementTable.select(AchievementTable.id)
-            .where { 
-                (AchievementTable.playerId eq playerData.id) and
-                (AchievementTable.achievementName eq achievementName)
-            }
+    // Reading an absent row takes no lock, so the player earning this on two of the six servers at
+    // once passes the check twice and the unique (player_id, achievement_name) index refuses the
+    // second insert. That refusal means the row is there, which is all this function wanted.
+    val refused = runCatching {
+        suspendTransaction {
+            // Check if the achievement is already completed
+            val query = AchievementTable.select(AchievementTable.id)
+                .where {
+                    (AchievementTable.playerId eq playerData.id) and
+                    (AchievementTable.achievementName eq achievementName)
+                }
 
-        val existing = query.firstOrNull()
+            val existing = query.firstOrNull()
 
-        // If not, create a new record
-        if (existing == null) {
-            AchievementTable.insert {
-                it[AchievementTable.playerId] = playerData.id
-                it[AchievementTable.achievementName] = achievementName
-                // completedAt will be set automatically by the default value
-            }
-
-            // Add to player's achievement status list
-            if (!playerData.achievementStatus.contains(achievementName)) {
-                playerData.achievementStatus.add(achievementName)
+            // If not, create a new record
+            if (existing == null) {
+                AchievementTable.insert {
+                    it[AchievementTable.playerId] = playerData.id
+                    it[AchievementTable.achievementName] = achievementName
+                    // completedAt will be set automatically by the default value
+                }
             }
         }
+    }.exceptionOrNull()
+
+    if (refused is CancellationException) throw refused
+
+    // Told apart by re-reading the table rather than by the exception's text, because the code that
+    // says "duplicate key" differs per engine and a refusal for any other reason has to stay an error.
+    if (refused != null && !hasAchievement(playerData, achievementName)) {
+        Log.err("Could not record achievement $achievementName for ${playerData.uuid}", refused)
+        return
+    }
+
+    // Add to player's achievement status list
+    if (!playerData.achievementStatus.contains(achievementName)) {
+        playerData.achievementStatus.add(achievementName)
     }
 }
 

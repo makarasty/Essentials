@@ -1,5 +1,7 @@
 package essential.common.database.data
 
+import arc.util.Log
+import kotlinx.coroutines.CancellationException
 import essential.common.database.table.MapRatingTable
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toSet
@@ -119,7 +121,27 @@ suspend fun updateOrCreateMapRating(
             existing
         }
     } else {
-        createMapRating(mapName, mapHash, playerUuid, difficulty, rating)
+        // The read above and the insert below are separate transactions, so two of the six servers
+        // rating the same map for the same player both find nothing and the unique
+        // (player_uuid, map_name) index refuses the loser. The loser's rating is the newer one, so it
+        // is applied to the row that won rather than dropped on the floor.
+        //
+        // On a schema the legacy scripts built there is no such index - v5.sql drops the one
+        // map_ratings had and adds none back - so what fails there is createMapRating's own single(),
+        // which now sees two rows. The same fallback covers it: the update writes both duplicates and
+        // the caller gets a row back rather than an exception.
+        runCatching { createMapRating(mapName, mapHash, playerUuid, difficulty, rating) }.getOrElse { refused ->
+            if (refused is CancellationException) throw refused
+            Log.info("Map rating for $playerUuid on $mapName could not be created, updating instead: ${refused.message}")
+            suspendTransaction {
+                MapRatingTable.update({ (MapRatingTable.playerUuid eq playerUuid) and (MapRatingTable.mapName eq mapName) }) {
+                    it[MapRatingTable.difficulty] = difficulty
+                    it[MapRatingTable.rating] = rating
+                }
+            }
+            getMapRating(playerUuid, mapName)
+                ?: throw IllegalStateException("Map rating for $playerUuid on $mapName is missing after creation", refused)
+        }
     }
 }
 

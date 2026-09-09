@@ -1,6 +1,7 @@
 package essential.common.database.data
 
 import arc.util.Log
+import kotlinx.coroutines.CancellationException
 import essential.common.bundle.Bundle
 import essential.common.database.data.update as updateRow
 import essential.common.database.table.AchievementTable
@@ -258,23 +259,43 @@ suspend fun createPlayerData(player: Playerc): PlayerData {
         player.sendMessage(Bundle(rawLocale)["event.player.invalid.info"])
     }
 
-    suspendTransaction {
-        val notExists = PlayerTable.select(PlayerTable.id)
-            .where { PlayerTable.uuid eq player.uuid() }
-            .empty()
-        if (!notExists) return@suspendTransaction
-        PlayerTable.insert {
-            it[PlayerTable.name] = player.name()
-            it[PlayerTable.uuid] = player.uuid()
-            it[PlayerTable.languageTag] = locale ?: "en"
+    // Reading an absent row takes no lock, so two of the six servers processing the same join both
+    // pass this check and the unique index on players.uuid refuses the loser's insert. The refusal
+    // means the row exists, which is what the read below wants anyway - propagating it instead failed
+    // that player's join over a row that was already there. Any other cause is reported by that read
+    // coming back empty, and this exception is attached to it as the cause.
+    //
+    // This depends on the index being there. A players table that came through resources/sql/v4.sql
+    // has only its primary key, and on such a server neither insert is refused and one uuid ends up
+    // with two rows. The boot now names every index repair it declines to make, which is how an
+    // operator finds out which servers those are.
+    val refused = runCatching {
+        suspendTransaction {
+            val notExists = PlayerTable.select(PlayerTable.id)
+                .where { PlayerTable.uuid eq player.uuid() }
+                .empty()
+            if (!notExists) return@suspendTransaction
+            PlayerTable.insert {
+                it[PlayerTable.name] = player.name()
+                it[PlayerTable.uuid] = player.uuid()
+                it[PlayerTable.languageTag] = locale ?: "en"
+            }
         }
+    }.exceptionOrNull()
+    // Cancellation is not a refusal and must not be turned into one.
+    if (refused is CancellationException) throw refused
+    if (refused != null) {
+        // Deliberately not phrased as "another server won the race": the commonest other cause is the
+        // unique index on players.name, and an operator chasing a duplicate-name kick should not find
+        // a line telling them it was something else.
+        Log.info("Insert refused for ${player.uuid()}, re-reading: ${refused.message}")
     }
 
     val entity = suspendTransaction {
         PlayerTable.select(PlayerTable.columns)
             .where { PlayerTable.uuid eq player.uuid() }
-            .mapToPlayerDataList().first()
-    }
+            .mapToPlayerDataList().firstOrNull()
+    } ?: throw IllegalStateException("Player row for ${player.uuid()} is missing after creation", refused)
 
     entity.player = player
     return entity
