@@ -6,6 +6,7 @@ import essential.common.database.data.update as updateRow
 import essential.common.database.table.AchievementTable
 import essential.common.database.table.ContributionTable
 import essential.common.database.table.PlayerTable
+import essential.common.database.thisServerId
 import essential.common.playerNumber
 import essential.common.systemTimezone
 import kotlinx.coroutines.flow.firstOrNull
@@ -121,6 +122,8 @@ data class PlayerData(
     var lastPlayedWorldName: String? = null,
     var lastPlayedWorldMode: String? = null,
     var isConnected: Boolean = false,
+    /** Which server [isConnected] is true on. Stamped by [update]; see [essential.common.database.thisServerId]. */
+    var connectedServer: String? = null,
     var isBanned: Boolean = false,
     var banExpireDate: LocalDateTime? = null,
     var attendanceDays: Int = 0,
@@ -176,6 +179,12 @@ data class PlayerData(
             return false
         }
         statusData = statusJson.encodeToString(status.filterKeys { it.startsWith(RECORD_PREFIX) })
+        // Only the write that changes the flag says whose connection it is. A server saving a row for
+        // an unrelated reason - a permission apply, an exp award - must not claim a player who is
+        // online on one of the other five, because its next boot clears every row it claimed.
+        if (dbSnapshot?.isConnected != isConnected) {
+            connectedServer = if (isConnected) thisServerId else null
+        }
         return updateRow()
     }
 

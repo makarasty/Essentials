@@ -37,6 +37,13 @@ object PlayerTable : Table("players") {
     val lastPlayedWorldName = varchar("last_played_world_name", 50).nullable().default(null)
     val lastPlayedWorldMode = varchar("last_played_world_mode", 50).nullable().default(null)
     val isConnected = bool("is_connected").default(false)
+
+    /**
+     * Which server [isConnected] is true on, so that server's next boot can clear what its previous
+     * life left behind without touching the players online on the other five. Nullable: a row written
+     * before this column existed belongs to no server, and claiming it would be the same mistake.
+     */
+    val connectedServer = varchar("connected_server", 100).nullable().default(null)
     val isBanned = bool("is_banned").default(false)
     val banExpireDate = datetime("ban_expire_date").nullable().default(null)
     val attendanceDays = integer("attendance_days").default(0)

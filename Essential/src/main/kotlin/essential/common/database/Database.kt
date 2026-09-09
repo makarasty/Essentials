@@ -30,6 +30,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.vendors.*
 import org.jetbrains.exposed.v1.datetime.datetime
 import org.jetbrains.exposed.v1.r2dbc.*
@@ -40,6 +41,37 @@ import org.mariadb.r2dbc.MariadbConnectionFactory
 import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
 import java.time.Duration
+import java.util.UUID
+
+/** Holds [thisServerId]; delete it to re-key this server, and copy it if you clone the install. */
+private const val SERVER_ID_FILE = "data/server-id"
+
+/**
+ * Which of the servers sharing this database is this one.
+ *
+ * `players` and `player_banned` record facts about one server in tables all six read, so a row that
+ * means "mine" has to say whose. Written once to [SERVER_ID_FILE] and read from there afterwards:
+ * deriving it from the configuration or the host would silently re-key this server the first time an
+ * operator sets `plugin.serverId`, renames the host or moves the port, orphaning every row it had
+ * already claimed. `plugin.serverId` seeds the file when it is set, so the stored value is readable
+ * rather than opaque, but it is the file that decides from then on.
+ */
+internal val thisServerId: String by lazy {
+    val file = rootPath.child(SERVER_ID_FILE)
+    val stored = runCatching { if (file.exists()) file.readString().trim() else "" }.getOrDefault("")
+    if (stored.isNotBlank()) return@lazy stored.take(100)
+
+    val fresh = Main.conf.plugin.serverId.ifBlank { UUID.randomUUID().toString() }.take(100)
+    runCatching {
+        file.parent().mkdirs()
+        file.writeString(fresh, false)
+    }.onFailure {
+        // A new identity every start is still safe - it claims nothing and releases nothing - but the
+        // operator should know why the stale-connection release below never finds anything.
+        Log.warn("[Database] could not store this server's identity in $SERVER_ID_FILE: ${it.message}")
+    }
+    fresh
+}
 
 var worldHistoryConnectionPool: ConnectionPool? = null
 var defaultConnectionPool: ConnectionPool? = null
@@ -159,6 +191,8 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     reshapeMapRatingIndex()
 
+    releaseOwnStaleConnections()
+
     // With baselineVersion("5") Flyway's answer here is the constant 5 whether it migrated anything,
     // baselined an untouched schema, or found one another server had baselined, so feeding it into
     // updatePluginVersion marked a legacy upgrade that had just aborted as done and every later start
@@ -182,6 +216,43 @@ private suspend fun reshapeMapRatingIndex() {
     val createNew = "CREATE UNIQUE INDEX map_ratings_player_uuid_map_name_unique ON map_ratings (player_uuid, map_name)"
     for (statement in listOf(dropOld, createNew)) {
         runCatching { suspendTransaction { exec(statement) } }
+    }
+}
+
+/**
+ * Clears `is_connected` on the rows this server itself left connected.
+ *
+ * Every writer of that column runs on the server the player is on, so a server killed without running
+ * its dispose listener leaves the column true for good and `/login` then refuses that account on all
+ * six. Only the rows carrying this server's own [thisServerId] are cleared: clearing the column
+ * outright would mark offline every player online on the other five, and a row written before the
+ * column existed carries null and belongs to nobody, so it is left alone rather than claimed.
+ */
+private suspend fun releaseOwnStaleConnections() {
+    runCatching {
+        suspendTransaction {
+            val released = PlayerTable.update({
+                (PlayerTable.connectedServer eq thisServerId) and (PlayerTable.isConnected eq true)
+            }) {
+                it[PlayerTable.isConnected] = false
+                it[PlayerTable.connectedServer] = null
+            }
+            val unowned = PlayerTable.select(PlayerTable.id)
+                .where { PlayerTable.connectedServer.isNull() and (PlayerTable.isConnected eq true) }
+                .count()
+            released to unowned
+        }
+    }.onSuccess { (released, unowned) ->
+        if (released > 0) Log.info("Released $released account(s) left connected by a previous start")
+        if (unowned > 0) Log.warn(
+            "$unowned account(s) are marked connected by a server that predates the connected_server " +
+                "column, and /login will refuse them. With every server stopped, clear them with: " +
+                "UPDATE players SET is_connected = false WHERE connected_server IS NULL"
+        )
+    }.onFailure {
+        // Log.warn rather than Log.err: a boot whose schema repair was refused reaches this with no
+        // connected_server column, and the plugin failing to load is the larger of the two failures.
+        Log.warn("[Database] could not release the accounts left connected by a previous start: ${it.message}")
     }
 }
 
