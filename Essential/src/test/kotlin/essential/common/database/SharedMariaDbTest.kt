@@ -306,7 +306,7 @@ class SharedMariaDbTest {
         val map = "${MARK}hub-${System.nanoTime()}"
 
         val seed = assertNotNull(getPluginData() ?: createPluginData(), "could not read plugin_data")
-        seed.data.warpCount.add(WarpCount(map, 100, "127.0.0.1", 6567, 1, 3))
+        seed.data.warpCount.add(WarpCount(map, 100, "127.0.0.1", 6567).also { it.players = 1; it.numberSize = 3 })
         assertTrue(seed.update(), "could not seed the warp count")
 
         val a = assertNotNull(getPluginData(), "instance A could not read plugin_data")
@@ -404,7 +404,7 @@ class SharedMariaDbTest {
         val a = assertNotNull(getPluginData() ?: createPluginData(), "instance A could not read plugin_data")
         val b = assertNotNull(getPluginData(), "instance B could not read plugin_data")
 
-        b.data.warpCount.add(WarpCount(map, 200, "127.0.0.1", 6567, 1, 3))
+        b.data.warpCount.add(WarpCount(map, 200, "127.0.0.1", 6567).also { it.players = 1; it.numberSize = 3 })
         assertTrue(b.update(), "instance B could not add its warp")
 
         // A's blob is the one it booted with, and it saves for an unrelated reason.
