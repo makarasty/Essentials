@@ -138,7 +138,7 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     TransactionManager.defaultDatabase = defaultDatabase!!
 
-    upgradeLegacyDatabase()
+    val legacyUpgrade = upgradeLegacyDatabase()
 
     val tablesToCreate = listOf(
         PlayerTable,
@@ -228,6 +228,8 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
     // updatePluginVersion marked a legacy upgrade that had just aborted as done and every later start
     // skipped the legacy path. plugin_data.database_version is now written only by the legacy upgrade.
     runFlywayMigration(databaseType, r2dbcUrl, user, pass)
+
+    reportLegacyUpgradeOutcome(legacyUpgrade)
 }
 
 /**
@@ -448,7 +450,9 @@ private suspend fun R2dbcTransaction.withSavepoint(name: String, body: suspend (
 }
 
 /**
- * Runs one legacy upgrade script inside the caller's transaction, a statement at a time.
+ * Runs one legacy upgrade script inside the caller's transaction, a statement at a time, and reports
+ * how many statements it swallowed.
+ *
  *
  * A failure that is not critical is rolled back to its own savepoint and the script carries on; a
  * critical one is rethrown, and the caller's transaction takes the whole script back with it. Without
@@ -462,7 +466,8 @@ private suspend fun R2dbcTransaction.withSavepoint(name: String, body: suspend (
  * Savepoint names are per call, not per transaction, so two scripts applied in one transaction would
  * shadow each other's. Nothing does: [upgradeLegacyDatabase] opens one transaction per script.
  */
-internal suspend fun R2dbcTransaction.applyLegacyScript(script: String) {
+internal suspend fun R2dbcTransaction.applyLegacyScript(script: String): Int {
+    var swallowed = 0
     script.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEachIndexed { index, statement ->
         val failure = withSavepoint("essential_upgrade_$index") { exec(statement) }
         if (failure != null) {
@@ -472,11 +477,24 @@ internal suspend fun R2dbcTransaction.applyLegacyScript(script: String) {
                 throw IllegalStateException("Critical statement failed: $statement", failure)
             }
             Log.warn("Failed to execute statement: $statement. Reason: ${failure.message}")
+            swallowed++
         }
     }
+    return swallowed
 }
 
-private suspend fun upgradeLegacyDatabase() {
+/**
+ * What the legacy upgrade did, in the two terms that decide whether a boot is trustworthy.
+ *
+ * [swallowed] matters as much as [failure]. Only a statement naming `players` or `plugin_data` is
+ * treated as critical, and ten statements across `v4.sql` and `v5.sql` name neither - among them both
+ * legacy-ban migrations and every `map_ratings` statement in v5. Any of those failing leaves the
+ * version stamped as done over a schema that is missing whatever they were carrying.
+ */
+private class LegacyUpgradeOutcome(val failure: Throwable?, val swallowed: Int)
+
+private suspend fun upgradeLegacyDatabase(): LegacyUpgradeOutcome {
+    var swallowed = 0
     try {
         var currentVersion: UByte?
 
@@ -512,7 +530,7 @@ private suspend fun upgradeLegacyDatabase() {
         }
 
         if (currentVersion == null) {
-            return
+            return LegacyUpgradeOutcome(null, swallowed)
         }
 
         // Zero is not a legacy version: only createPluginData() ever wrote it, on a database this build
@@ -520,7 +538,7 @@ private suspend fun upgradeLegacyDatabase() {
         // a database does not have, so running them would fail on every start.
         if (currentVersion == 0u.toUByte()) {
             updatePluginVersion(LEGACY_BASELINE_VERSION)
-            return
+            return LegacyUpgradeOutcome(null, swallowed)
         }
 
         if (currentVersion < LEGACY_BASELINE_VERSION) {
@@ -530,6 +548,7 @@ private suspend fun upgradeLegacyDatabase() {
                 val version = v.toUByte()
                 val sqlFiles = legacySqlCandidates(version, defaultDatabase!!.config.explicitDialect)
 
+                var applied = false
                 for (sqlFile in sqlFiles) {
                     val inputStream = Main::class.java.classLoader.getResourceAsStream("sql/$sqlFile")
                     if (inputStream != null) {
@@ -538,10 +557,11 @@ private suspend fun upgradeLegacyDatabase() {
                             Log.info(bundle["database.upgrade.execute", sqlFile])
 
                             suspendTransaction {
-                                applyLegacyScript(sqlScript)
+                                swallowed += applyLegacyScript(sqlScript)
 
                                 updatePluginVersion(version)
                             }
+                            applied = true
 
                             // Outside the transaction above, not inside it. This opens its own and
                             // swallows every failure it meets, so within the script's transaction a
@@ -559,17 +579,101 @@ private suspend fun upgradeLegacyDatabase() {
                         }
                     }
                 }
+
+                // A version step with no script of its own is not a step that succeeded. It used to be
+                // silent: the loop simply advanced, and the stamp below then said the database had
+                // reached the baseline over an upgrade that had never run.
+                if (!applied) {
+                    throw IllegalStateException(
+                        "No upgrade script for version $version, tried ${sqlFiles.joinToString()}"
+                    )
+                }
             }
 
             updatePluginVersion(LEGACY_BASELINE_VERSION)
             Log.info(bundle["database.upgrade.end"])
         }
+        return LegacyUpgradeOutcome(null, swallowed)
     } catch (e: Exception) {
         // Deliberate: an upgrade that did not reach its end has to be retried on the next start, on
         // this server and on every other one sharing the row.
         Log.warn("Legacy database upgrade did not finish, plugin_data.database_version was left unchanged: ${e.message}")
         e.printStackTrace()
+        // Handed back rather than only logged. databaseInit carries on regardless - see
+        // reportLegacyUpgradeOutcome for why, and for what the operator gets to read instead.
+        return LegacyUpgradeOutcome(e, swallowed)
     }
+}
+
+/**
+ * Says in the boot log whether the legacy upgrade finished, because until now nothing did.
+ *
+ * A critical statement failing inside a v4 or v5 script throws out of [applyLegacyScript],
+ * [upgradeLegacyDatabase] catches it so the version stamp is left where it was - which is right - and
+ * [databaseInit] then carried on into `SchemaUtils.create` and Flyway exactly as though the upgrade had
+ * succeeded. The server came up on a half-migrated schema and the only thing that said so was one
+ * warning several hundred lines earlier in a startup log.
+ *
+ * Whether such a boot should be refused outright is the operator's call and is filed separately; this
+ * makes the state readable either way, on the first boot, without knowing what to grep for.
+ *
+ * The version is read back here rather than remembered from the upgrade: what an operator needs is the
+ * number actually in the row on the database all six servers share.
+ */
+private suspend fun reportLegacyUpgradeOutcome(outcome: LegacyUpgradeOutcome) {
+    val read = runCatching { getPluginData()?.databaseVersion }
+    val stored = read.getOrNull()
+    val version = when {
+        stored != null -> stored.toString()
+        // A row that is simply not there yet is not the same as a table that cannot be read, and on a
+        // first-ever boot it is the ordinary case: createPluginData runs after databaseInit.
+        read.isSuccess -> "not written yet"
+        else -> "unreadable"
+    }
+
+    // The stamp is checked as well as the failure, because the two are not the same question:
+    // updatePluginVersion writes nothing at all when there is no plugin_data row to write to, and
+    // reports that to nobody. A first-ever boot legitimately has no row - createPluginData runs after
+    // databaseInit and stamps the baseline itself - so a successful read that comes back empty counts
+    // as reaching it.
+    val reachedBaseline = stored == LEGACY_BASELINE_VERSION || (read.isSuccess && stored == null)
+
+    if (outcome.failure == null && reachedBaseline) {
+        // Swallowed statements are reported separately rather than folded into the block below.
+        // applyLegacyScript only rethrows for statements naming players or plugin_data, so a script
+        // can reach its end having skipped real work - and it is not the same event as an upgrade that
+        // stopped. Measured against a real MariaDB, v5.sql skips all five of its map_ratings
+        // statements on every run, because that table is created by SchemaUtils after this point and
+        // never by the scripts. Reporting that as an abort would teach an operator to ignore the line
+        // that matters.
+        if (outcome.swallowed == 0) {
+            Log.info("[Database/upgrade] schema version is $version, no legacy upgrade is outstanding")
+        } else {
+            Log.warn(
+                "[Database/upgrade] schema version is $version, but ${outcome.swallowed} statement(s) " +
+                    "failed and were skipped as non-critical - the \"Failed to execute statement\" " +
+                    "lines above name them, and whatever they were carrying is not in this schema"
+            )
+        }
+        return
+    }
+
+    val reason = outcome.failure
+        ?.let { "it stopped on: ${it.message}" }
+        ?: "the version stamp was never written, so the next start will run the whole upgrade again"
+
+    Log.err("[Database/upgrade] ####################################################################")
+    Log.err("[Database/upgrade] The legacy database upgrade DID NOT FINISH, and the server started anyway")
+    Log.err("[Database/upgrade] on a schema part way between two versions.")
+    Log.err("[Database/upgrade]   plugin_data.database_version still reads $version, target is $LEGACY_BASELINE_VERSION")
+    Log.err("[Database/upgrade]   $reason")
+    if (outcome.swallowed > 0) {
+        Log.err("[Database/upgrade]   ${outcome.swallowed} further statement(s) were skipped as non-critical")
+    }
+    Log.err("[Database/upgrade] Whatever is missing is missing on every server sharing this database,")
+    Log.err("[Database/upgrade] and the upgrade is retried on the next start - so it will stop in the")
+    Log.err("[Database/upgrade] same place until that statement is dealt with.")
+    Log.err("[Database/upgrade] ####################################################################")
 }
 
 internal fun parseR2dbcUrl(r2dbcUrl: String, prefix: String, defaultPort: String): Triple<String, Int, String> {

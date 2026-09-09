@@ -284,6 +284,24 @@ class LiveDatabaseBootTest {
         )
         assertNull(failure, "a version 4 database could not boot. $why")
 
+        // An upgrade that reached the baseline but skipped work has to say both halves. v5.sql skips
+        // all five of its map_ratings statements here, and on any real server too: that table is never
+        // created by the scripts, only by SchemaUtils after this point. Before this change the boot
+        // said nothing at all about them.
+        assertTrue(
+            bootLog.any { it.contains("statement(s) failed and were skipped as non-critical") },
+            "the boot did not report the statements it skipped. $why"
+        )
+        assertEquals(
+            5, bootLog.swallowed().size,
+            "v5.sql skipped a different number of statements than the five map_ratings ones. $why"
+        )
+        assertTrue(
+            bootLog.none { it.contains("DID NOT FINISH") },
+            "an upgrade that reached the baseline was reported as an abort, which teaches an operator " +
+                "to ignore the line that matters. $why"
+        )
+
         engine.open(legacyDb).use { connection ->
             assertEquals(
                 "5", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
@@ -314,6 +332,14 @@ class LiveDatabaseBootTest {
         val failure = engine.bootCatching(legacyDb)
         val why by lazy { diagnosis(engine, failure) }
         assertNull(failure, "a database at the baseline could not start, so the plugin would not load. $why")
+
+        // Nothing for the legacy path to do, and the boot has to say so plainly - that line is the
+        // whole point of the outcome report, and it is the one an operator reads to know the schema is
+        // current rather than half migrated.
+        assertTrue(
+            bootLog.any { it.contains("no legacy upgrade is outstanding") },
+            "a boot with no upgrade outstanding said nothing that says so. $why"
+        )
 
         runBlocking {
             val stored = getPluginData()
@@ -393,6 +419,18 @@ class LiveDatabaseBootTest {
                 "an upgrade that aborted still advanced the stored version. $why"
             )
         }
+
+        // The version stamp being right is only half of it: the boot carried on into SchemaUtils and
+        // Flyway on a half-migrated schema, and the only thing that said so was the warn above, which
+        // an operator has to know to look for. The outcome block is what they read instead.
+        assertTrue(
+            bootLog.any { it.contains("DID NOT FINISH") },
+            "the boot never stated that it had come up on a half-migrated schema. $why"
+        )
+        assertTrue(
+            bootLog.any { it.contains("still reads 4") },
+            "the outcome report did not name the version the database is actually on. $why"
+        )
     }
 
     /**
