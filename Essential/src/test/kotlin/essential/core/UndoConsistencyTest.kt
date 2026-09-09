@@ -5,15 +5,20 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.waitUntil
 import essential.common.permission.Permission
 import essential.common.rootPath
+import mindustry.Vars
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
- * Undos that reported success while doing the wrong thing, and are silent on a running server.
+ * Two undos that reported success while doing the wrong thing.
+ *
+ * Both are silent on a running server: one leaves the two permission stores disagreeing until
+ * somebody notices the group never moved, the other lifts bans nobody asked to lift.
  */
 class UndoConsistencyTest {
     companion object {
@@ -59,6 +64,59 @@ class UndoConsistencyTest {
         }
     }
 
-}
+    @Test
+    fun undo_banKeepsAnUnrelatedIpBanOnAnotherAddressOfTheSamePlayer() {
+        val admins = Vars.netServer.admins
+        val target = newPlayer().first
+        val uuid = target.uuid()
+        val current = target.con.address
+        val earlier = "203.0.113.7"
+
+        val info = admins.getInfo(uuid)
+
+        try {
+            // Order matters: banPlayerIP walks every known player and sets banned = true on any whose
+            // ips hold the address, so banning first and adding the address second is what keeps this
+            // player un-banned going in. The other order makes Undo.ban's banPlayerID a no-op and the
+            // test then undoes a ban that was never placed.
+            admins.banPlayerIP(earlier)
+            info.ips.add(earlier)
+            assertTrue(admins.bannedIPs.contains(earlier), "the earlier ip ban must be in place first")
+            assertFalse(admins.isIDBanned(uuid), "and the player must not be banned yet")
+
+            val ipBanned = Undo.ban(uuid)
+            assertTrue(ipBanned, "the ban should place an ip ban on the address in use, or this test proves nothing")
+            assertTrue(admins.bannedIPs.contains(current), "control: the ban placed an ip ban on the current address")
+
+            Undo.unban(uuid, ipBanned)
+
+            assertTrue(
+                admins.bannedIPs.contains(earlier),
+                "undoing one ban must leave an ip ban it never placed alone; unbanPlayerID strips every address in the player's info, so the others have to be put back"
+            )
+            assertFalse(
+                admins.bannedIPs.contains(current),
+                "and the ip ban that ban did place must still be lifted"
+            )
+            assertFalse(
+                admins.isIDBanned(uuid),
+                "and the undone ban must not survive as a uuid ban: putting the kept addresses back through banPlayerIP re-bans everyone holding them, this player included"
+            )
+
+            // A second undo of the same ban is ordinary - the stack is per admin and entries live ten
+            // minutes - and by now unbanPlayerID returns early without stripping anything, so a put-back
+            // that does not check for the address doubles it. A doubled ban survives its own unban.
+            Undo.unban(uuid, ipBanned)
+            assertEquals(
+                1,
+                admins.bannedIPs.count { it == earlier },
+                "undoing the same ban twice must not leave the kept address in the ban list twice"
+            )
+        } finally {
+            admins.unbanPlayerIP(earlier)
+            admins.unbanPlayerIP(current)
+            admins.unbanPlayerID(uuid)
+            info.ips.remove(earlier, false)
+        }
     }
 }
