@@ -77,6 +77,38 @@ object Config {
     }
 
     /**
+     * Keys the user's file carries that the canonical content does not. [hasMissingKeys] only walks the
+     * canonical side, so these are exactly the lines the migration re-save drops — a mistyped key among
+     * them, and the operator loses both the setting and the evidence of it.
+     */
+    fun extraKeys(userNode: YamlNode, canonicalNode: YamlNode, path: String = ""): List<String> {
+        if (userNode !is YamlMap || canonicalNode !is YamlMap) return emptyList()
+        val canonical = canonicalNode.entries.entries.associate { it.key.content to it.value }
+        return userNode.entries.entries.flatMap { (keyNode, userValue) ->
+            val key = keyNode.content
+            val full = if (path.isEmpty()) key else "$path.$key"
+            val canonicalValue = canonical[key]
+            if (canonicalValue == null) listOf(full) else extraKeys(userValue, canonicalValue, full)
+        }
+    }
+
+    /**
+     * Comment lines the user wrote that the canonical content does not carry. [hasMissingComments] asks
+     * only the opposite question, so these are silently lost by the same re-save.
+     */
+    fun extraComments(userContent: String, canonicalContent: String): List<String> {
+        val canonicalComments = canonicalContent.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("#") }
+            .toSet()
+        return userContent.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("#") }
+            .filter { it !in canonicalComments }
+            .toList()
+    }
+
+    /**
      * Load configuration from a YAML file.
      *
      * @param name YAML file name in the config folder
@@ -119,7 +151,20 @@ object Config {
                 val canonicalNode = yaml.parseToYamlNode(canonicalContent)
                 // Re-save when keys are missing (migration) or when the canonical comments
                 // are absent from the user file (upgrade older comment-less configs).
+                // strictMode is off, so the parser drops a mistyped key without complaint and the
+                // operator never learns the setting does nothing. Report it whether or not a re-save
+                // is due: a fully migrated file gets no rewrite and would otherwise stay silent.
+                val unknownKeys = extraKeys(userNode, canonicalNode)
+                if (unknownKeys.isNotEmpty()) {
+                    Log.warn(bundle["config.unknown.keys", name, unknownKeys.joinToString(", ")])
+                }
                 if (hasMissingKeys(userNode, canonicalNode) || hasMissingComments(content, canonicalContent)) {
+                    // The re-save writes the whole file from the parsed object, so the comments,
+                    // ordering and quoting in it go with it.
+                    val lostComments = extraComments(content, canonicalContent)
+                    if (lostComments.isNotEmpty()) {
+                        Log.warn(bundle["config.rewrite.comments", name, lostComments.size.toString()])
+                    }
                     save(name, serializer, config)
                 }
             } catch (e: Exception) {
