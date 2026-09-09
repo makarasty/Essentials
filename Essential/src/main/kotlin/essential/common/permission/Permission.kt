@@ -81,6 +81,42 @@ object Permission {
 
     fun load() {
         default = "user"
+        // permission.yaml first: PermissionData.group falls back to `default` at the moment
+        // kotlinx.serialization builds each entry, so the user file can only be decoded once
+        // the role marked `default: true` has been read out of permission.yaml.
+        try {
+            main = if (mainFile.exists()) {
+                yaml.decodeFromString(MapSerializer(String.serializer(), RoleConfig.serializer()), mainFile.readString())
+            } else {
+                mapOf()
+            }
+        } catch (e: Exception) {
+            Log.warn("Failed to parse permission.yaml: ${e.message}")
+        }
+
+        for ((name, roleConfig) in main) {
+            if (default == "user" && roleConfig.default == true) {
+                default = name
+            }
+
+            var inheritance: String? = roleConfig.inheritance
+            val walked = mutableSetOf(name)
+            while (true) {
+                val next = inheritance ?: break
+                if (!walked.add(next)) {
+                    Log.warn("[Permission] role '$name' inherits in a circle through '$next'. The chain is cut there; fix the 'inheritance:' lines in permission.yaml.")
+                    break
+                }
+                val inheritedRole = main[next] ?: break
+                for (permission in inheritedRole.permission) {
+                    if (!permission.contains("all", true) && !roleConfig.permission.contains(permission)) {
+                        roleConfig.permission.add(permission)
+                    }
+                }
+                inheritance = inheritedRole.inheritance
+            }
+        }
+
         try {
             if (userFile.exists()) {
                 val raw = userFile.readString()
@@ -107,37 +143,6 @@ object Permission {
             userFileValid = false
             userFileError = if (e is YamlException) "line ${e.line}: ${e.message}" else e.message.orEmpty()
             Log.warn(bundle["permission.user.file.invalid", userFileError!!])
-        }
-
-        try {
-            main = if (mainFile.exists()) {
-                yaml.decodeFromString(MapSerializer(String.serializer(), RoleConfig.serializer()), mainFile.readString())
-            } else {
-                mapOf()
-            }
-        } catch (e: Exception) {
-            Log.warn("Failed to parse permission.yaml: ${e.message}")
-        }
-
-        for ((name, roleConfig) in main) {
-            if (default == "user" && roleConfig.default == true) {
-                default = name
-            }
-
-            var inheritance: String? = roleConfig.inheritance
-            while (inheritance != null) {
-                val inheritedRoleConfig = main[inheritance]
-                inheritedRoleConfig?.let { inheritedRole ->
-                    for (permission in inheritedRole.permission) {
-                        if (!permission.contains("all", true) && !roleConfig.permission.contains(permission)) {
-                            roleConfig.permission.add(permission)
-                        }
-                    }
-                    inheritance = inheritedRole.inheritance
-                } ?: run {
-                    inheritance = null
-                }
-            }
         }
 
         apply()
