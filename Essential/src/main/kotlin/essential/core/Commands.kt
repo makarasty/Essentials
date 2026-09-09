@@ -1512,6 +1512,32 @@ class Commands {
         }
     }
 
+    /**
+     * Rebuilds a config value from its stored string against the classes [block] itself declares
+     * accepting (`Block.configurations`), instead of guessing a type from the string. Returns null when
+     * the declared type cannot be round-tripped through a bare string (a Point2 link, a live Building
+     * reference, or any class this does not know how to rebuild) so the caller can refuse the restore
+     * rather than hand the block a value of the wrong type.
+     */
+    private fun reconstructConfig(block: mindustry.world.Block, raw: String): Any? {
+        val configClasses = mutableListOf<Class<*>>()
+        block.configurations.each { configClass, _ -> configClasses += configClass }
+
+        for (configClass in configClasses) {
+            val value = when {
+                configClass == java.lang.Boolean::class.java -> raw.toBooleanStrictOrNull()
+                configClass == java.lang.Integer::class.java -> raw.toIntOrNull()
+                configClass == String::class.java -> raw
+                mindustry.ctype.MappableContent::class.java.isAssignableFrom(configClass) ->
+                    Vars.content.byName(raw)?.takeIf { configClass.isInstance(it) }
+
+                else -> null
+            }
+            if (value != null) return value
+        }
+        return null
+    }
+
     @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
@@ -1522,6 +1548,7 @@ class Commands {
                 Core.app.post {
                     try {
                         var affectedCount = 0
+                        val unrestoredConfigs = mutableListOf<String>()
                         val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
                         grouped.forEach { (pos, entriesUnsorted) ->
@@ -1599,7 +1626,22 @@ class Commands {
                                 if (block != null) {
                                     targetTile.setBlock(block, desiredTeam, desiredRot)
                                     if (desiredConfig != null && targetTile.build != null) {
-                                        targetTile.build.configure(desiredConfig)
+                                        // The stored value is a flattened string (its original type is
+                                        // lost before this ever reaches Commands.kt - see ask/9-1.md), so
+                                        // reconstruct it against what the block itself declares it accepts
+                                        // rather than guessing a type from the string alone. A block that
+                                        // accepts an Item/Liquid/Block/UnitType round-trips through
+                                        // Vars.content.byName, since MappableContent.toString() is exactly
+                                        // that name. Anything the block declares that isn't one of the
+                                        // simple types below (a Point2 link, a live Building reference)
+                                        // cannot be reconstructed from a bare string; refuse rather than
+                                        // hand the block a value of the wrong type.
+                                        val configValue = reconstructConfig(block, desiredConfig)
+                                        if (configValue != null) {
+                                            targetTile.build.configure(configValue)
+                                        } else {
+                                            unrestoredConfigs += block.name
+                                        }
                                     }
                                 } else {
                                     targetTile.remove()
@@ -1614,6 +1656,13 @@ class Commands {
                         }
 
                         playerData.send("command.rollback.success", arg[0], affectedCount)
+                        if (unrestoredConfigs.isNotEmpty()) {
+                            playerData.send(
+                                "command.rollback.config.unrestored",
+                                unrestoredConfigs.size,
+                                unrestoredConfigs.distinct().joinToString(", ")
+                            )
+                        }
                     } catch (e: Exception) {
                         playerData.err("command.rollback.failed")
                         Log.err("Failed to roll back the actions of ${arg[0]}", e)
