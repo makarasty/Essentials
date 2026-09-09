@@ -681,15 +681,17 @@ enum class Achievement {
                 }
 
                 if (path != cachedMapPath) {
-                    cachedMapPath = path
-                    cachedMapHash = try {
+                    try {
                         val data = Files.readAllBytes(path)
                         val hash = MessageDigest.getInstance("MD5").digest(data)
-                        BigInteger(1, hash).toString(16)
+                        cachedMapHash = BigInteger(1, hash).toString(16)
+                        cachedMapPath = path
                     } catch (e: NoSuchAlgorithmException) {
-                        ""
+                        // Leave cachedMapPath unset so a transient failure doesn't permanently cache ""
+                        // for this map - the next call retries instead of being stuck wrong all game.
+                        return ""
                     } catch (e: IOException) {
-                        ""
+                        return ""
                     }
                 }
 

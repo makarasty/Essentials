@@ -114,52 +114,143 @@ class AchievementFixTest {
         )
     }
 
-    // task-097, exercising blockBuildEnd directly: placing a repair-turret must not be indistinguishable
-    // from placing a real turret to a caller that can observe the achievement machinery running without
-    // throwing - the achievement's own flags are file-private, so this pins that the handler accepts a
-    // repair-turret build event and does not crash walking event.tile.block() through the BaseTurret check.
+    // task-097, exercising blockBuildEnd directly and observing the real outcome. isNoTurretsFailed/
+    // isDuoTurretFailed are file-private top-level vars (not reachable through any public API - the only
+    // place they surface is gameover's win branch, which needs a full attack-mode win to exercise), so
+    // this reads the compiled AchievementEventsKt class's static fields directly via reflection. That is
+    // the actual pre-fix-vs-fixed behavioural difference: reverting the fix hunk in blockBuildEnd (back to
+    // event.tile.block().name.contains("turret")) makes this fail, because it flips which of the two
+    // builds trips each flag.
     @Test
-    fun blockBuildEndAcceptsARepairTurretPlacementWithoutFailing() {
+    fun blockBuildEndFlagsRealTurretsNotTheRepairPoint() {
         val (player, data) = newPlayer()
         val unit = spawnControlledUnit(player, UnitTypes.mono)
         try {
-            val tile = world.tile(60, 60)
-            tile.setBlock(Blocks.repairTurret, player.team(), 0)
-            achievementBlockBuildEnd(EventType.BlockBuildEndEvent(tile, unit, player.team(), false, null))
-            tile.setBlock(Blocks.air)
+            writeAchievementEventsFlag("isNoTurretsFailed", false)
+            writeAchievementEventsFlag("isDuoTurretFailed", false)
+
+            val repairTile = world.tile(65, 65)
+            repairTile.setBlock(Blocks.repairTurret, player.team(), 0)
+            achievementBlockBuildEnd(EventType.BlockBuildEndEvent(repairTile, unit, player.team(), false, null))
+            repairTile.setBlock(Blocks.air)
+
+            assertEquals(
+                false, readAchievementEventsFlag("isNoTurretsFailed"),
+                "Building a repair point (a support block, not a weapon) must not fail NoTurretsClear."
+            )
+            assertEquals(
+                false, readAchievementEventsFlag("isDuoTurretFailed"),
+                "Building a repair point must not fail DuoTurretSurvival either."
+            )
+
+            val duoTile = world.tile(66, 66)
+            duoTile.setBlock(Blocks.duo, player.team(), 0)
+            achievementBlockBuildEnd(EventType.BlockBuildEndEvent(duoTile, unit, player.team(), false, null))
+            duoTile.setBlock(Blocks.air)
+
+            assertEquals(
+                true, readAchievementEventsFlag("isNoTurretsFailed"),
+                "Building a real weapon turret (duo) must fail NoTurretsClear."
+            )
+            assertEquals(
+                false, readAchievementEventsFlag("isDuoTurretFailed"),
+                "Building duo itself is exempt - only a non-duo turret should fail DuoTurretSurvival."
+            )
+
+            val scatterTile = world.tile(67, 67)
+            scatterTile.setBlock(Blocks.scatter, player.team(), 0)
+            achievementBlockBuildEnd(EventType.BlockBuildEndEvent(scatterTile, unit, player.team(), false, null))
+            scatterTile.setBlock(Blocks.air)
+
+            assertEquals(
+                true, readAchievementEventsFlag("isDuoTurretFailed"),
+                "Building a non-duo real turret (scatter) must fail DuoTurretSurvival."
+            )
         } finally {
+            writeAchievementEventsFlag("isNoTurretsFailed", false)
+            writeAchievementEventsFlag("isDuoTurretFailed", false)
             unit.remove()
             leavePlayer(player)
         }
     }
 
+    private fun achievementEventsField(name: String) =
+        Class.forName("essential.core.service.achievements.AchievementEventsKt")
+            .getDeclaredField(name)
+            .also { it.isAccessible = true }
+
+    private fun readAchievementEventsFlag(name: String): Boolean = achievementEventsField(name).getBoolean(null)
+
+    private fun writeAchievementEventsFlag(name: String, value: Boolean) {
+        achievementEventsField(name).setBoolean(null, value)
+    }
+
     // task-101/task-102 attribution family: TurretMultiKill used to gate on the credited player's own
     // controlled unit having a type name containing "turret" - impossible, since turrets are blocks, not
     // units - so it could never fire. It also moved from UnitDestroyEvent (no killer) to
-    // UnitBulletDestroyEvent (bullet.owner is the killer), so this fires the new event with a real owner.
+    // UnitBulletDestroyEvent (bullet.owner is the killer). Per the opus reviewer's catch: the achievement is
+    // "5+ units simultaneously with a single bullet", so this must count by bullet identity, not lifetime
+    // kills - five victims sharing the same Bullet (one splash-damage explosion) is what the test simulates.
     @Test
-    fun turretMultiKillAccumulatesFromBulletOwnerWithoutAnImpossibleGate() {
+    fun turretMultiKillNeedsFiveVictimsFromTheSameBullet() {
         val (player, data) = newPlayer()
         val shooter = spawnControlledUnit(player, UnitTypes.dagger)
-        val victim = UnitTypes.dagger.spawn(Team.crux, player.x, player.y)
+        val victims = (1..5).map { UnitTypes.dagger.spawn(Team.crux, player.x, player.y) }
         try {
-            data.status["record.turret.multikill.current"] = "4"
+            data.status.remove("record.turret.multikill.current")
+            data.status.remove("record.turret.multikill.bullet")
             data.status.remove("record.turret.multikill")
             data.achievementStatus.remove("turretmultikill")
 
             val bullet = Bullet.create()
             bullet.owner = shooter
-            achievementUnitBulletDestroy(EventType.UnitBulletDestroyEvent(victim, bullet))
+            victims.forEach { achievementUnitBulletDestroy(EventType.UnitBulletDestroyEvent(it, bullet)) }
 
             assertEquals(
                 "1",
                 data.status["record.turret.multikill"],
-                "The fifth kill attributed to the same bullet owner must award TurretMultiKill without the " +
-                    "player piloting anything named turret."
+                "Five victims destroyed by the same bullet must award TurretMultiKill."
             )
         } finally {
             shooter.remove()
-            victim.remove()
+            victims.forEach { it.remove() }
+            leavePlayer(player)
+        }
+    }
+
+    // The same five kills, but split across two different bullets (a realistic non-splash spree) - must
+    // not award the achievement, since it is specifically about one bullet, not a kill streak.
+    @Test
+    fun turretMultiKillResetsOnANewBullet() {
+        val (player, data) = newPlayer()
+        val shooter = spawnControlledUnit(player, UnitTypes.dagger)
+        val victims = (1..5).map { UnitTypes.dagger.spawn(Team.crux, player.x, player.y) }
+        try {
+            data.status.remove("record.turret.multikill.current")
+            data.status.remove("record.turret.multikill.bullet")
+            data.status.remove("record.turret.multikill")
+            data.achievementStatus.remove("turretmultikill")
+
+            val firstBullet = Bullet.create()
+            firstBullet.owner = shooter
+            victims.take(4).forEach { achievementUnitBulletDestroy(EventType.UnitBulletDestroyEvent(it, firstBullet)) }
+
+            val secondBullet = Bullet.create()
+            secondBullet.owner = shooter
+            achievementUnitBulletDestroy(EventType.UnitBulletDestroyEvent(victims[4], secondBullet))
+
+            assertNull(
+                data.status["record.turret.multikill"],
+                "Four kills from one bullet plus one from a different bullet is not five from a single bullet."
+            )
+            assertEquals(
+                "1",
+                data.status["record.turret.multikill.current"],
+                "The new bullet must restart the count rather than continue the old bullet's tally."
+            )
+        } finally {
+            shooter.remove()
+            victims.forEach { it.remove() }
             leavePlayer(player)
         }
     }
@@ -195,16 +286,54 @@ class AchievementFixTest {
     // "wall"/"turret"/"factory" inside a UnitDestroyEvent handler, which never carries a block - always
     // false. Moved to BuildingBulletDestroyEvent, whose bullet carries a real owner (a crawler's death
     // explosion is a genuine shootOnDeath Weapon/Bullet, verified by decompiling UnitTypes - see notes).
+    // Per the opus reviewer's catch: "5 blocks with a single crawler unit attack" needs the same
+    // bullet-identity counting as TurretMultiKill - five blocks sharing one Bullet (a crawler has exactly
+    // one weapon, fired once, on death), not five blocks destroyed over a crawler-piloting career.
     @Test
-    fun crawlerBlockDestroyerCreditsTheControllingPlayer() {
+    fun crawlerBlockDestroyerNeedsFiveBlocksFromTheSameAttack() {
+        val (player, data) = newPlayer()
+        val crawler = spawnControlledUnit(player, UnitTypes.crawler)
+        val tiles = listOf(world.tile(70, 70), world.tile(71, 71), world.tile(72, 72), world.tile(73, 73), world.tile(74, 74))
+        try {
+            data.status.remove("record.crawler.block.destroy")
+            data.status.remove("record.crawler.block.destroy.current")
+            data.status.remove("record.crawler.block.destroy.bullet")
+            data.achievementStatus.remove("crawlerblockdestroyer")
+
+            val bullet = Bullet.create()
+            bullet.owner = crawler
+            tiles.forEach { tile ->
+                tile.setBlock(Blocks.copperWall, Team.crux, 0)
+                val build = tile.build ?: error("copper wall did not build")
+                achievementBuildingBulletDestroy(EventType.BuildingBulletDestroyEvent(build, bullet))
+                tile.setBlock(Blocks.air)
+            }
+
+            assertEquals(
+                "1",
+                data.status["record.crawler.block.destroy"],
+                "Five blocks destroyed by the same crawler explosion must award CrawlerBlockDestroyer."
+            )
+        } finally {
+            crawler.remove()
+            leavePlayer(player)
+        }
+    }
+
+    // Per the opus reviewer's catch: the old UnitDestroyEvent-based CrawlerBlockDestroyer required the
+    // destroyed content to be on a different team, and that check was dropped along with the rest of the
+    // dead branch during the event migration. Without it a player could farm the achievement by
+    // crawler-bombing their own team's blocks.
+    @Test
+    fun crawlerBlockDestroyerDoesNotCreditDestroyingYourOwnTeam() {
         val (player, data) = newPlayer()
         val crawler = spawnControlledUnit(player, UnitTypes.crawler)
         try {
-            data.status.remove("record.crawler.block.destroy")
-            data.achievementStatus.remove("crawlerblockdestroyer")
+            data.status.remove("record.crawler.block.destroy.current")
+            data.status.remove("record.crawler.block.destroy.bullet")
 
-            val tile = world.tile(61, 61)
-            tile.setBlock(Blocks.copperWall, Team.crux, 0)
+            val tile = world.tile(75, 75)
+            tile.setBlock(Blocks.copperWall, player.team(), 0)
             val build = tile.build ?: error("copper wall did not build")
 
             val bullet = Bullet.create()
@@ -212,10 +341,9 @@ class AchievementFixTest {
             achievementBuildingBulletDestroy(EventType.BuildingBulletDestroyEvent(build, bullet))
             tile.setBlock(Blocks.air)
 
-            assertEquals(
-                "1",
-                data.status["record.crawler.block.destroy"],
-                "A block destroyed by the player's own crawler must be credited to that player."
+            assertNull(
+                data.status["record.crawler.block.destroy.current"],
+                "Destroying your own team's block with your own crawler must not progress the achievement."
             )
         } finally {
             crawler.remove()
