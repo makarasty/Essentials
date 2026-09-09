@@ -35,7 +35,6 @@ r2dbcMysql = "1.4.1"
 r2dbcMariadb = "1.4.0"
 r2dbcPostgresql = "1.1.1.RELEASE"
 
-testcontainers = "2.0.4"
 jdbcPostgresql = "42.7.7"
 mariadb = "3.5.1"
 flyway = "10.21.0"
@@ -44,8 +43,6 @@ flyway = "10.21.0"
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
 flyway-database-postgresql = { module = "org.flywaydb:flyway-database-postgresql", version.ref = "flyway" }
 flyway-mysql = { module = "org.flywaydb:flyway-mysql", version.ref = "flyway" }
-testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
-testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "jdbcPostgresql" }
 mariadb = { module = "org.mariadb.jdbc:mariadb-java-client", version.ref = "mariadb" }
 
@@ -112,7 +109,6 @@ game-test = ["mindustry", "headless", "datafaker", "mockito", "jts"]
 r2dbc-drivers = ["r2dbc-h2", "r2dbc-mariadb", "r2dbc-mysql", "r2dbc-pool", "r2dbc-postgresql"]
 flyway = ["flyway-core", "flyway-database-postgresql", "flyway-mysql", "postgresql", "mariadb"]
 ktor = ["ktor", "ktor-netty", "ktor-content", "ktor-serialize-json", "ktor-auth", "ktor-auth-jwt", "ktor-sessions", "ktor-html", "ktor-websockets", "ktor-rate-limit"]
-testcontainers = ["testcontainers", "testcontainers-postgresql", "postgresql"]
 
 [plugins]
 kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
