@@ -1131,6 +1131,9 @@ fun worldLoad(event: WorldLoadEvent) {
     mapRatings.clear()
     // The coordinates in here are tile positions on the map that is being replaced.
     worldEditSelection.clear()
+    // A Tile from the replaced world keeps its old build reference, so the liveness check on the read
+    // side passes and never notices the world went away.
+    dpsTile = null
 
     // Every world replacement routes through WorldLoadEvent - loadMap, save loading, the console's own
     // host and load, and /vote back - so this is the one place that catches all of them. Clearing only at
