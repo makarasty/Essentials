@@ -2473,9 +2473,11 @@ class Commands {
                     playerData.err(noReason)
                     return
                 }
-                if (arg[1].toIntOrNull() != null) {
-                    try {
-                        var target: Map? = null
+                try {
+                    var target: Map? = null
+                    // Index lookup only applies when arg[1] is numeric; the name search below must run
+                    // regardless, or a real map name never reaches it and this branch always fails.
+                    if (arg[1].toIntOrNull() != null) {
                         val list = Vars.maps.all().sortedBy { a -> a.name() }
                         val arr = HashMap<Map, Int>()
                         list.forEachIndexed { index, map ->
@@ -2487,38 +2489,36 @@ class Commands {
                                 return@forEach
                             }
                         }
+                    }
 
-                        if (target == null) {
-                            target = Vars.maps.all().find { e -> e.plainName().contains(arg[1]) }
-                        }
+                    if (target == null) {
+                        target = Vars.maps.all().find { e -> e.plainName().contains(arg[1]) }
+                    }
 
-                        if (target != null) {
-                            if (players.size != 1) {
-                                val voteData = VoteData(
-                                    type = VoteType.Map,
-                                    map = target,
-                                    reason = arg[2],
-                                    starter = playerData
-                                )
-                                start(voteData)
-                            } else {
-                                isSurrender = true
-                                val currentRule = Vars.state.rules.mode()
-                                val reloader = WorldReloader()
-                                reloader.begin()
-                                Vars.world.loadMap(target, target.applyRules(currentRule))
-                                Vars.state.rules = Vars.state.map.applyRules(currentRule)
-                                Vars.logic.play()
-                                reloader.end()
-                                discardWorldHistory()
-                            }
+                    if (target != null) {
+                        if (players.size != 1) {
+                            val voteData = VoteData(
+                                type = VoteType.Map,
+                                map = target,
+                                reason = arg[2],
+                                starter = playerData
+                            )
+                            start(voteData)
                         } else {
-                            playerData.err(mapNotFound)
+                            isSurrender = true
+                            val currentRule = Vars.state.rules.mode()
+                            val reloader = WorldReloader()
+                            reloader.begin()
+                            Vars.world.loadMap(target, target.applyRules(currentRule))
+                            Vars.state.rules = Vars.state.map.applyRules(currentRule)
+                            Vars.logic.play()
+                            reloader.end()
+                            discardWorldHistory()
                         }
-                    } catch (_: IndexOutOfBoundsException) {
+                    } else {
                         playerData.err(mapNotFound)
                     }
-                } else {
+                } catch (_: IndexOutOfBoundsException) {
                     playerData.err(mapNotFound)
                 }
             }
