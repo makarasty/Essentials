@@ -85,10 +85,28 @@ class PlayerStatusPersistenceTest {
         try {
             sourceData.status["record.time.serpulo"] = "5400"
             sourceData.status["record.map.clear.count"] = "3"
-            sourceData.status["record.turret.quill.kill.time"] = "1000"
+            // Not running totals: a timestamp and three windows that get reset rather than accumulated.
+            sourceData.status["record.turret.quill.kill.time"] = "2000"
+            sourceData.status["record.pvp.win.streak.current"] = "3"
+            sourceData.status["record.warp.disconnect.duration"] = "20"
+            sourceData.status["record.time.noafk"] = "10000"
+            // Burst counts, reset to 1 rather than zero when their ten-second window lapses, so they
+            // read as totals and are not. Summed, they hand over QuillKiller at 5 and ZenithKiller at 30.
+            sourceData.status["record.turret.quill.kill"] = "3"
+            sourceData.status["record.turret.zenith.kill"] = "20"
+            // Genuine running totals whose keys start with record.time. - the exclusion is on the
+            // .time suffix, not on the word appearing anywhere in the key.
+            sourceData.status["record.time.chat"] = "600"
+
             targetData.status["record.time.serpulo"] = "1800"
             targetData.status["record.map.clear.count"] = "4"
-            targetData.status["record.turret.quill.kill.time"] = "2000"
+            targetData.status["record.turret.quill.kill.time"] = "1000"
+            targetData.status["record.pvp.win.streak.current"] = "4"
+            targetData.status["record.warp.disconnect.duration"] = "15"
+            targetData.status["record.time.noafk"] = "5000"
+            targetData.status["record.turret.quill.kill"] = "3"
+            targetData.status["record.turret.zenith.kill"] = "15"
+            targetData.status["record.time.chat"] = "400"
 
             runBlocking {
                 assertTrue(sourceData.update())
@@ -105,10 +123,47 @@ class PlayerStatusPersistenceTest {
                     "Merging accounts sums their counters, the way it already sums the columns."
                 )
                 assertEquals("7", merged.status["record.map.clear.count"])
+
+                // A .time key is a System.currentTimeMillis stamp: summed, it lands in the future and
+                // the ten-second window reading it never closes again, awarding QuillKiller for good.
                 assertEquals(
-                    "2000",
+                    "1000",
                     merged.status["record.turret.quill.kill.time"],
-                    "A .time key is a timestamp, not a count: the later one wins rather than the sum."
+                    "A timestamp is not a running total, so the target keeps its own."
+                )
+                // Windows are reset to zero rather than accumulated. Summing two half-runs awards a
+                // whole one that never happened.
+                assertEquals(
+                    "4",
+                    merged.status["record.pvp.win.streak.current"],
+                    "A .current window is not a running total."
+                )
+                assertEquals(
+                    "15",
+                    merged.status["record.warp.disconnect.duration"],
+                    "A .duration window is not a running total."
+                )
+                assertEquals(
+                    "5000",
+                    merged.status["record.time.noafk"],
+                    "record.time.noafk is reset on every join, so it is a window too."
+                )
+                assertEquals(
+                    "3",
+                    merged.status["record.turret.quill.kill"],
+                    "A burst count is not a running total: summed, two mid-burst accounts reach 5 " +
+                            "and QuillKiller is awarded for a burst that never happened."
+                )
+                assertEquals(
+                    "15",
+                    merged.status["record.turret.zenith.kill"],
+                    "Same for ZenithKiller at 30."
+                )
+                assertEquals(
+                    "1000",
+                    merged.status["record.time.chat"],
+                    "record.time.chat is a running total: the exclusion is the .time suffix, not the " +
+                            "word appearing anywhere in the key."
                 )
             }
         } finally {

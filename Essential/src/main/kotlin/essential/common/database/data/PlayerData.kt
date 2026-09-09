@@ -36,6 +36,48 @@ internal val statusJson = Json { ignoreUnknownKeys = true; isLenient = true }
  */
 internal const val RECORD_PREFIX = "record."
 
+/**
+ * The `record.*` keys that are not running totals, and so must never be added together when two
+ * accounts, or a temporary data object and a real one, are merged.
+ *
+ * Summing a window turns two half-runs into one whole one and awards something that never happened;
+ * summing a timestamp lands so far in the future that the window it guards never closes again. In
+ * both cases the merged player keeps their own value and the other side's is dropped.
+ *
+ * Note the two `.kill` entries. They read as lifetime totals and are not: `AchievementEvents.kt`
+ * assigns them `1` rather than incrementing whenever more than ten seconds have passed since the
+ * paired `.time` stamp, so they are burst counts. Excluding the timestamp alone does not protect
+ * them, because the achievement reads the count directly and never consults the stamp.
+ */
+internal val NON_TOTAL_RECORD_KEYS = setOf(
+    "record.turret.quill.kill.time",
+    "record.turret.zenith.kill.time",
+    "record.turret.quill.kill",
+    "record.turret.zenith.kill",
+    "record.pvp.win.streak.current",
+    "record.pvp.defeat.streak.current",
+    "record.turret.multikill.current",
+    "record.omura.horizon.kill.current",
+    "record.explosion.kill.current",
+    "record.warp.disconnect.duration",
+    "record.time.noafk",
+)
+
+/**
+ * Whether a `record.*` key may be added to the same key on another account.
+ *
+ * Both merge paths must use this rather than each spelling out a rule: an account merge and a
+ * temporary-data merge that disagree about one key is one of them handing out an achievement the
+ * other refuses. The suffix test is a backstop, not the rule - a new window that nobody remembered to
+ * put in [NON_TOTAL_RECORD_KEYS] is then dropped rather than summed, and dropping progress is the
+ * failure worth having.
+ */
+internal fun isRunningTotalRecordKey(key: String): Boolean =
+    key !in NON_TOTAL_RECORD_KEYS &&
+            !key.endsWith(".time") &&
+            !key.endsWith(".current") &&
+            !key.endsWith(".duration")
+
 internal fun parseLocaleOrDefault(rawLocale: String): String? {
     val normalized = rawLocale.replace('_', '-')
     val locale = Locale.forLanguageTag(normalized)

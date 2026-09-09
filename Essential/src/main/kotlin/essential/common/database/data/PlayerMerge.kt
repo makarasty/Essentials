@@ -29,11 +29,9 @@ import kotlin.time.ExperimentalTime
 /**
  * The target's achievement progress with the source's added to it.
  *
- * Only `record.*` keys are considered, since they are the only part of `status` the row carries.
- * Values are counts, so they add, with two exceptions that are not counts and would be meaningless
- * added together: a key that is not a number at all keeps the target's value, and a `.time` key
- * holds an epoch millisecond stamp, so the later of the two wins - adding those would put the
- * player's last kill somewhere in the far future and freeze the window checks that read it.
+ * Only `record.*` keys are considered, since they are the only part of `status` the row carries, and
+ * only the ones [isRunningTotalRecordKey] accepts are added - the windows and timestamps it rejects
+ * keep the target's own value. A source value that is not a number is left alone.
  */
 internal fun mergeRecordCounters(
     to: Map<String, String>,
@@ -43,18 +41,10 @@ internal fun mergeRecordCounters(
 
     for ((key, sourceValue) in from) {
         if (!key.startsWith(RECORD_PREFIX)) continue
+        if (!isRunningTotalRecordKey(key)) continue
 
-        val target = merged[key]
-        if (target == null) {
-            merged[key] = sourceValue
-            continue
-        }
-
-        val a = target.toLongOrNull()
-        val b = sourceValue.toLongOrNull()
-        if (a == null || b == null) continue
-
-        merged[key] = if (key.endsWith(".time")) maxOf(a, b).toString() else (a + b).toString()
+        val carried = sourceValue.toLongOrNull() ?: continue
+        merged[key] = ((merged[key]?.toLongOrNull() ?: 0L) + carried).toString()
     }
 
     return merged
