@@ -1977,7 +1977,11 @@ class Commands {
                 if (unit != null) {
                     if (parameter is Int) {
                         if (!unit.hidden) {
-                            unit.useUnitCap = false
+                            // useUnitCap only gates Units.canCreate, which factory blocks (Reconstructor,
+                            // UnitAssembler, UnitFactory, UnitCargoLoader) consult before producing a unit.
+                            // UnitType.spawn/create - what this command actually calls - never reads it, so
+                            // setting it false here bought nothing for this command and left the cap
+                            // disabled for that unit type's factories server-wide until restart.
                             isCheated = true
                             repeat(parameter) {
                                 Tmp.v1.rnd(spread)

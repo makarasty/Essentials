@@ -1023,6 +1023,10 @@ class ClientCommandTest {
         // Test spawning a unit with amount and team
         clientCommand.handleMessage("/spawn unit dagger 5 sharded", player)
 
+        // task-132: spawning used to flip the shared UnitType's useUnitCap to false with nothing ever
+        // resetting it, disabling the unit cap for every dagger-producing factory server-wide.
+        assertTrue(UnitTypes.dagger.useUnitCap, "spawning a unit must not disable its type's unit cap")
+
         // Test spawning a block
         clientCommand.handleMessage("/spawn block router", player)
 
