@@ -15,6 +15,7 @@ import essential.common.database.data.cleanupExpiredRoutingPermissions
 import essential.common.database.data.grantRoutingPermission
 import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.data.plugin.WarpCount
+import essential.common.database.data.plugin.WarpTotal
 import essential.common.database.data.plugin.WarpZone
 import essential.common.permission.Permission
 import essential.common.players
@@ -75,6 +76,23 @@ class Trigger {
             } catch (_: Exception) {
                 listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
             }
+        }
+
+        /**
+         * The distinct ip:port this cycle pings. A remote server configured as both a warp block
+         * and a warp count used to be pinged once per list, and every ping blocks the cycle for
+         * the socket's full second when the target does not answer.
+         */
+        fun pingTargets(
+            warpBlock: List<WarpBlock>,
+            warpCount: List<WarpCount>,
+            warpZone: List<WarpZone>
+        ): Set<Pair<String, Int>> {
+            val targets = LinkedHashSet<Pair<String, Int>>()
+            warpBlock.forEach { targets += it.ip to it.port }
+            warpCount.forEach { targets += it.ip to it.port }
+            warpZone.forEach { targets += it.ip to it.port }
+            return targets
         }
 
         /**
@@ -152,11 +170,45 @@ class Trigger {
     }
 
     class PingThread: Runnable {
-        private var ping = 0.000
-        private var lastFailure: String? = null
-        private var lastFailureLoggedAt = 0L
+        /**
+         * A warp entry that is permanently broken - a zone one tile wide, a host that will never
+         * resolve - fails every three seconds for as long as it is configured. Mindustry keeps
+         * every log file it rotates, so printing the same trace 1200 times an hour would cost an
+         * operator real disk. One instance per writing thread, so neither needs to be volatile.
+         */
+        private class FailureLog {
+            private var last: String? = null
+            private var loggedAt = 0L
+
+            /** A cycle that succeeded lets the next failure of the same shape print at once. */
+            fun ok() {
+                last = null
+            }
+
+            fun report(e: Exception) {
+                val signature = "${e::class.qualifiedName}:${e.stackTrace.firstOrNull()}"
+                val now = System.currentTimeMillis()
+                if (signature != last || now - loggedAt > 300000) {
+                    last = signature
+                    loggedAt = now
+                    Log.err(e)
+                }
+            }
+        }
+
+        private val pingFailures = FailureLog()
+        private val drawFailures = FailureLog()
         private var lastWarpZoneWarning: String? = null
         private var lastWarpZoneWarningAt = 0L
+        private var lastResolveWarning: String? = null
+        private var lastResolveWarningAt = 0L
+
+        /**
+         * calculateCenter is O(width * height) with a sort on top, and it is a pure function of the
+         * two stored positions, so it is computed once per zone rather than once per cycle on the
+         * game thread. Written only from [draw].
+         */
+        private val centers = HashMap<Pair<Int, Int>, Pair<Int, Int>>()
 
         private fun calculateCenter(startTile: Tile, endTile: Tile): Pair<Int, Int> {
             data class Point(val x: Int, val y: Int)
@@ -224,301 +276,62 @@ class Trigger {
         private fun <T : Any> snapshot(list: List<T>): List<T> = ArrayList<T?>(list).filterNotNull()
 
         override fun run() {
-            var isNotTargetMap: Boolean
             try {
                 while (currentThread().isInterrupted.not()) {
                     // The warp display is decorative; a failure in one cycle must not end the
                     // round for everyone on the server.
                     try {
+                        val startedAt = System.nanoTime()
                         val data = pluginData.data
                         val warpCount = snapshot(data.warpCount)
                         val warpTotal = snapshot(data.warpTotal)
                         val warpZone = snapshot(data.warpZone)
                         val warpBlock = snapshot(data.warpBlock)
 
-                        isNotTargetMap = false
-                        if (warpCount.none { f -> f.mapName == Vars.state.map.name() } &&
-                            warpTotal.none { f -> f.mapName == Vars.state.map.name() } &&
-                            warpZone.none { f -> f.mapName == Vars.state.map.name() } &&
-                            warpBlock.none { f -> f.mapName == Vars.state.map.name() }
-                        ) {
-                            isNotTargetMap = true
-                        }
+                        // The only game read left on this thread, and only to decide whether this
+                        // cycle pings at all. Vars.state.map is a plain field and name() is an
+                        // ObjectMap lookup, so a map change during it can also throw - which is why
+                        // it sits inside the cycle catch rather than outside it. Either way the
+                        // next cycle corrects the answer three seconds later.
+                        val mapName = Vars.state.map.name()
+                        val onThisMap = warpCount.any { it.mapName == mapName } ||
+                            warpTotal.any { it.mapName == mapName } ||
+                            warpZone.any { it.mapName == mapName } ||
+                            warpBlock.any { it.mapName == mapName }
 
-                        if (!isNotTargetMap) {
+                        if (onThisMap) {
+                            val targets = pingTargets(warpBlock, warpCount, warpZone)
+                            val serverInfo = getServerInfo(targets)
+                            val resolved = targets.associate { it.first to resolve(it.first) }
                             var total = 0
-                            val serverInfo = getServerInfo(warpBlock, warpCount, warpZone)
                             for (a in serverInfo) {
                                 total += a.players
                             }
 
-                            if (Vars.state.isPlaying) {
-                                for (value in warpCount) {
-                                    if (Vars.state.map.name() == value.mapName) {
-                                        val info = serverInfo.find { a -> a.address == value.ip && a.port == value.port }
-                                        if (info != null) {
-                                            val str = info.players.toString()
-                                            val digits = IntArray(str.length)
-                                            for (a in str.indices) digits[a] = str[a] - '0'
-                                            val tile = value.tile ?: continue
-                                            if (value.players != info.players) {
-                                                Core.app.post {
-                                                    for (px in 0..2) {
-                                                        for (py in 0..4) {
-                                                            Vars.world.tile(tile.x + 4 + px, tile.y + py)
-                                                                ?.setBlock(Blocks.air)
-                                                        }
-                                                    }
-                                                }
-                                            }
+                            // Labels have to outlive the cycle that drew them, and the cycle
+                            // lasts as long as its pings take rather than the three seconds the
+                            // sleep alone suggests. Capped, because a dead resolver has no timeout
+                            // of its own and nothing ever clears a label early.
+                            val elapsed = ((System.nanoTime() - startedAt) / 1e9).coerceIn(0.0, 12.0)
 
-                                            val updated = WarpCount(
-                                                Vars.state.map.name(),
-                                                value.pos,
-                                                value.ip,
-                                                value.port
-                                            )
-                                            updated.numberSize = digits.size
-                                            updated.players = info.players
-                                            // The position this entry had in the copy is not necessarily
-                                            // its position in the live list, so the write back happens on
-                                            // the main thread and finds the entry by identity.
-                                            Core.app.post {
-                                                val index = data.warpCount.indexOfFirst { it === value }
-                                                if (index != -1) data.warpCount[index] = updated
-                                            }
-                                        }
-                                    }
-                                }
-
-                                val memory = mutableListOf<Pair<Playerc, Triple<String, Float, Float>>>()
-                                val stale = mutableListOf<WarpBlock>()
-                                for (value in warpBlock) {
-                                    if (Vars.state.map.name() == value.mapName) {
-                                        // Out of bounds means the loaded map is a different one that
-                                        // happens to share this name, not that the block was broken.
-                                        // Six servers share one plugin_data row, so removing here would
-                                        // wipe another server's warp blocks.
-                                        val tile = Vars.world.tile(value.x, value.y) ?: continue
-                                        // A non-air block with no building is either scenery or a block
-                                        // being replaced right now, and setBlock assigns the block before
-                                        // it assigns the building. Neither is proof the entry is stale.
-                                        val build = tile.build
-                                        if (build == null) {
-                                            if (tile.block() == Blocks.air) stale.add(value)
-                                        } else {
-                                            var margin = 0f
-                                            var isDup = false
-                                            val x = build.getX()
-
-                                            when (value.size) {
-                                                1 -> margin = 8f
-                                                2 -> {
-                                                    margin = 16f
-                                                    isDup = true
-                                                }
-
-                                                3 -> margin = 16f
-                                                4 -> {
-                                                    margin = 24f
-                                                    isDup = true
-                                                }
-
-                                                5 -> margin = 24f
-                                                6 -> {
-                                                    margin = 32f
-                                                    isDup = true
-                                                }
-
-                                                7 -> margin = 32f
-                                            }
-
-                                            var y = build.getY() + if (isDup) margin - 8 else margin
-
-                                            var alive = false
-                                            var alivePlayer = 0
-                                            var currentMap = ""
-                                            serverInfo.forEach {
-                                                try {
-                                                    val address = InetAddress.getByName(value.ip).hostAddress
-                                                    if ((it.address == value.ip || it.address == address) && it.port == value.port) {
-                                                        alive = true
-                                                        alivePlayer = it.players
-                                                        currentMap = it.mapname
-                                                    }
-                                                } catch (_: UnknownHostException) {
-                                                    Log.warn("Could not find a matching address $value.ip:$value.port")
-                                                } catch (_: Exception) {
-
-                                                }
-                                            }
-
-                                            if (alive) {
-                                                if (isDup) y += 4
-                                                Groups.player.forEach { a ->
-                                                    memory.add(
-                                                        a to Triple(
-                                                            "$currentMap\n[white][yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
-                                                            x,
-                                                            y
-                                                        )
-                                                    )
-                                                }
-                                                value.online = true
-                                            } else {
-                                                Groups.player.forEach { a ->
-                                                    memory.add(
-                                                        a to Triple(
-                                                            Bundle(a.locale)["event.server.warp.offline"],
-                                                            x,
-                                                            y
-                                                        )
-                                                    )
-                                                }
-                                                value.online = false
-                                            }
-
-                                            if (isDup) margin -= 4
-                                            Groups.player.forEach { a ->
-                                                memory.add(a to Triple(value.description, x, build.getY() - margin))
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if (stale.isNotEmpty()) {
-                                    // By identity, not by equals: WarpBlock is a data class, so two
-                                    // entries describing the same block are equal and removeAll would
-                                    // take both.
-                                    Core.app.post { data.warpBlock.removeAll { b -> stale.any { it === b } } }
-                                }
-
-                                for (value in warpZone) {
-                                    if (Vars.state.map.name() == value.mapName) {
-                                        val start = value.startTile
-                                        val finish = value.finishTile
-                                        if (start == null || finish == null) {
-                                            // A zone stored on a larger map of this name renders nothing here,
-                                            // while getServerInfo keeps pinging its address every three seconds.
-                                            // Its own rate-limit fields, so a permanently broken zone cannot hide
-                                            // a real exception from the cycle catch below.
-                                            val signature = "warpzone:${value.mapName}:${value.start}:${value.finish}"
-                                            val now = System.currentTimeMillis()
-                                            if (signature != lastWarpZoneWarning || now - lastWarpZoneWarningAt > 300000) {
-                                                lastWarpZoneWarning = signature
-                                                lastWarpZoneWarningAt = now
-                                                Log.warn("Warp zone for ${value.ip}:${value.port} has no tiles on the current map, skipping")
-                                            }
-                                            continue
-                                        }
-                                        val center = calculateCenter(start, finish)
-
-                                        var alive = false
-                                        var alivePlayer = 0
-                                        // A hostname that stopped resolving must not take the thread down,
-                                        // and the lookup does not depend on which host we are comparing to.
-                                        val address = runCatching { InetAddress.getByName(value.ip).hostAddress }.getOrNull()
-                                        serverInfo.forEach {
-                                            if ((it.address == value.ip || (address != null && it.address == address)) && it.port == value.port) {
-                                                alive = true
-                                                alivePlayer = it.players
-                                            }
-                                        }
-
-                                        // todo 중앙 정렬 안됨
-                                        if (alive) {
-                                            for (a in Groups.player) {
-                                                memory.add(
-                                                    a to Triple(
-                                                        "[yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
-                                                        (center.first * 8).toFloat(),
-                                                        (center.second * 8).toFloat()
-                                                    )
-                                                )
-                                            }
-                                        } else {
-                                            for (a in Groups.player) {
-                                                memory.add(
-                                                    a to Triple(
-                                                        Bundle(a.locale)["event.server.warp.offline"],
-                                                        (center.first * 8).toFloat(),
-                                                        (center.second * 8).toFloat()
-                                                    )
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                for (m in memory) {
-                                    Core.app.post {
-                                        Call.label(
-                                            m.first.con(),
-                                            m.second.first,
-                                            ping.toFloat() + 3f,
-                                            m.second.second,
-                                            m.second.third
-                                        )
-                                    }
-                                }
-
-                                for (value in warpTotal) {
-                                    if (Vars.state.map.name() == value.mapName) {
-                                        val tile = value.tile ?: continue
-                                        if (value.totalPlayers != total) {
-                                            when (total) {
-                                                0, 1, 2, 3, 4, 5, 6, 7, 8, 9 -> {
-                                                    for (px in 0..2) {
-                                                        for (py in 0..4) {
-                                                            Core.app.post {
-                                                                Vars.world.tile(
-                                                                    tile.x + px,
-                                                                    tile.y + py
-                                                                )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                                else -> {
-                                                    for (px in 0..5) {
-                                                        for (py in 0..4) {
-                                                            Core.app.post {
-                                                                Vars.world.tile(
-                                                                    tile.x + 4 + px,
-                                                                    tile.y + py
-                                                                )?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (conf.feature.count) {
-                                Core.settings.put("totalPlayers", total + Groups.player.size())
-                            }
+                            // Everything the drawing needs reads Groups.player, Vars.state,
+                            // Vars.world or the settings map. Arc hands out one of two pooled Seq
+                            // iterators per group (Seq.SeqIterable.iterator), so a walk from here
+                            // concurrent with the game thread's own walk shares one index, and
+                            // Core.settings is a plain HashMap the game thread iterates while it
+                            // saves. The pings are this thread's job; the drawing is not.
+                            val cycle = Cycle(
+                                warpCount, warpTotal, warpZone, warpBlock,
+                                serverInfo, resolved, total, elapsed.toFloat() + 3f
+                            )
+                            Core.app.post { draw(cycle) }
                         }
 
-                        lastFailure = null
+                        pingFailures.ok()
                     } catch (e: Exception) {
-                        // A warp entry that is permanently broken - a zone one tile wide, a host
-                        // that will never resolve - fails every three seconds for as long as it is
-                        // configured. Mindustry keeps every log file it rotates, so printing the
-                        // same trace 1200 times an hour would cost an operator real disk.
-                        val signature = "${e::class.qualifiedName}:${e.stackTrace.firstOrNull()}"
-                        val now = System.currentTimeMillis()
-                        if (signature != lastFailure || now - lastFailureLoggedAt > 300000) {
-                            lastFailure = signature
-                            lastFailureLoggedAt = now
-                            Log.err(e)
-                        }
+                        pingFailures.report(e)
                     }
 
-                    ping = 0.000
                     sleep(3000)
                 }
 
@@ -532,24 +345,239 @@ class Trigger {
             }
         }
 
-        private fun getServerInfo(
-            warpBlock: List<WarpBlock>,
-            warpCount: List<WarpCount>,
-            warpZone: List<WarpZone>
-        ): MutableSet<Host> {
-            val total = mutableSetOf<Host>()
-            var buf = arrayOf<Pair<String, Int>>()
+        /** One cycle's ping results, handed over for the game thread to draw from. */
+        private class Cycle(
+            val warpCount: List<WarpCount>,
+            val warpTotal: List<WarpTotal>,
+            val warpZone: List<WarpZone>,
+            val warpBlock: List<WarpBlock>,
+            val serverInfo: Set<Host>,
+            /** Configured host to the address behind it, resolved once for the whole cycle. */
+            val resolved: Map<String, String?>,
+            val total: Int,
+            val labelLife: Float,
+        )
 
-            for (it in warpBlock) {
-                buf += Pair(it.ip, it.port)
+        private fun Cycle.hostFor(ip: String, port: Int): Host? {
+            val address = resolved[ip]
+            return serverInfo.find { (it.address == ip || (address != null && it.address == address)) && it.port == port }
+        }
+
+        /**
+         * Draws one cycle's results. Runs on the game thread: every read below is live game state,
+         * and the writes are tile edits, labels and a settings entry the engine owns.
+         */
+        private fun draw(cycle: Cycle) = try {
+            drawCycle(cycle)
+            drawFailures.ok()
+        } catch (e: Exception) {
+            // This body used to run on the ping thread under the catch above. On the game thread
+            // there is nothing over it: arc's TaskQueue.run calls the runnable bare, so a throw
+            // here would unwind the update loop and stop the server - which is the defect commit
+            // d023e36e closed for the ping thread.
+            drawFailures.report(e)
+        }
+
+        private fun drawCycle(cycle: Cycle) {
+            val data = pluginData.data
+            val mapName = Vars.state.map.name()
+
+            if (Vars.state.isPlaying) {
+                for (value in cycle.warpCount) {
+                    if (mapName == value.mapName) {
+                        // Resolved like the block and zone loops beside it: a counter configured by
+                        // hostname never matched the address its ping answered from.
+                        val info = cycle.hostFor(value.ip, value.port)
+                        if (info != null) {
+                            val tile = value.tile ?: continue
+                            if (value.players != info.players) {
+                                for (px in 0..2) {
+                                    for (py in 0..4) {
+                                        Vars.world.tile(tile.x + 4 + px, tile.y + py)
+                                            ?.setBlock(Blocks.air)
+                                    }
+                                }
+                            }
+
+                            val updated = WarpCount(mapName, value.pos, value.ip, value.port)
+                            updated.numberSize = info.players.toString().length
+                            updated.players = info.players
+                            // The position this entry had in the copy is not necessarily its
+                            // position in the live list, so the write back finds it by identity.
+                            val index = data.warpCount.indexOfFirst { it === value }
+                            if (index != -1) data.warpCount[index] = updated
+                        }
+                    }
+                }
+
+                val memory = mutableListOf<Pair<Playerc, Triple<String, Float, Float>>>()
+                val stale = mutableListOf<WarpBlock>()
+                for (value in cycle.warpBlock) {
+                    if (mapName == value.mapName) {
+                        // Out of bounds means the loaded map is a different one that happens to
+                        // share this name, not that the block was broken. Six servers share one
+                        // plugin_data row, so removing here would wipe another server's warp blocks.
+                        val tile = Vars.world.tile(value.x, value.y) ?: continue
+                        // A non-air block with no building is either scenery or a block being
+                        // replaced right now, and setBlock assigns the block before it assigns the
+                        // building. Neither is proof the entry is stale.
+                        val build = tile.build
+                        if (build == null) {
+                            if (tile.block() == Blocks.air) stale.add(value)
+                        } else {
+                            var margin = 0f
+                            var isDup = false
+                            val x = build.getX()
+
+                            when (value.size) {
+                                1 -> margin = 8f
+                                2 -> {
+                                    margin = 16f
+                                    isDup = true
+                                }
+
+                                3 -> margin = 16f
+                                4 -> {
+                                    margin = 24f
+                                    isDup = true
+                                }
+
+                                5 -> margin = 24f
+                                6 -> {
+                                    margin = 32f
+                                    isDup = true
+                                }
+
+                                7 -> margin = 32f
+                            }
+
+                            var y = build.getY() + if (isDup) margin - 8 else margin
+
+                            val info = cycle.hostFor(value.ip, value.port)
+                            if (info != null) {
+                                if (isDup) y += 4
+                                Groups.player.forEach { a ->
+                                    memory.add(
+                                        a to Triple(
+                                            "${info.mapname}\n[white][yellow]${info.players}[] ${Bundle(a.locale)["event.server.warp.players"]}",
+                                            x,
+                                            y
+                                        )
+                                    )
+                                }
+                            } else {
+                                Groups.player.forEach { a ->
+                                    memory.add(
+                                        a to Triple(
+                                            Bundle(a.locale)["event.server.warp.offline"],
+                                            x,
+                                            y
+                                        )
+                                    )
+                                }
+                            }
+                            value.online = info != null
+
+                            if (isDup) margin -= 4
+                            Groups.player.forEach { a ->
+                                memory.add(a to Triple(value.description, x, build.getY() - margin))
+                            }
+                        }
+                    }
+                }
+
+                if (stale.isNotEmpty()) {
+                    // By identity, not by equals: WarpBlock is a data class, so two entries
+                    // describing the same block are equal and removeAll would take both.
+                    data.warpBlock.removeAll { b -> stale.any { it === b } }
+                }
+
+                for (value in cycle.warpZone) {
+                    if (mapName == value.mapName) {
+                        val start = value.startTile
+                        val finish = value.finishTile
+                        if (start == null || finish == null) {
+                            // A zone stored on a larger map of this name renders nothing here,
+                            // while getServerInfo keeps pinging its address every three seconds.
+                            // Its own rate-limit fields, so a permanently broken zone cannot hide
+                            // a real exception from the cycle catch above.
+                            val signature = "warpzone:${value.mapName}:${value.start}:${value.finish}"
+                            val now = System.currentTimeMillis()
+                            if (signature != lastWarpZoneWarning || now - lastWarpZoneWarningAt > 300000) {
+                                lastWarpZoneWarning = signature
+                                lastWarpZoneWarningAt = now
+                                Log.warn("Warp zone for ${value.ip}:${value.port} has no tiles on the current map, skipping")
+                            }
+                            continue
+                        }
+                        val center = centers.getOrPut(value.start to value.finish) {
+                            calculateCenter(start, finish)
+                        }
+                        val info = cycle.hostFor(value.ip, value.port)
+
+                        // todo 중앙 정렬 안됨
+                        for (a in Groups.player) {
+                            memory.add(
+                                a to Triple(
+                                    if (info != null) "[yellow]${info.players}[] ${Bundle(a.locale)["event.server.warp.players"]}"
+                                    else Bundle(a.locale)["event.server.warp.offline"],
+                                    (center.first * 8).toFloat(),
+                                    (center.second * 8).toFloat()
+                                )
+                            )
+                        }
+                    }
+                }
+
+                for (m in memory) {
+                    Call.label(m.first.con(), m.second.first, cycle.labelLife, m.second.second, m.second.third)
+                }
+
+                for (value in cycle.warpTotal) {
+                    if (mapName == value.mapName) {
+                        val tile = value.tile ?: continue
+                        if (value.totalPlayers != cycle.total) {
+                            val offset = if (cycle.total in 0..9) 0 else 4
+                            val lastColumn = if (cycle.total in 0..9) 2 else 5
+                            for (px in 0..lastColumn) {
+                                for (py in 0..4) {
+                                    Vars.world.tile(tile.x + offset + px, tile.y + py)
+                                        ?.let { Call.setTile(it, Blocks.air, Team.sharded, 0) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            for (it in warpCount) {
-                buf += Pair(it.ip, it.port)
+
+            if (conf.feature.count) {
+                Core.settings.put("totalPlayers", cycle.total + Groups.player.size())
             }
-            for (it in warpZone) {
-                buf += Pair(it.ip, it.port)
+        }
+
+        /**
+         * The address behind a warp target's host, or null when it does not resolve. Looked up once
+         * per cycle: it used to run inside the comparison loop, so one warp block cost one DNS
+         * lookup - which has no timeout of its own - per pinged server per cycle.
+         */
+        private fun resolve(ip: String): String? = try {
+            InetAddress.getByName(ip).hostAddress
+        } catch (_: UnknownHostException) {
+            val now = System.currentTimeMillis()
+            if (ip != lastResolveWarning || now - lastResolveWarningAt > 300000) {
+                lastResolveWarning = ip
+                lastResolveWarningAt = now
+                Log.warn("Could not resolve the warp target $ip")
             }
-            for (a in buf) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+
+        private fun getServerInfo(targets: Set<Pair<String, Int>>): MutableSet<Host> {
+            val total = mutableSetOf<Host>()
+
+            for (a in targets) {
                 pingHostImpl(a.first, a.second) {
                     if (it.name != null) {
                         total.add(it)
