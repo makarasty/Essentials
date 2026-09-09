@@ -615,12 +615,17 @@ class Commands {
 
             val unbanControlMenus = arrayOf(
                 arrayOf(bundle[close]),
-                arrayOf(bundle[ban], bundle["info.button.kick"])
+                arrayOf(bundle["info.button.unban"], bundle["info.button.kick"])
             )
 
             val offlineControlMenus = arrayOf(
                 arrayOf(bundle[close]),
                 arrayOf(bundle[ban])
+            )
+
+            val offlineUnbanControlMenus = arrayOf(
+                arrayOf(bundle[close]),
+                arrayOf(bundle["info.button.unban"])
             )
 
             val banMenus = arrayOf(
@@ -785,7 +790,7 @@ class Commands {
                 val menu = if (Permission.check(other, "info.other")) {
                     arrayOf(arrayOf(bundle[close]))
                 } else if (other.player.con() == null) {
-                    offlineControlMenus
+                    if (!isBanned) offlineControlMenus else offlineUnbanControlMenus
                 } else if (!isBanned) {
                     controlMenus
                 } else {
