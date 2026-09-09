@@ -3,17 +3,21 @@ import PluginTest.Companion.err
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.log
 import PluginTest.Companion.newPlayer
+import PluginTest.Companion.observeMessages
 import PluginTest.Companion.pumpApp
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import essential.common.database.data.getPlayerData
 import essential.common.isVoting
+import essential.common.permission.Permission
 import essential.common.systemTimezone
 import essential.core.TempBan
+import essential.core.isGlobalMute
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
+import mindustry.core.NetServer
 import mindustry.game.Team
 import mindustry.net.Administration
 import kotlin.test.BeforeTest
@@ -228,6 +232,127 @@ class CommandSafetyTest {
             runBlocking { TempBan.clearBanExpire(uuid) }
             admins.unbanPlayerID(uuid)
             pumpApp()
+        }
+    }
+
+    /**
+     * `/me` and `/pm` wrote to Call.sendMessage and sendMessage directly, so neither reached a single
+     * registered chat filter: the mute and global-mute check, the word blacklist, the keyboard-layout
+     * rewrite and a running vote all sit behind filterMessage, which nothing here called. Both commands
+     * are in the shipped `user` group, so a server-wide mute stopped neither.
+     *
+     * Each test needs two observers, because the chat filter alone cannot fail. A filter registered
+     * last sees the text only if every earlier filter passed it - but when an earlier filter drops the
+     * message, the observer sees nothing whether the command honours that drop or ignores it and sends
+     * anyway. So each test also watches the last thing the command touches before it sends: the chat
+     * formatter for /me, the sender's own echo for /pm. Those are what make the muted half red.
+     */
+    @Test
+    fun theMeCommandGoesThroughTheChatFilters() {
+        val sender = newPlayer()
+        // `me` is in the user group, and a user is not exempt from the global mute the way an admin is.
+        setPermission(sender.first, "user", false)
+        assertFalse(
+            Permission.check(sender.second, "chat.admin"),
+            "a sender holding chat.admin is exempt from the global mute and the muted half cannot fail"
+        )
+
+        val seen = AtomicReference<String?>(null)
+        val observer = Administration.ChatFilter { _, message ->
+            seen.set(message)
+            message
+        }
+        Vars.netServer.admins.addChatFilter(observer)
+
+        // Call.sendMessage reaches no player connection in this harness - Net.send dispatches it to
+        // the provider's own socket - so the formatter is the only place the broadcast is visible.
+        val formatted = AtomicReference<String?>(null)
+        val previousFormatter = Vars.netServer.chatFormatter
+        Vars.netServer.chatFormatter = NetServer.ChatFormatter { player, message ->
+            formatted.set(message)
+            previousFormatter.format(player, message)
+        }
+
+        val wasGlobalMute = isGlobalMute
+        try {
+            clientCommand.handleMessage("/me hello there", sender.first)
+            assertTrue(
+                waitUntil(5000) { seen.get() == "hello there" },
+                "/me must go through the chat filters, saw: '${seen.get()}'"
+            )
+            assertEquals("hello there", formatted.get(), "and it must still be broadcast when nothing refuses it")
+
+            seen.set(null)
+            formatted.set(null)
+            sender.second.lastReceivedMessage = ""
+            isGlobalMute = true
+
+            clientCommand.handleMessage("/me hello again", sender.first)
+
+            val received = observeMessages(sender.second, 1500) { false }
+            assertTrue(
+                received.any { it == err("event.chat.disabled") },
+                "a server-wide mute must refuse /me and say so, saw: $received"
+            )
+            assertNull(seen.get(), "and nothing may reach the end of the filter chain")
+            assertNull(formatted.get(), "and nothing may be broadcast")
+        } finally {
+            isGlobalMute = wasGlobalMute
+            Vars.netServer.chatFormatter = previousFormatter
+            Vars.netServer.admins.chatFilters.remove(observer)
+        }
+    }
+
+    @Test
+    fun aPrivateMessageGoesThroughTheChatFilters() {
+        val sender = newPlayer()
+        val target = newPlayer()
+        setPermission(sender.first, "user", false)
+        assertFalse(
+            Permission.check(sender.second, "chat.admin"),
+            "a sender holding chat.admin is exempt from the global mute and the muted half cannot fail"
+        )
+
+        val seen = AtomicReference<String?>(null)
+        val observer = Administration.ChatFilter { _, message ->
+            seen.set(message)
+            message
+        }
+        Vars.netServer.admins.addChatFilter(observer)
+
+        val wasGlobalMute = isGlobalMute
+        try {
+            sender.second.lastReceivedMessage = ""
+            clientCommand.handleMessage("/pm ${target.first.uuid()} hello there", sender.first)
+            assertTrue(
+                waitUntil(5000) { seen.get() == "hello there" },
+                "/pm must go through the chat filters, saw: '${seen.get()}'"
+            )
+            val echo = observeMessages(sender.second, 1500) { it.startsWith("[green][PM]") }
+            assertTrue(
+                echo.any { it.startsWith("[green][PM]") && it.endsWith("hello there") },
+                "the sender must get their own copy of a private message that nothing refused, saw: $echo"
+            )
+
+            seen.set(null)
+            sender.second.lastReceivedMessage = ""
+            isGlobalMute = true
+
+            clientCommand.handleMessage("/pm ${target.first.uuid()} hello again", sender.first)
+
+            val received = observeMessages(sender.second, 1500) { false }
+            assertTrue(
+                received.any { it == err("event.chat.disabled") },
+                "a server-wide mute must refuse /pm and say so, saw: $received"
+            )
+            assertNull(seen.get(), "and nothing may reach the end of the filter chain")
+            assertFalse(
+                received.any { it.startsWith("[green][PM]") },
+                "and the private message must not be sent, saw: $received"
+            )
+        } finally {
+            isGlobalMute = wasGlobalMute
+            Vars.netServer.admins.chatFilters.remove(observer)
         }
     }
 }
