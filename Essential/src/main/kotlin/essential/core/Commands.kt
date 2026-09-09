@@ -84,12 +84,9 @@ class Commands {
         val charsPlacing = ConcurrentHashMap<String, Array<String>>()
 
         /**
-         * Drops the world history recorded on the map that is being replaced.
-         *
-         * History rows are keyed by tile coordinates and by nothing else, so they only mean anything
-         * inside the world they were recorded in. Left in place across a map change they become claims
-         * about a map that is no longer loaded, and a rollback rebuilds and removes real blocks on the
-         * current map from them. The game over handler already clears them; a map changed directly never
+         * History rows are keyed by tile coordinates and by nothing else, so across a map change they
+         * become claims about a map that is no longer loaded and a rollback rebuilds and removes real
+         * blocks from them. The game over handler already clears them; a map changed directly never
          * fires one. The flush first is so that rows still sitting in the buffer cannot land after the
          * table has been emptied.
          */
@@ -101,8 +98,6 @@ class Commands {
         }
 
         /**
-         * Registers a menu that only [owner] is allowed to answer.
-         *
          * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
          * may call with any id, so the engine hands every id it receives straight to the listener
          * registered under it. A menu that acts on behalf of the player it was opened for therefore
@@ -1767,8 +1762,8 @@ class Commands {
 
         // permission_user.yaml is per server and wins over the shared permission column, so an entry
         // written here would mask this group on this server and be pushed back over the shared row on
-        // the next load. The group belongs in the row every server reads. An entry the operator wrote by
-        // hand is left in place and kept in step; one this command created is not worth having.
+        // the next load. An entry the operator wrote by hand is left in place and kept in step; one
+        // this command created is not worth having.
         val written = if (hadUserEntry) {
             Permission.setGroup(data.uuid, group)
         } else {
@@ -1861,8 +1856,7 @@ class Commands {
                 playerData.err("command.skip.number.low")
             } else if (wave > conf.command.skip.adminLimit) {
                 // Every wave is spawned before this command returns, on the main thread, so the count the
-                // caller picks is how long the server stops ticking and how many units it allocates. The
-                // vote path's limit is a different setting for a different command and is left alone.
+                // caller picks is how long the server stops ticking and how many units it allocates.
                 playerData.err("command.skip.number.high", conf.command.skip.adminLimit)
             } else {
                 val previousWave = Vars.state.wave
@@ -2161,8 +2155,7 @@ class Commands {
             TempBan.clearBanExpire(uuid)
 
             // That call logs a database failure and carries on, so the row is read back rather than
-            // telling a moderator the ban is permanent when the write never landed. This is the whole
-            // reason the command exists: the bot already reports things that did not happen.
+            // telling a moderator the ban is permanent when the write never landed.
             val cleared = getPlayerData(uuid)?.banExpireDate == null && !pluginData.data.tempBans.containsKey(uuid)
 
             when {

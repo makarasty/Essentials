@@ -168,7 +168,7 @@ class Trigger {
             try {
                 while (currentThread().isInterrupted.not()) {
                     // The warp display is decorative; a failure in one cycle must not end the
-                    // round for everyone on the server. Log it and try again on the next cycle.
+                    // round for everyone on the server.
                     try {
                         val data = pluginData.data
                         val warpCount = snapshot(data.warpCount)
@@ -431,9 +431,7 @@ class Trigger {
                         // A warp entry that is permanently broken - a zone one tile wide, a host
                         // that will never resolve - fails every three seconds for as long as it is
                         // configured. Mindustry keeps every log file it rotates, so printing the
-                        // same trace 1200 times an hour would cost an operator real disk. The first
-                        // of each distinct failure is printed in full, then once every five minutes
-                        // until it changes or a cycle succeeds.
+                        // same trace 1200 times an hour would cost an operator real disk.
                         val signature = "${e::class.qualifiedName}:${e.stackTrace.firstOrNull()}"
                         val now = System.currentTimeMillis()
                         if (signature != lastFailure || now - lastFailureLoggedAt > 300000) {
