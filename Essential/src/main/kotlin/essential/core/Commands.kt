@@ -677,11 +677,23 @@ class Commands {
                                             )
                                             val uuid = targetData!!.uuid
                                             val label = Undo.label(uuid)
-                                            Vars.netServer.admins.banPlayerID(uuid)
+                                            // As in the server /tempban path: banPlayerID returns false when the
+                                            // target was already banned and did nothing, so an undo entry that
+                                            // reverts via Undo.unban must not be recorded here — it would fully
+                                            // lift a ban that predates this menu action.
+                                            val freshBan = Vars.netServer.admins.banPlayerID(uuid)
                                             if (targetData!!.player.con() != null) {
                                                 targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
                                             }
-                                            Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
+                                            if (freshBan) {
+                                                Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
+                                            } else {
+                                                playerData.send(
+                                                    "command.tempBan.already.banned",
+                                                    targetData!!.name,
+                                                    targetData!!.banExpireDate.toString()
+                                                )
+                                            }
                                         }
                                     }
                                     Call.menu(
@@ -2075,11 +2087,20 @@ class Commands {
     }
 
     private fun applyTempBan(uuid: String, name: String, expire: LocalDateTime, reason: String?) {
-        val message = Bundle()["command.tempBan.banned", name, "Server", expire.toString()]
-        Vars.netServer.admins.banPlayerID(uuid)
+        val bundle = Bundle()
+        val message = bundle["command.tempBan.banned", name, "Server", expire.toString()]
+        // banPlayerID returns false when the id was already banned (permanently, or by an earlier
+        // tempban) and did nothing. The caller still moves the expiry, which is the deliberate part
+        // of a re-tempban; what must not happen is treating this as a fresh ban for Undo purposes,
+        // because Undo.unban lifts the ban outright and would wipe out a ban that predates this call.
+        val freshBan = Vars.netServer.admins.banPlayerID(uuid)
         Groups.player.find { it.uuid() == uuid }?.kick(reason ?: message)
-        Undo.record(null, "tempban", uuid, Undo.label(uuid)) { Undo.unban(it, false) }
-        Log.info(message)
+        if (freshBan) {
+            Undo.record(null, "tempban", uuid, Undo.label(uuid)) { Undo.unban(it, false) }
+            Log.info(message)
+        } else {
+            Log.warn(bundle["command.tempBan.already.banned", name, expire.toString()])
+        }
     }
 
     // todo tempban client -> server
