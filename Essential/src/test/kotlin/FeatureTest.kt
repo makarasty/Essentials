@@ -15,10 +15,15 @@ import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.plugin.WarpBlock
+import essential.common.database.WorldHistoryBuffer
 import essential.common.database.databaseClose
 import essential.common.database.databaseInit
 import essential.common.database.defaultDatabase
 import essential.common.database.table.ServerRoutingTable
+import essential.common.database.data.checkPlayerBannedByIpOrUuid
+import essential.common.database.data.createBanInfo
+import essential.common.database.data.removeBanInfoByIP
+import essential.common.database.data.update
 import essential.common.event.CustomEvents
 import essential.common.mapStartTime
 import essential.common.players
@@ -27,15 +32,20 @@ import essential.common.pluginData
 import essential.common.rootPath
 import essential.common.systemTimezone
 import essential.common.timeSource
+import essential.common.service.fileWatchService
 import essential.core.Main
+import essential.core.buildingBulletDestroy
 import essential.core.connectPacket
 import essential.core.gameOver
 import essential.core.loadJoinedPlayerData
 import essential.core.mapRatings
+import essential.core.mergeTemporaryPlayerData
 import essential.core.playerDataRetries
+import essential.core.playerIpUnban
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
+import essential.core.worldLoad
 import arc.Events
 import arc.func.Cons
 import arc.util.Log
@@ -44,14 +54,18 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
 import mindustry.content.Blocks
+import mindustry.game.EventType.BuildingBulletDestroyEvent
 import mindustry.game.EventType.ConnectPacketEvent
 import mindustry.game.EventType.GameOverEvent
+import mindustry.game.EventType.PlayerIpUnbanEvent
 import mindustry.game.EventType.PlayerJoin
 import mindustry.game.EventType.TapEvent
 import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
+import mindustry.gen.Bullet
 import mindustry.gen.Groups
 import mindustry.net.Administration
+import mindustry.world.blocks.storage.CoreBlock.CoreBuild
 import mindustry.net.NetConnection
 import mindustry.ui.Menus
 import mindustry.net.Packets
@@ -1013,9 +1027,450 @@ class FeatureTest {
 
             assertEquals(Main.conf.feature.permission.vanillaAdminGroup, data.permission)
             assertTrue(target.admin(), "A vanilla admin should keep the admin flag after joining")
+            assertFalse(
+                Permission.hasUserEntry(uuid),
+                "Joining as a vanilla admin must not write a permission_user.yaml entry: that file is " +
+                    "per-server and masks the group column all six servers share"
+            )
         } finally {
             leavePlayer(target)
             Vars.netServer.admins.unAdminPlayer(uuid)
         }
     }
+    /**
+     * 2026-09-08-full-audit-04-8: the PvP end-of-round check crowned the first active team that still
+     * had somebody connected, which is the team that was just eliminated once the survivors have left.
+     */
+    @Test
+    fun pvpGameOverCrownsTheTeamThatStillHoldsACore() {
+        val teams = Vars.state.teams
+        val cruxData = teams.get(Team.crux)
+        val shardedData = teams.get(Team.sharded)
+        val savedPvp = Vars.state.rules.pvp
+        val savedGameOver = Vars.state.gameOver
+        val savedInfinite = Vars.state.rules.infiniteResources
+        val savedTeams = Groups.player.map { it to it.team() }
+
+        // Other tests leave cores registered on teams this one never mentions (pvpBalanceTest plants
+        // one for green and blue), so the board is built from a known-empty state rather than assumed.
+        val touched = (teams.active.toList() + cruxData + shardedData).distinct()
+        val savedCores = touched.map { it to it.cores.toList() }
+        touched.forEach { it.cores.clear() }
+
+        val winners = CopyOnWriteArrayList<Team>()
+        val listener = Cons<GameOverEvent> { winners.add(it.winner) }
+
+        val p = newPlayer()
+
+        // Crux has just lost its last core, so it is no longer alive, but its remaining buildings and
+        // its connected player keep it in the active list - exactly the state the defect crowned.
+        val cruxWall = Blocks.copperWall.newBuilding().create(Blocks.copperWall, Team.crux)
+        cruxData.buildings.add(cruxWall)
+        if (!teams.active.contains(cruxData)) teams.active.add(cruxData)
+
+        // Sharded survives with a core but has nobody online.
+        val shardedCore = (Blocks.coreShard.newBuilding() as CoreBuild).also {
+            it.team = Team.sharded
+            shardedData.cores.add(it)
+        }
+        if (!teams.active.contains(shardedData)) teams.active.add(shardedData)
+
+        try {
+            Vars.state.rules.pvp = true
+            Vars.state.gameOver = false
+            // Keep the round's EXP and pvpWinCount writes out of the shared test database; what is
+            // under test is which team the event names, not what gameOver then persists for it.
+            Vars.state.rules.infiniteResources = true
+
+            // Everyone still connected is on the eliminated team, which is the reproduction: the
+            // survivors have left. Any player left on another team would put isWaitingForPlayers at
+            // two teams present and the branch under test would never run.
+            Groups.player.forEach { it.team(Team.crux) }
+            Groups.player.update()
+
+            assertFalse(cruxData.isAlive(), "Precondition: the eliminated team must hold no core")
+            assertTrue(shardedData.isAlive(), "Precondition: the surviving team must hold a core")
+            assertEquals(
+                listOf(Team.sharded),
+                teams.getActive().filter { it.isAlive() && it.team != Team.derelict }.map { it.team },
+                "Precondition: exactly one team is alive, or this test is measuring leftover state"
+            )
+            assertTrue(
+                Vars.netServer.isWaitingForPlayers,
+                "Precondition: fewer than two teams have players online, which is what gated the defect"
+            )
+
+            Events.on(GameOverEvent::class.java, listener)
+
+            val destroyedCore = Blocks.coreShard.newBuilding().create(Blocks.coreShard, Team.crux)
+            val bullet = Bullet.create()
+            bullet.team = Team.sharded
+            buildingBulletDestroy(BuildingBulletDestroyEvent(destroyedCore, bullet))
+
+            assertEquals(
+                listOf(Team.sharded),
+                winners.toList(),
+                "The round must be won by the team that still holds a core, not by the one that still has players"
+            )
+        } finally {
+            Events.remove(GameOverEvent::class.java, listener)
+            cruxData.buildings.remove(cruxWall)
+            shardedData.cores.remove(shardedCore)
+            savedCores.forEach { (data, cores) ->
+                data.cores.clear()
+                cores.forEach { data.cores.add(it) }
+            }
+            Vars.state.rules.infiniteResources = savedInfinite
+            Vars.state.rules.pvp = savedPvp
+            Vars.state.gameOver = savedGameOver
+            savedTeams.forEach { (entity, team) -> entity.team(team) }
+            Groups.player.update()
+            leavePlayer(p.first)
+        }
+    }
+    /**
+     * 2026-09-08-full-audit-03-1: Arc runs listeners inline, so a config reload fired from the watcher
+     * thread reached Mindustry entity writes off the game thread.
+     */
+    @Test
+    fun configFileEventsNeverRunOnTheWatcherThread() {
+        val configDir = rootPath.child("config")
+        configDir.mkdirs()
+        val probe = configDir.child("fleet-watch-probe.yaml")
+        probe.writeString("probe: 1", false)
+
+        val delivered = CopyOnWriteArrayList<Thread>()
+        val listener = Cons<CustomEvents.ConfigFileModified> { delivered.add(Thread.currentThread()) }
+        Events.on(CustomEvents.ConfigFileModified::class.java, listener)
+
+        val pumpingThread = Thread.currentThread()
+        val watcher = Thread({ fileWatchService() }, "fleet-test-config-watcher")
+        watcher.isDaemon = true
+        watcher.start()
+
+        try {
+            // Give the watch service time to register the directory before the edit it must notice.
+            Thread.sleep(1000)
+            probe.writeString("probe: 2", false)
+
+            assertTrue(
+                awaitPumped(30000) { delivered.isNotEmpty() },
+                "The watcher never delivered a config event, so this test proved nothing"
+            )
+            assertFalse(
+                delivered.contains(watcher),
+                "Config events must reach listeners on the game thread, not on the file-watcher thread"
+            )
+            // The plugin starts its own watcher during loadGame, so asserting only against this test's
+            // thread would pass whenever that other watcher won the delivery race. Every delivery has to
+            // land on the thread that pumps Core.app, whichever watcher produced it.
+            assertEquals(
+                listOf(pumpingThread),
+                delivered.distinct(),
+                "Every config event must be delivered on the thread that pumps the application queue"
+            )
+        } finally {
+            Events.remove(CustomEvents.ConfigFileModified::class.java, listener)
+            watcher.interrupt()
+            watcher.join(5000)
+            probe.delete()
+        }
+    }
+    /**
+     * 2026-09-08-full-audit-09-7: unbanning an address that no PlayerInfo carries threw before the
+     * coroutine that clears the shared ban table was ever launched.
+     */
+    @Test
+    fun ipUnbanClearsTheSharedBanRowWithoutAPlayerInfo() {
+        val ip = "203.0.113.9"
+        val info = Administration.PlayerInfo()
+        info.id = "fleetunban" + (System.nanoTime() % 100000000L)
+        info.lastName = "ghost"
+        info.lastIP = ip
+        info.names.add("ghost")
+        info.ips.add(ip)
+
+        val announced = CopyOnWriteArrayList<String>()
+        val listener = Cons<CustomEvents.PlayerUnbanned> { announced.add(it.name) }
+        Events.on(CustomEvents.PlayerUnbanned::class.java, listener)
+
+        try {
+            runBlocking { createBanInfo(info, "fleet regression") }
+            assertTrue(
+                runBlocking { checkPlayerBannedByIpOrUuid(info.id, ip) },
+                "Precondition: the ban row must exist before the unban"
+            )
+            assertNull(
+                Vars.netServer.admins.findByIP(ip),
+                "Precondition: no PlayerInfo may carry the address, which is what made findByIP return null"
+            )
+
+            playerIpUnban(PlayerIpUnbanEvent(ip))
+
+            assertEquals(listOf(ip), announced.toList(), "The unban must still be announced")
+            assertTrue(
+                awaitPumped(15000) { runBlocking { !checkPlayerBannedByIpOrUuid(info.id, ip) } },
+                "The row in the shared ban table must be cleared, or every other server stays banned"
+            )
+        } finally {
+            Events.remove(CustomEvents.PlayerUnbanned::class.java, listener)
+            runBlocking { removeBanInfoByIP(ip) }
+        }
+    }
+
+    /**
+     * 2026-09-08-full-audit-03-1: Permission.apply writes Mindustry player entities, and /reload calls
+     * it from Dispatchers.IO. It has to reach the game thread before it touches a player.
+     */
+    @Test
+    fun permissionApplyDefersPlayerWritesToTheGameThread() {
+        val target = newPlayer()
+        val uuid = target.first.uuid()
+        val file = rootPath.child("permission_user.yaml")
+        val savedFile = file.readString()
+        val originalName = target.first.name()
+
+        try {
+            file.writeString("$uuid:\n  name: deferred-rename\n  group: user\n", false)
+            Permission.load()
+
+            assertEquals(
+                originalName,
+                target.first.name(),
+                "Permission.apply must not write the player entity inline, or /reload does it from an IO thread"
+            )
+            assertTrue(
+                awaitPumped(5000) { target.first.name() == "deferred-rename" },
+                "The rename must land once the game thread runs the posted work"
+            )
+        } finally {
+            file.writeString(savedFile, false)
+            Permission.load()
+            awaitPumped(2000) { false }
+            target.first.name(originalName)
+            target.second.name = originalName
+            leavePlayer(target.first)
+        }
+    }
+    /**
+     * Menu ids are process-wide and menuChoose is client-callable with any id, so a listener that acts
+     * for the player it was opened for has to compare the responder. Hub warp zone.
+     */
+    @Test
+    fun onlyTheHubAdminWhoOpenedTheZoneMenuMayAnswerIt() {
+        val owner = newPlayer()
+        val intruder = newPlayer()
+        val tile = Vars.world.tile(30, 30)
+        val zonesBefore = pluginData.data.warpZone.size
+
+        try {
+            owner.second.status["hub_first"] = "10,10"
+            owner.second.status["hub_second"] = "true"
+            owner.second.status["hub_ip"] = "127.0.0.1"
+            owner.second.status["hub_port"] = "6567"
+
+            tap(TapEvent(owner.first, tile))
+            val zoneMenu = Menus.registerMenu { _, _ -> } - 1
+
+            Menus.menuChoose(intruder.first, zoneMenu, 0)
+            assertEquals(
+                zonesBefore,
+                pluginData.data.warpZone.size,
+                "A player the hub menu was never shown to must not be able to write a warp zone"
+            )
+
+            Menus.menuChoose(owner.first, zoneMenu, 0)
+            assertEquals(
+                zonesBefore + 1,
+                pluginData.data.warpZone.size,
+                "The player the menu was opened for must still be able to answer it"
+            )
+        } finally {
+            // The listener persists through scope.launch, so let that land before trimming, then write
+            // the trimmed list back rather than leaving the test's zone in the stored blob.
+            awaitPumped(2000L) { false }
+            while (pluginData.data.warpZone.size > zonesBefore) {
+                pluginData.data.warpZone.removeAt(pluginData.data.warpZone.size - 1)
+            }
+            runBlocking { pluginData.update() }
+            owner.second.status.clear()
+            leavePlayer(intruder.first)
+            leavePlayer(owner.first)
+        }
+    }
+    /**
+     * The same class of defect on the end-of-round rating menus: the rating is recorded under the uuid
+     * the menu was opened for, so anyone answering it rates in that player's name and locks them out.
+     */
+    @Test
+    fun onlyThePlayerShownTheRatingMenuMayRateTheMap() {
+        val originalConf = Main.conf
+        val originalStart = mapStartTime
+        val originalInfinite = Vars.state.rules.infiniteResources
+        val owner = newPlayer()
+        val intruder = newPlayer()
+        val ownerUuid = owner.first.uuid()
+        val ratedBefore = mapRatings.keys.toSet()
+
+        try {
+            Main.conf = originalConf.copy(feature = originalConf.feature.copy(mapVote = true))
+            Vars.state.rules.infiniteResources = true
+            mapStartTime = timeSource.markNow() - 10.minutes
+
+            // Exactly one menu must be built, so the last registered id is unambiguously the owner's.
+            players.forEach { if (it.uuid != ownerUuid) mapRatings[it.uuid] = true }
+            mapRatings.remove(ownerUuid)
+
+            gameOver(GameOverEvent(Team.crux))
+            awaitPumped(5000L) { false }
+            val difficultyMenu = Menus.registerMenu { _, _ -> } - 1
+
+            val menusBefore = Menus.registerMenu { _, _ -> }
+            Menus.menuChoose(intruder.first, difficultyMenu, 0)
+            assertEquals(
+                1,
+                Menus.registerMenu { _, _ -> } - menusBefore,
+                "Answering another player's difficulty menu must not open a rating menu"
+            )
+
+            Menus.menuChoose(owner.first, difficultyMenu, 0)
+            val ratingMenu = Menus.registerMenu { _, _ -> } - 1
+
+            Menus.menuChoose(intruder.first, ratingMenu, 4)
+            assertFalse(
+                mapRatings.containsKey(ownerUuid),
+                "Another player must not be able to rate the map in the owner's name"
+            )
+
+            Menus.menuChoose(owner.first, ratingMenu, 4)
+            assertTrue(
+                mapRatings.containsKey(ownerUuid),
+                "The player the menu was opened for must still be able to rate"
+            )
+        } finally {
+            awaitPumped(2000L) { false }
+            mapRatings.keys.toList().forEach { if (it !in ratedBefore) mapRatings.remove(it) }
+            Vars.state.rules.infiniteResources = originalInfinite
+            mapStartTime = originalStart
+            Main.conf = originalConf
+            leavePlayer(intruder.first)
+            leavePlayer(owner.first)
+        }
+    }
+
+    /**
+     * The record.* status keys are the achievement counters chip 07 persists. Progress earned on a
+     * temporary player object was dropped when that object was merged into the real one.
+     */
+    @Test
+    fun mergingATemporaryPlayerCarriesTheAchievementCounters() {
+        val target = newPlayer()
+        val temporary = newPlayer()
+
+        try {
+            // Real running totals from AchievementEvents.
+            target.second.status["record.wave"] = "3"
+            temporary.second.status["record.wave"] = "4"
+            temporary.second.status["record.crawler.block.destroy"] = "2"
+            temporary.second.status["login_consent"] = "token"
+
+            // Not totals: a raw currentTimeMillis stamp, and two windows that are reset to zero.
+            target.second.status["record.turret.quill.kill.time"] = "1000"
+            temporary.second.status["record.turret.quill.kill.time"] = "2000"
+            target.second.status["record.pvp.win.streak.current"] = "3"
+            temporary.second.status["record.pvp.win.streak.current"] = "4"
+            target.second.status["record.time.noafk"] = "5"
+            temporary.second.status["record.time.noafk"] = "6"
+
+            // Burst counts with no suffix to give them away: AchievementEvents resets them to 1 once the
+            // paired .time stamp is more than ten seconds old, and QuillKiller reads the count at 5.
+            target.second.status["record.turret.quill.kill"] = "3"
+            temporary.second.status["record.turret.quill.kill"] = "3"
+            target.second.status["record.turret.zenith.kill"] = "10"
+            temporary.second.status["record.turret.zenith.kill"] = "20"
+
+            mergeTemporaryPlayerData(temporary.second, target.second)
+
+            assertEquals("7", target.second.status["record.wave"], "A counter both objects hold must be summed")
+            assertEquals(
+                "2",
+                target.second.status["record.crawler.block.destroy"],
+                "A counter only the temporary object holds must be carried"
+            )
+            assertEquals(
+                "1000",
+                target.second.status["record.turret.quill.kill.time"],
+                "A currentTimeMillis stamp must not be summed: the sum is a future time and its window never closes"
+            )
+            assertEquals(
+                "3",
+                target.second.status["record.pvp.win.streak.current"],
+                "A streak that gets reset to zero must not be summed: two part-runs are not one run"
+            )
+            assertEquals(
+                "5",
+                target.second.status["record.time.noafk"],
+                "A per-map continuous window must not be summed"
+            )
+            assertEquals(
+                "3",
+                target.second.status["record.turret.quill.kill"],
+                "A burst count must not be summed: two players mid-burst at three would merge over QuillKiller"
+            )
+            assertEquals(
+                "10",
+                target.second.status["record.turret.zenith.kill"],
+                "A burst count must not be summed, whatever it is named"
+            )
+            assertFalse(
+                target.second.status.containsKey("login_consent"),
+                "Session state must not be carried across: one of these keys is a consent token whose second use deletes the row"
+            )
+        } finally {
+            target.second.status.clear()
+            temporary.second.status.clear()
+            leavePlayer(temporary.first)
+            leavePlayer(target.first)
+        }
+    }
+
+    /**
+     * Every world replacement fires WorldLoadEvent, so clearing the block history there is the only way
+     * to catch /vote back and console load, which rewind the world without going through a command site.
+     */
+    @Test
+    fun aWorldLoadClearsTheBlockHistory() {
+        val x: Short = 41
+        val y: Short = 41
+
+        WorldHistoryBuffer.enqueue(
+            time = System.currentTimeMillis(),
+            player = "fleet",
+            action = "place",
+            x = x,
+            y = y,
+            tile = "copper-wall",
+            rotate = 0,
+            team = Team.sharded.name,
+            value = null
+        )
+        assertEquals(
+            "copper-wall",
+            WorldHistoryBuffer.getLastBlock(x, y),
+            "Precondition: the buffer has to hold the block, or this test proves nothing"
+        )
+
+        worldLoad(WorldLoadEvent())
+
+        // This asserts the cache, which is what clearWorldHistory clears last and therefore only
+        // reaches if its TRUNCATE succeeded. It does not assert the table stays empty afterwards:
+        // WorldHistoryBuffer.clear() leaves the pending queue alone, so rows enqueued just before the
+        // map change are still inserted after the truncate. That gap is filed, and it is not in a file
+        // this chip owns.
+        assertTrue(
+            awaitPumped(10000L) { WorldHistoryBuffer.getLastBlock(x, y) == null },
+            "A world load must clear the block history recorded on the map that was just replaced"
+        )
+    }
+
 }

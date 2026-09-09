@@ -1,5 +1,6 @@
 package essential.common.permission
 
+import arc.Core
 import arc.files.Fi
 import arc.util.Log
 import com.charleskorn.kaml.Yaml
@@ -143,30 +144,40 @@ object Permission {
     }
 
     fun apply() {
-        if (user != null) {
-            for ((uuid, permissionData) in user!!) {
-                val player = players.find { e -> e.uuid == uuid }
-                if (player == null) {
-                    scope.launch {
-                        suspendTransaction {
-                            PlayerTable.update({ PlayerTable.uuid eq uuid }) {
-                                it[PlayerTable.permission] = permissionData.group
-                                if (permissionData.name.isNotEmpty()) {
-                                    it[PlayerTable.name] = permissionData.name
+        // This walks the shared players list and writes Mindustry player entities - admin() and name()
+        // - so it is only correct on the game thread, and one of its callers is not on one: /reload runs
+        // Permission.load() on Dispatchers.IO. The hop lives here rather than at that caller, so a caller
+        // added later cannot get it wrong, and it reads the map inside the work rather than capturing it,
+        // so a setperm that lands while the work is queued is not reverted by a stale copy.
+        val work = Runnable {
+            val loaded = user
+            if (loaded != null) {
+                for ((uuid, permissionData) in loaded) {
+                    val player = players.find { e -> e.uuid == uuid }
+                    if (player == null) {
+                        scope.launch {
+                            suspendTransaction {
+                                PlayerTable.update({ PlayerTable.uuid eq uuid }) {
+                                    it[PlayerTable.permission] = permissionData.group
+                                    if (permissionData.name.isNotEmpty()) {
+                                        it[PlayerTable.name] = permissionData.name
+                                    }
                                 }
                             }
                         }
-                    }
-                } else {
-                    player.permission = permissionData.group
-                    player.player.admin(isAdmin(uuid, permissionData.group))
-                    if (permissionData.name.isNotEmpty()) {
-                        player.name = permissionData.name
-                        player.player.name(permissionData.name)
+                    } else {
+                        player.permission = permissionData.group
+                        player.player.admin(isAdmin(uuid, permissionData.group))
+                        if (permissionData.name.isNotEmpty()) {
+                            player.name = permissionData.name
+                            player.player.name(permissionData.name)
+                        }
                     }
                 }
             }
         }
+        // Callers already on the game thread run it now; only the ones that are not pay a frame.
+        if (Core.app.isOnMainThread) work.run() else Core.app.post(work)
     }
 
     operator fun get(data: PlayerData): PermissionData {

@@ -427,6 +427,9 @@ fun tap(event: TapEvent) {
             val bundle = Bundle(event.player.locale())
             val options = arrayOf(arrayOf(bundle["command.hub.zone.yes"], bundle["command.hub.zone.no"]))
             val menu = Menus.registerMenu { player, option ->
+                // menuChoose is client-callable with any id, and menu ids are process-wide, so without
+                // this any connected player could answer the hub menu and write a warp zone.
+                if (player.uuid() != data.uuid) return@registerMenu
                 val touch = when (option) {
                     0 -> true
                     else -> false
@@ -714,6 +717,32 @@ fun mergeTemporaryPlayerData(temporary: PlayerData, data: PlayerData) {
     data.strictMode = data.strictMode || temporary.strictMode
     data.isBanned = data.isBanned || temporary.isBanned
     if (temporary.banExpireDate != null) data.banExpireDate = temporary.banExpireDate
+    // The other half of this pair is PlayerMerge.kt, which merges two accounts; both carry the same
+    // record.* keys and must agree about which of them may be summed. The two lists are kept in step by
+    // hand and must be edited together - a key added to one and not the other is a silent divergence.
+    // The record.* keys are the achievement counters, and they are the only part of status that is
+    // persisted, so progress earned on the temporary object is lost here unless it is carried across.
+    // They are summed like the counter fields above. Everything else in status is session state - one
+    // of those keys is a login consent token whose second use deletes the player row - so it stays put.
+    for ((key, value) in temporary.status) {
+        if (!key.startsWith("record.")) continue
+        // Not every record.* key is a running total. The .time keys hold a raw System.currentTimeMillis
+        // stamp, and the .current and .duration keys - and record.time.noafk - are windows that get reset
+        // to zero. Summing a window turns two half-runs into a whole one and awards something that never
+        // happened; summing a timestamp lands so far in the future that the check it guards never closes.
+        if (key.endsWith(".time") || key.endsWith(".current") || key.endsWith(".duration")) continue
+        // The two turret kill counts read like lifetime totals and are not: AchievementEvents assigns 1
+        // rather than incrementing once more than ten seconds have passed since the paired .time stamp,
+        // so they are bursts with no suffix to give them away. Excluding the stamp does not protect them,
+        // because the achievement sweep at load reads the count without ever consulting it - two players
+        // mid-burst at three each would merge to six and be handed QuillKiller on the next join.
+        if (key == "record.time.noafk" ||
+            key == "record.turret.quill.kill" ||
+            key == "record.turret.zenith.kill"
+        ) continue
+        val carried = value.toLongOrNull() ?: continue
+        data.status[key] = ((data.status[key]?.toLongOrNull() ?: 0L) + carried).toString()
+    }
 }
 
 fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
@@ -726,6 +755,19 @@ fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
         attachPlayerData(data, false)
         if (players.find { it.uuid == data.uuid } === data) scope.launch { data.update() }
     }
+}
+
+/**
+ * The team that has won the round: the single one still holding a core, ignoring derelict.
+ *
+ * This is the engine's own test (Logic.checkGameState), and the plugin needs it because a team that
+ * has lost every core stays in Vars.state.teams.getActive() on its remaining buildings, so "is still
+ * present" and "is still alive" are not the same question. Null when the board does not name one
+ * winner - zero teams alive, or more than one - because the round is then the engine's to end.
+ */
+private fun soleSurvivingTeam(): Team? {
+    val alive = Vars.state.teams.getActive().filter { it.isAlive() && it.team != Team.derelict }
+    return if (alive.size == 1) alive[0].team else null
 }
 
 @Event
@@ -767,6 +809,9 @@ fun gameOver(event: GameOverEvent) {
                     val con = Groups.player.find { p -> p.uuid() == data.uuid }?.con() ?: return@post
 
                     val difficultyMenu = Menus.registerMenu { player, select ->
+                        // The rating is recorded under data.uuid, so anyone else answering this menu
+                        // rates the map in their name and locks them out of rating it themselves.
+                        if (player.uuid() != data.uuid) return@registerMenu
                         if (gameOverCount != currentCount) {
                             player.sendMessage(Bundle(player.locale())["command.map.rate.timeout"])
                             return@registerMenu
@@ -777,6 +822,7 @@ fun gameOver(event: GameOverEvent) {
                         if (select in 0..4) {
                             val difficulty = select + 1
                             val ratingMenu = Menus.registerMenu { player2, select2 ->
+                                if (player2.uuid() != data.uuid) return@registerMenu
                                 if (gameOverCount != currentCount) {
                                     player2.sendMessage(Bundle(player2.locale())["command.map.rate.timeout"])
                                     return@registerMenu
@@ -1035,7 +1081,10 @@ fun playerLeave(event: PlayerLeave) {
                     }
                 }
                 if (s.keys.size == 1) {
-                    Events.fire(GameOverEvent(b.first().team()))
+                    // Which teams still have players says who is left to play, not who won, and
+                    // b.first() is not even the player from that team - a spectator parked on
+                    // Team.derelict sorts ahead of them. Ask the board who survived instead.
+                    soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
                 }
             }
         }
@@ -1073,10 +1122,15 @@ fun playerUnban(event: PlayerUnbanEvent) {
 
 @Event
 fun playerIpUnban(eent: PlayerIpUnbanEvent) {
-    Events.fire(CustomEvents.PlayerUnbanned(Vars.netServer.admins.findByIP(eent.ip).lastName, currentTime()))
+    // Clear the row every server shares first. The announcement below is cosmetic, and anything that
+    // throws in it used to strand the ban on the other five servers while this one reported success.
     scope.launch {
         removeBanInfoByIP(eent.ip)
     }
+    // The engine fires this for any address that was in the ban list, whether or not a PlayerInfo
+    // carries it, so findByIP legitimately returns null for hand-banned or pruned addresses.
+    val info = Vars.netServer.admins.findByIP(eent.ip)
+    Events.fire(CustomEvents.PlayerUnbanned(info?.lastName ?: eent.ip, currentTime()))
 }
 
 @Event
@@ -1093,6 +1147,12 @@ fun worldLoad(event: WorldLoadEvent) {
     Rtv.reset()
     isCheated = false
     mapRatings.clear()
+
+    // Every world replacement routes through WorldLoadEvent - loadMap, save loading, the console's own
+    // host and load, and /vote back - so this is the one place that catches all of them. Clearing only at
+    // the command sites leaves a /vote back rewinding the world while every row recorded after the save
+    // point stays in the table, on the same map.
+    scope.launch { clearWorldHistory() }
 
     // Load map ratings for the current map from the database
     val currentMapName = Vars.state.map.plainName()
@@ -1289,12 +1349,9 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
             data.send("event.bullet.kill", event.bullet.team.coloredName(), event.build.team.coloredName())
         }
         if (Vars.netServer.isWaitingForPlayers) {
-            for (t in Vars.state.teams.getActive()) {
-                if (Groups.player.count { p: Player -> p.team() === t.team } > 0) {
-                    Events.fire(GameOverEvent(t.team))
-                    break
-                }
-            }
+            // isWaitingForPlayers only reports that fewer than two teams have someone connected; it
+            // says nothing about who survived.
+            soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
         }
     }
 }
@@ -1318,7 +1375,8 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
                     if (newConf != null) {
                         conf = newConf
                         // The description timer is built from the config; rebuild it with the new one.
-                        // This runs on the file-watcher thread, but start() can render immediately, so post it to the game thread.
+                        // Config events already arrive on the game thread, so this only defers start()
+                        // to the next frame rather than rendering inside the reload.
                         Core.app.post { ServerDescription.start() }
                     }
                     Log.info(Bundle()["config.reloaded"])
@@ -1355,7 +1413,13 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         val vanillaGroup = conf.feature.permission.vanillaAdminGroup
         playerData.permission = vanillaGroup
         scope.launch { playerData.update() }
-        Permission.setGroup(playerData.uuid, vanillaGroup)
+        // setGroup writes a permission_user.yaml entry, and that per-server file masks the shared
+        // database column, so every vanilla admin who joined minted a mask nobody asked for. The two
+        // lines above already carry the group. What is left of setGroup that belongs here is
+        // syncVanillaAdmin: on this branch the player is already a vanilla admin, so it is a no-op
+        // except in the one case that matters, an operator who configured vanillaAdminGroup to a group
+        // that is not an admin group and expects the vanilla flag to be taken away.
+        Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup)
     } else if (Permission.isAdminGroup(group)) {
         Permission.syncVanillaAdmin(playerData.uuid, group)
     }
