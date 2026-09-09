@@ -69,6 +69,13 @@ suspend fun setAchievement(playerData: PlayerData, achievementName: String) {
 
     if (refused is CancellationException) throw refused
 
+    if (refused != null) {
+        // The symmetric half of the line createPlayerData already prints, and deliberately not phrased
+        // as "another server won the race": the line below is what tells a refusal from a real failure,
+        // by re-reading, and this one only says that something refused the insert.
+        Log.info("Achievement insert refused for ${playerData.uuid}/$achievementName, re-reading: ${refused.message}")
+    }
+
     // Told apart by re-reading the table rather than by the exception's text, because the code that
     // says "duplicate key" differs per engine and a refusal for any other reason has to stay an error.
     if (refused != null && !hasAchievement(playerData, achievementName)) {
