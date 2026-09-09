@@ -17,7 +17,12 @@ import essential.common.database.table.PlayerTable
 import essential.common.players
 import essential.common.rootPath
 import essential.core.Main.Companion.scope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -29,21 +34,29 @@ import org.jetbrains.exposed.v1.r2dbc.update
 import java.util.*
 
 object Permission {
-    private var main: Map<String, RoleConfig> = mapOf()
-    private var user: Map<String, PermissionData>? = mapOf()
-    private var userRaw: Map<String, YamlNode> = mapOf()
-    private var userFileValid = true
-    private var userFileError: String? = null
+    // /reload runs load() on Dispatchers.IO while the game thread reads these on every command and
+    // every build action, so each one is published rather than left to chance. Main.conf is @Volatile
+    // for the same reason. Publication only: the read-modify-writes in setGroup, removeUserEntry and
+    // writeUser are still unguarded, and the annotation does not make a third one safe.
+    @Volatile private var main: Map<String, RoleConfig> = mapOf()
+    @Volatile private var user: Map<String, PermissionData>? = mapOf()
+    @Volatile private var userRaw: Map<String, YamlNode> = mapOf()
+    @Volatile private var userFileValid = true
+    @Volatile private var userFileError: String? = null
     // permission.yaml owns fileDefault and the permission_user.yaml decode reads it through
     // PermissionData.group; the account service owns authDefault and answers for a player whose data
     // could not be loaded. One field carried both, so every reload answered the second question with
     // the first answer: load() runs again on reload and the service inits only once, at boot.
-    private var fileDefault = "user"
-    private var authDefault: String? = null
+    @Volatile private var fileDefault = "user"
+    @Volatile private var authDefault: String? = null
     val default: String get() = authDefault ?: fileDefault
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
     private val userBackupFile: Fi = rootPath.child("permission_user.yaml.bak")
+
+    // The connection pool is five (Database.kt), and the game thread wants one of them for
+    // whatever a player is doing while this runs.
+    private const val OFFLINE_WRITE_LIMIT = 4
 
     private val bundle = Bundle(Locale.getDefault().toLanguageTag())
     private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
@@ -86,23 +99,36 @@ object Permission {
     }
 
     fun load() {
-        fileDefault = "user"
-        // permission.yaml first: PermissionData.group falls back to `fileDefault` at the moment
-        // kotlinx.serialization builds each entry, so the user file can only be decoded once
-        // the role marked `default: true` has been read out of permission.yaml.
-        try {
-            main = if (mainFile.exists()) {
+        // permission.yaml first: PermissionData.group falls back to the file default at the moment
+        // kotlinx.serialization builds each entry, so the user file can only be decoded once the role
+        // marked `default: true` has been read out of permission.yaml.
+        //
+        // Both are built as locals and published at the end. `main` is @Volatile and the inheritance
+        // walk below adds to the RoleConfig lists inside it, so assigning it before the walk would
+        // reliably hand the game thread a role whose inherited nodes are not in it yet - the reload
+        // window is exactly when commands are flying. A parse failure keeps the map that was already
+        // loaded, as it always did, and on that path the walk really does run over the live map.
+        var nextDefault = "user"
+        val parsed = try {
+            if (mainFile.exists()) {
                 yaml.decodeFromString(MapSerializer(String.serializer(), RoleConfig.serializer()), mainFile.readString())
             } else {
                 mapOf()
             }
         } catch (e: Exception) {
             Log.warn("Failed to parse permission.yaml: ${e.message}")
+            null
         }
+        // On the failure path this is the live, already-published map, and the walk below must stay
+        // idempotent for that to be safe: every mutation in it is guarded by
+        // `!roleConfig.permission.contains(permission)`, so re-walking an expanded map writes nothing
+        // at all. An unguarded mutation added there would start editing a map the game thread is
+        // reading, from Dispatchers.IO.
+        val roles = parsed ?: main
 
-        for ((name, roleConfig) in main) {
-            if (fileDefault == "user" && roleConfig.default == true) {
-                fileDefault = name
+        for ((name, roleConfig) in roles) {
+            if (nextDefault == "user" && roleConfig.default == true) {
+                nextDefault = name
             }
 
             var inheritance: String? = roleConfig.inheritance
@@ -113,15 +139,20 @@ object Permission {
                     Log.warn("[Permission] role '$name' inherits in a circle through '$next'. The chain is cut there; fix the 'inheritance:' lines in permission.yaml.")
                     break
                 }
-                val inheritedRole = main[next] ?: break
+                val inheritedRole = roles[next] ?: break
                 for (permission in inheritedRole.permission) {
-                    if (!permission.contains("all", true) && !roleConfig.permission.contains(permission)) {
+                    // equals, not contains: a substring test also excludes killall, kickall and any
+                    // later node with those three letters in it, and does it silently.
+                    if (!permission.equals("all", true) && !roleConfig.permission.contains(permission)) {
                         roleConfig.permission.add(permission)
                     }
                 }
                 inheritance = inheritedRole.inheritance
             }
         }
+
+        main = roles
+        fileDefault = nextDefault
 
         try {
             if (userFile.exists()) {
@@ -160,13 +191,52 @@ object Permission {
         // that caller so a later caller cannot get it wrong, and `user` is read inside the work rather
         // than captured, so a setperm landing while the work is queued is not reverted by a stale copy.
         val work = Runnable {
-            val loaded = user
-            if (loaded != null) {
-                for ((uuid, permissionData) in loaded) {
-                    val player = players.find { e -> e.uuid == uuid }
-                    if (player == null) {
-                        scope.launch {
-                            suspendTransaction {
+            val loaded = user ?: return@Runnable
+            val online = players.associateBy { it.uuid }
+            val offline = LinkedHashMap<String, PermissionData>()
+            for ((uuid, permissionData) in loaded) {
+                val player = online[uuid]
+                if (player == null) {
+                    offline[uuid] = permissionData
+                } else {
+                    player.permission = permissionData.group
+                    player.player.admin(isAdmin(uuid, permissionData.group))
+                    if (permissionData.name.isNotEmpty()) {
+                        player.name = permissionData.name
+                        player.player.name(permissionData.name)
+                    }
+                }
+            }
+            if (offline.isNotEmpty()) applyOffline(offline)
+        }
+        if (Core.app.isOnMainThread) work.run() else Core.app.post(work)
+    }
+
+    /**
+     * Write the file's groups onto the rows of the players it names that are not online.
+     *
+     * Bounded rather than unbounded: every boot calls [load], six servers share one database, and
+     * this used to open one coroutine and one transaction per entry, so a permission_user.yaml with a
+     * few thousand entries queued a few thousand connection acquisitions against a pool of five.
+     * Most of them timed out and threw, which is how entries went missing silently.
+     *
+     * Still one transaction per entry, deliberately. One transaction for the whole file would make a
+     * single bad row - a `name:` colliding with another row's, the unique index on PlayerTable.name -
+     * roll back every other entry with it, and would hold each row lock for as long as the whole file
+     * takes.
+     *
+     * Exposed reports how many rows each update changed. Zero means the database has no row for that
+     * uuid yet, so nothing was persisted for them - the entry still applies the moment they join,
+     * because [get] answers from the file rather than from the row.
+     */
+    private fun applyOffline(entries: Map<String, PermissionData>) {
+        scope.launch {
+            val gate = Semaphore(OFFLINE_WRITE_LIMIT)
+            val unpersisted = entries.map { (uuid, permissionData) ->
+                async {
+                    gate.withPermit {
+                        try {
+                            val changed = suspendTransaction {
                                 PlayerTable.update({ PlayerTable.uuid eq uuid }) {
                                     it[PlayerTable.permission] = permissionData.group
                                     if (permissionData.name.isNotEmpty()) {
@@ -174,19 +244,27 @@ object Permission {
                                     }
                                 }
                             }
-                        }
-                    } else {
-                        player.permission = permissionData.group
-                        player.player.admin(isAdmin(uuid, permissionData.group))
-                        if (permissionData.name.isNotEmpty()) {
-                            player.name = permissionData.name
-                            player.player.name(permissionData.name)
+                            uuid.takeIf { changed == 0 }
+                        } catch (e: CancellationException) {
+                            // The scope is cancelled on plugin dispose. Catching this alongside the
+                            // rest would log four invented write failures on every shutdown.
+                            throw e
+                        } catch (e: Exception) {
+                            Log.err("[Permission] permission_user.yaml entry for $uuid could not be written", e)
+                            null
                         }
                     }
                 }
+            }.awaitAll().filterNotNull()
+
+            if (unpersisted.isNotEmpty()) {
+                Log.info(
+                    "[Permission] permission_user.yaml names ${unpersisted.size} uuid with no player row yet, " +
+                        "so their group is not stored in the database; it applies when they join: " +
+                        unpersisted.take(10).joinToString(", ")
+                )
             }
         }
-        if (Core.app.isOnMainThread) work.run() else Core.app.post(work)
     }
 
     operator fun get(data: PlayerData): PermissionData {
@@ -217,6 +295,13 @@ object Permission {
         return result
     }
 
+    /**
+     * Whether this player wears the admin flag: vanilla's own admin list counts here, and so does an
+     * explicit `admin: true` in permission_user.yaml or on the resolved role.
+     *
+     * This decides a flag, not a permission. [check] decides permissions and deliberately does not
+     * call this - see its own documentation for why the two cannot be merged.
+     */
     fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
         val entry = user?.get(uuid)
         return entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)
@@ -350,6 +435,21 @@ object Permission {
      * old fork therefore grants nothing at all, and does it silently. Only nodes that
      * become known once the prefix is dropped are reported, so a node belonging to a
      * disabled module stays quiet.
+     *
+     * Deliberately narrow, and this is the part to read before widening it. It does not
+     * report a granted node that is simply wrong rather than prefixed, and it does not
+     * look the other way at all - at a node the code asks for that no group holds, which
+     * is the direction that silently disables a feature for everyone but the owner. Both
+     * are covered by PermissionNodeInventoryTest, at build time, where a config that
+     * cannot work stops the jar instead of printing a line on six live servers.
+     *
+     * A boot-time version needs [known] built *after* client-command registration.
+     * ServerLoadEvent fires before it: ServerLauncher.init adds NetServer as a listener
+     * and fires the event before returning, and HeadlessApplication.mainLoop calls each
+     * listener's init() in one pass afterwards, so NetServer.init - which is what runs
+     * mods.eachClass(Mod::registerClientCommands) - has not happened yet. Handed the set
+     * that exists at that moment, an unreachable-node warning would name almost every
+     * command this plugin has, on every start.
      */
     fun validate(known: Set<String>) {
         for (node in main.values.flatMap { it.permission }.toSet()) {
@@ -361,6 +461,33 @@ object Permission {
         }
     }
 
+    /**
+     * Whether the group [data] resolves to holds the node [command], or the wildcard `all`. A group
+     * name no role in permission.yaml defines answers false.
+     *
+     * The rule, written down once because two mechanisms in this file both use the word admin:
+     * a permission is decided by the group the player resolves to - permission_user.yaml when it
+     * names them, otherwise their PlayerData.permission row - by the nodes permission.yaml gives
+     * that group, and by nothing else. [isAdmin] is not consulted here.
+     *
+     * That is deliberate and it is not an oversight, because the bounded version of "a vanilla admin
+     * should get plugin permissions" already ships: the join handler in core/CoreEvent.kt puts a
+     * vanilla admin who is not already in an admin group into `feature.permission.vanillaAdminGroup`
+     * - default `admin` - which moves the row, so [check] then grants them exactly what that group
+     * holds and nothing else. The operator names the group, and it is a group like any other.
+     *
+     * The unbounded version is what a short-circuit on [isAdmin] here would be, and it is much wider
+     * than it looks: the test would pass for every string, so it grants not what the admin group
+     * holds but every node that exists, including the ones no group holds at all - `js`, `setperm`,
+     * `unban`, `ws`. It is `all` by another name, reachable from the bare console `admin add`.
+     * ClientCommandTest pins that making somebody a vanilla admin mid-session does not retroactively
+     * hand them `/js`.
+     *
+     * So the honest reading of the gap: `admin add` grants nothing **for the rest of that session**,
+     * and the promotion happens on their next join. The other direction is wired and is destructive -
+     * [syncVanillaAdmin] calls unAdminPlayer whenever the resolved group is not an admin group, so a
+     * setperm into a non-admin group strips a vanilla admin's flag.
+     */
     fun check(data: PlayerData, command: String): Boolean {
         val group = main[this[data].group]
         return if (group != null) {

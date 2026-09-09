@@ -149,11 +149,30 @@ object Undo {
     fun unban(uuid: String, ipBanned: Boolean) {
         val admins = Vars.netServer.admins
         val info = admins.playerInfo.get(uuid)
-        val keep = if (ipBanned) emptyList() else info?.ips?.filter { admins.bannedIPs.contains(it) }.orEmpty()
+        // unbanPlayerID strips every address in this player's info from bannedIPs, not only the one
+        // the undone ban placed, so the rest are collected here and put back afterwards. Emptying the
+        // list whenever the ban placed an ip ban assumed the player had exactly one known address;
+        // a returning player has several, and undoing one ban lifted the bans on all of them.
+        val stillBanned = info?.ips?.filter { admins.bannedIPs.contains(it) }.orEmpty()
+        val keep = if (ipBanned) stillBanned.filter { it != info?.lastIP } else stillBanned
 
         admins.unbanPlayerID(uuid)
+        // Not redundant: unbanPlayerID clears `banned` on this player's info only, while unbanPlayerIP
+        // clears it on every info holding that address - so on a shared address it is what releases
+        // the housemate the original ip ban swept up.
         if (ipBanned) info?.lastIP?.let { admins.unbanPlayerIP(it) }
-        keep.forEach { admins.banPlayerIP(it) }
+        // Put the addresses back in the list rather than calling banPlayerIP, which walks every known
+        // player and sets banned = true on any whose ips hold the address. That is this player, so the
+        // last line of the undo would hand back the uuid ban the undo just lifted.
+        //
+        // addUnique, not add, because the removal above is conditional: unbanPlayerID returns early
+        // without stripping anything when the info was not banned, which is precisely the state a
+        // previous undo leaves behind. banPlayerIP carried this guard; the raw add does not, and a
+        // doubled entry survives its own unban - Seq.remove takes the first match and reports success.
+        if (keep.isNotEmpty()) {
+            keep.forEach { admins.bannedIPs.addUnique(it) }
+            admins.save()
+        }
 
         update(uuid) { it.banExpireDate = null }
     }
@@ -190,9 +209,19 @@ object Undo {
 
     fun strict(uuid: String, strict: Boolean) = update(uuid) { it.strictMode = strict }
 
-    fun permission(uuid: String, group: String, hadUserEntry: Boolean) {
-        update(uuid) { it.permission = group }
-        if (hadUserEntry) Permission.setGroup(uuid, group) else Permission.removeUserEntry(uuid, group)
+    /**
+     * Put [group] back, in permission_user.yaml first and only then in the row.
+     *
+     * Both file writes refuse outright while permission_user.yaml does not parse, and the file wins
+     * over the row wherever a permission is decided, so writing the row first left the two stores
+     * disagreeing until somebody fixed the YAML - with the un-undone group the one still in effect.
+     * Returns whether the undo happened.
+     */
+    fun permission(uuid: String, group: String, hadUserEntry: Boolean): Boolean {
+        val restored =
+            if (hadUserEntry) Permission.setGroup(uuid, group) else Permission.removeUserEntry(uuid, group)
+        if (restored) update(uuid) { it.permission = group }
+        return restored
     }
 
     fun team(uuid: String, team: Team) {

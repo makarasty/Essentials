@@ -6,6 +6,7 @@ admin:
   admin: true
   inheritance: user
   permission:
+    - admin
     - afk.admin
     - changemap
     - chars
@@ -14,53 +15,54 @@ admin:
     - color
     - dps
     - fillitems
-    - freeze
     - gg
     - god
-    - hud.enemy
+    - hub
     - info.other
     - kick.admin
     - kill
     - kill.other
     - meme
     - mute
+    - nextmap.admin
     - pause
     - pm.other
     - pvp.spector
     - rollback
-    - search
+    - setfeedbackprovider
+    - setmapprovider
     - skip
     - spawn
     - strict
     - team
     - team.other
-    - tempban
-    - tpp
     - undo
     - unmute
+    - vote.admin
     - vote.pass
+    - vote.random.bypass
     - vote.reset
     - weather
 user:
   permission:
-    - achievements
+    - ach
     - changepw
     - contribution
     - discord
     - effect
-    - hud
     - help
     - info
-    - lang
     - maps
     - me
     - motd
+    - nextmap
     - players
     - pm
     - ranking
     - report
     - rtv
     - status
+    - t
     - time
     - tp
     - track
