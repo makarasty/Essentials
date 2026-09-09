@@ -55,19 +55,14 @@ class PermissionNodeInventoryTest {
         /**
          * Nodes no group in the shipped file holds, so today only a group granting `all` can use them.
          *
-         * Some of these are deliberate - `js` runs arbitrary code, `setperm` hands out groups. Others
-         * are the open half of tasks 060 and 061 and are waiting on the operator to say which group
-         * should hold them: `admin`, `setmapprovider`, `setfeedbackprovider`, `hub`, `hub.build`,
-         * `nextmap`, `nextmap.admin`, and the `t` that `CommandSafetyTest` already names.
-         *
-         * The point of writing them down is the next one. A command added without a grant, or a grant
-         * added without removing its entry here, fails this test instead of shipping quietly.
+         * A command added without a grant, or a grant added without removing its entry here, fails
+         * this test rather than shipping quietly.
          */
         private val ONLY_OWNER = setOf(
-            "admin", "broadcast", "changename", "exp", "fuck", "hub", "hub.build", "js",
-            "kickall", "killall", "killunit", "log", "nextmap", "nextmap.admin",
-            "setfeedbackprovider", "setitem", "setmapprovider", "setperm", "t", "unban",
-            "vote.admin", "vote.random.bypass", "votekick", "ws",
+            "admin", "broadcast", "changename", "exp", "fuck", "hub", "hub.build", "js", "kickall",
+            "killall", "killunit", "log", "nextmap", "nextmap.admin", "setfeedbackprovider",
+            "setitem", "setmapprovider", "setperm", "t", "unban", "vote.admin",
+            "vote.random.bypass", "votekick", "ws",
         )
 
         private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
@@ -128,7 +123,7 @@ class PermissionNodeInventoryTest {
         assertEquals(
             emptySet(),
             grantedNodes() - commandNodes() - SUB_NODES - VANILLA_NODES,
-            "these nodes are granted by permission_default.yaml and nothing ever asks for them, so they grant nothing"
+            "these nodes are granted by permission_default.yaml and no command name and no Permission.check call site asks for them, so they grant nothing. Either the node is misspelled - the command name is the node - or the command it was written for is gone and the line should go with it"
         )
     }
 
@@ -137,7 +132,7 @@ class PermissionNodeInventoryTest {
         assertEquals(
             ONLY_OWNER,
             (commandNodes() + SUB_NODES) - grantedNodes(),
-            "the set of nodes no group holds has changed; grant the node to a group, or add it to ONLY_OWNER with the reason"
+            "the set of nodes no group holds has changed. A node that appeared needs either a grant in permission_default.yaml or an entry in ONLY_OWNER saying why only the owner should have it; a node that disappeared was granted, so drop it from ONLY_OWNER"
         )
     }
 }
