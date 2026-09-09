@@ -20,5 +20,8 @@ object CommandRegistry {
 
     fun registered(name: String): String = declared.entries.firstOrNull { it.value == name }?.key ?: name
 
+    /** Every canonical (pre-prefix) plugin command name resolved so far, core and module alike. */
+    fun declaredNames(): Set<String> = declared.values.toSet()
+
     fun clear() = declared.clear()
 }

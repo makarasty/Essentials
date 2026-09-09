@@ -43,6 +43,8 @@ import kotlin.time.Clock
 class Main : Plugin() {
     companion object {
         const val CONFIG_PATH = "config/config.yaml"
+        private const val DATABASE_INIT_TIMEOUT_MS = 30_000L
+        private const val SHUTDOWN_SAVE_TIMEOUT_MS = 30_000L
         @Volatile
         var conf: CoreConfig = reloadConf()
 
@@ -56,8 +58,105 @@ class Main : Plugin() {
             }
         }
 
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // Without a handler here, an exception thrown inside `scope.launch { ... }` (a pool
+        // acquire timeout, a connection drop, a constraint violation) reaches the JVM's default
+        // uncaught-exception handler instead of this plugin's own log, and whatever that launch
+        // was doing - most often saving a player's data - is lost with no line connecting the
+        // loss to its cause.
+        val scope = CoroutineScope(
+            SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { context, throwable ->
+                Log.err("Unhandled exception in a background coroutine ($context)", throwable)
+            }
+        )
         val threadPool: ExecutorService = Executors.newFixedThreadPool(2)
+
+        /**
+         * Applies the client command set for the current [conf] to [handler]: every generated
+         * command (core and module) registered, then bannedCommands.txt and the vote/votekick
+         * toggles removed on top. Called at boot from [registerClientCommands]; also the fix for
+         * task-159 (`/reload` in Commands.kt) and task-155/task-171's counterpart on the config.yaml
+         * watcher (`configFileModified` in CoreEvent.kt) needs the same re-application, because
+         * `conf.feature.vote.enabled`/`enableVotekick` and bannedCommands.txt are read exactly
+         * once today, here, and nothing calls this again after boot.
+         *
+         * Safe to call more than once with no token to track and no delta to compute:
+         * `CommandHandler.register` replaces any existing command of the same name rather than
+         * appending a second one (`orderedCommands.remove(c -> c.text.equals(text))` runs before
+         * every registration), and `CommandHandler.removeCommand` is a no-op on a name that is
+         * not currently registered. So re-running the full registration and then re-removing
+         * whatever the config currently says to remove reaches the same end state regardless of
+         * what state the handler started in - including turning a feature back on: registering
+         * again puts the command straight back, there is no leftover state a re-enable has to
+         * clean up.
+         *
+         * A player mid-session is unaffected beyond the command itself: removeCommand only takes
+         * the entry out of the handler's own command table and command list, so a command they
+         * had used is simply "unknown command" on their next attempt, the same response an
+         * unrecognised command has always produced. Nothing about their connection, their data or
+         * any other command is touched.
+         */
+        fun syncClientCommands(handler: CommandHandler) {
+            registerGeneratedClientCommands(handler)
+            ModuleRuntime.registerClientCommands(handler)
+            removeBannedCommands(handler)
+
+            // "vote" and "votekick" are vanilla names. CommandRegistry renames our own commands
+            // to "evote"/"evotekick" because vanilla already holds the unprefixed name, so
+            // removing only the resolved (renamed) name leaves vanilla's own /vote and /votekick
+            // fully functional - disabling the feature removed the plugin's command and nothing
+            // else.
+            if (!conf.feature.vote.enabled) {
+                handler.removeCommand(CommandRegistry.registered("vote"))
+                handler.removeCommand("vote")
+            }
+            if (!conf.feature.vote.enableVotekick) {
+                handler.removeCommand(CommandRegistry.registered("votekick"))
+                handler.removeCommand("votekick")
+            }
+        }
+
+        private fun removeBannedCommands(handler: CommandHandler) {
+            val file = rootPath.child("bannedCommands.txt")
+            if (file.exists()) {
+                try {
+                    val banned: List<String> = Json.decodeFromString(file.readString())
+                    for (command in banned) {
+                        handler.removeCommand(command)
+                    }
+                } catch (e: Exception) {
+                    Log.err("Failed to load bannedCommands.txt", e)
+                }
+            }
+        }
+
+        /**
+         * task-158: bounds [connect] to [timeoutMs] and logs a clear message before rethrowing on
+         * timeout, instead of letting init() hang forever with nothing to explain why. [connect]
+         * is the real `databaseInit(...)` call in production and a never-completing suspend
+         * function in DatabaseInitTimeoutTest, which needs the timeout wiring itself to fail fast
+         * rather than waiting out the real 30-second production timeout to prove it works.
+         */
+        internal suspend fun initDatabaseWithTimeout(timeoutMs: Long, urlForLogging: String, connect: suspend () -> Unit) {
+            try {
+                withTimeout(timeoutMs) { connect() }
+            } catch (e: TimeoutCancellationException) {
+                Log.err("Database initialisation did not finish within ${timeoutMs / 1000}s (url: $urlForLogging). The server cannot start without it.", e)
+                throw e
+            }
+        }
+
+        /**
+         * task-158's other half: bounds [save] (the per-player shutdown save loop in production)
+         * to [timeoutMs] and logs if it did not finish, rather than blocking dispose() forever.
+         * Returns whether it finished, for a test to check without waiting on Log output.
+         */
+        internal suspend fun saveOnShutdownWithTimeout(timeoutMs: Long, save: suspend () -> Unit): Boolean {
+            val finished = withTimeoutOrNull(timeoutMs) { save() } != null
+            if (!finished) {
+                Log.err("Shutdown save did not finish within ${timeoutMs / 1000}s; some online players' data may not have been saved.")
+            }
+            return finished
+        }
     }
 
     override fun init() = runBlocking {
@@ -78,11 +177,20 @@ class Main : Plugin() {
         initLogFiles()
 
         // DB 설정
-        databaseInit(
-            conf.plugin.database.url,
-            conf.plugin.database.username,
-            conf.plugin.database.password
-        )
+        // init() runs on the main thread (the engine calls Mod::init from inside its own init
+        // pass, before any tick is running to log anything), and runBlocking parks that thread
+        // until this completes. Nothing below has a bound of its own - the pool's acquire
+        // timeout only fires once a connection is being handed out, not while the driver is
+        // still trying to open the socket - so an unreachable or silently-dropping host used to
+        // hang the whole server with no explanation. A timeout here turns that hang into a
+        // log line the operator can act on.
+        initDatabaseWithTimeout(DATABASE_INIT_TIMEOUT_MS, conf.plugin.database.url) {
+            databaseInit(
+                conf.plugin.database.url,
+                conf.plugin.database.username,
+                conf.plugin.database.password
+            )
+        }
 
         // 블록 기록
         WorldHistoryBuffer.start(scope)
@@ -167,13 +275,20 @@ class Main : Plugin() {
                 runBlocking {
                     WorldHistoryBuffer.stop()
                     stopLogWriter()
-                    players.forEach { data ->
-                        try {
-                            data.isConnected = false
-                            data.lastLogoutDate = Clock.System.now().toLocalDateTime(systemTimezone)
-                            data.update()
-                        } catch (e: Exception) {
-                            e.printStackTrace()
+                    // Also on the main thread, one suspending write per online player, in
+                    // sequence, with nothing bounding the total. A supervisor with a shutdown
+                    // deadline kills the process regardless; this just makes sure the operator
+                    // sees that some sessions were not saved instead of the process dying
+                    // silently mid-loop.
+                    saveOnShutdownWithTimeout(SHUTDOWN_SAVE_TIMEOUT_MS) {
+                        players.forEach { data ->
+                            try {
+                                data.isConnected = false
+                                data.lastLogoutDate = Clock.System.now().toLocalDateTime(systemTimezone)
+                                data.update()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
                         }
                     }
                 }
@@ -189,39 +304,35 @@ class Main : Plugin() {
 
     override fun registerServerCommands(handler: CommandHandler) {
         registerGeneratedServerCommands(handler)
-        removeBannedCommands(handler)
-
+        // Module commands register after the core ones; banning has to come after both, or a
+        // module's own registration (which replaces unconditionally, see CommandHandler.register)
+        // silently un-bans whatever name it declares.
         ModuleRuntime.registerServerCommands(handler)
+        removeBannedCommands(handler)
     }
-
 
     override fun registerClientCommands(handler: CommandHandler) {
-        registerGeneratedClientCommands(handler)
-        removeBannedCommands(handler)
+        syncClientCommands(handler)
 
-        if (!conf.feature.vote.enabled) {
-            handler.removeCommand(CommandRegistry.registered("vote"))
-        }
-        if (!conf.feature.vote.enableVotekick) {
-            handler.removeCommand(CommandRegistry.registered("votekick"))
-        }
-
-        ModuleRuntime.registerClientCommands(handler)
+        // A boot-time counterpart to Permission's KDoc requirement: `known` has to be built
+        // after client-command registration, which syncClientCommands above just did. CoreEvent.kt's
+        // serverLoad still runs this too early (ServerLoadEvent fires before NetServer.init()
+        // registers client commands) and never sees plugin names there; that call is now
+        // redundant rather than wrong, and can be removed.
+        Permission.validate(knownPermissionNodes())
     }
 
-    private fun removeBannedCommands(handler: CommandHandler) {
-        val file = rootPath.child("bannedCommands.txt")
-        if (file.exists()) {
-            try {
-                val banned: List<String> = Json.decodeFromString(file.readString())
-                for (command in banned) {
-                    handler.removeCommand(command)
-                }
-            } catch (e: Exception) {
-                Log.err("Failed to load bannedCommands.txt", e)
-            }
-        }
-    }
+    /**
+     * Duplicated from CoreEvent.kt's `serverLoad`, which is not this file's to edit: the
+     * sub-nodes below are asked for directly in command bodies rather than carried by a
+     * registered command name, so CommandRegistry never sees them.
+     */
+    private fun knownPermissionNodes(): Set<String> = hashSetOf(
+        "admin", "afk.admin", "chat.admin", "hub.build", "info.other", "kick.admin",
+        "kill.other", "nextmap.admin", "pm.other", "pvp.spector", "team.other",
+        "vote.admin", "vote.back", "vote.draw", "vote.gg", "vote.kick", "vote.pass",
+        "vote.map", "vote.random", "vote.random.bypass", "vote.reset", "vote.skip",
+    ) + CommandRegistry.declaredNames()
 
     private fun checkUpdate() {
         if (conf.plugin.autoUpdate) {

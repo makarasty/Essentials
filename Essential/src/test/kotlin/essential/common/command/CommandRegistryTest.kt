@@ -40,6 +40,16 @@ class CommandRegistryTest {
     }
 
     @Test
+    fun declared_names_holds_every_canonical_plugin_command() {
+        val handler = handler("vote")
+
+        CommandRegistry.resolve(handler, "vote")
+        CommandRegistry.resolve(handler, "maps")
+
+        assertEquals(setOf("vote", "maps"), CommandRegistry.declaredNames())
+    }
+
+    @Test
     fun cyrillic_layout_maps_to_existing_commands_only() {
         val handler = handler("rtv", "pm")
 

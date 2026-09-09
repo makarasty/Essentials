@@ -292,6 +292,39 @@ class SharedMariaDbBanAndPermissionTest {
         )
     }
 
+    /**
+     * setBanExpire's fallback path (TempBan.kt:117-119) writes to plugin data only when the
+     * database write failed. Once a later call for the same uuid succeeds - the database
+     * recovering, or an admin extending the ban - the stale fallback entry has to go with it, or
+     * the sweep is left holding two disagreeing expiries for the same player and the shorter one,
+     * the orphaned one, wins: the sweep lifts a ban the operator just extended.
+     */
+    @Test
+    fun aSuccessfulWriteClearsAStaleFallbackExpiryForTheSameUuid(): Unit = runBlocking {
+        val id = uuid("s5fall")
+        createPlayerData(id, id, id, id)
+
+        // Stands in for an earlier setBanExpire() that fell back to plugin data because the
+        // database was unreachable at the time.
+        pluginData.data.tempBans[id] = past().toString()
+        assertTrue(pluginData.update(), "could not seed the stale fallback entry")
+
+        // The database is reachable now, so this call reaches the success path and stores a real,
+        // later expiry directly on the player's row.
+        val future = LocalDateTime.parse("2999-01-01T00:00")
+        TempBan.setBanExpire(id, future)
+
+        assertFalse(
+            assertNotNull(getPluginData()).data.tempBans.containsKey(id),
+            "a successful write left the stale fallback entry in plugin data, so the sweep still " +
+                "sees the old, shorter expiry alongside the real one"
+        )
+        assertEquals(
+            future, assertNotNull(getPlayerData(id)).banExpireDate,
+            "the real expiry just written should be the one now in effect"
+        )
+    }
+
     // -------------------------------------------------------------------- scenario 6: permissions
 
     /** setperm writes the shared row and nothing local, so the other instances read it on their next look. */
