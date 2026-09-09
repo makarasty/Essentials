@@ -263,7 +263,7 @@ data class Module(
 /** Feature - Command settings */
 @Serializable
 data class Command(
-    @YamlComment("Vote skip command configuration")
+    @YamlComment("Wave skip configuration, for both the vote and the command")
     val skip: Skip = Skip(),
     @YamlComment("Rollback command configuration")
     val rollback: Rollback = Rollback(),
@@ -275,8 +275,10 @@ data class Command(
 @Serializable
 data class Skip(
     val enabled: Boolean = true,
-    @YamlComment("Maximum number of skips allowed")
+    @YamlComment("Maximum number of waves a vote may skip")
     val limit: Int = 10,
+    @YamlComment("Maximum number of waves the /skip command may spawn at once. Not the vote limit above: this one bounds the admin command, which spawns every wave in one go on the main thread.")
+    val adminLimit: Int = 100,
 )
 
 /** Feature - Game settings */

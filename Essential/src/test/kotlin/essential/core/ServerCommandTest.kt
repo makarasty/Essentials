@@ -171,7 +171,10 @@ class ServerCommandTest {
             waitUntil(10000) { runBlocking { getPlayerData(uuid)?.permission } == "admin" },
             "the offline group change should land"
         )
-        assertContains(rootPath.child("permission_user.yaml").readString(), uuid)
+        assertFalse(
+            rootPath.child("permission_user.yaml").readString().contains(uuid),
+            "the group belongs in the shared row, not in this server's own file"
+        )
 
         val rejoin = createPlayer()
         rejoin.con.uuid = uuid

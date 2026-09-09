@@ -45,6 +45,7 @@ import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
+import mindustry.gen.Player
 import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.Packets
@@ -81,6 +82,36 @@ class Commands {
         const val PLAYER_NOT_FOUND = "player.not.found"
         const val PLAYER_NOT_REGISTERED = "player.not.registered"
         val charsPlacing = ConcurrentHashMap<String, Array<String>>()
+
+        /**
+         * Drops the world history recorded on the map that is being replaced.
+         *
+         * History rows are keyed by tile coordinates and by nothing else, so they only mean anything
+         * inside the world they were recorded in. Left in place across a map change they become claims
+         * about a map that is no longer loaded, and a rollback rebuilds and removes real blocks on the
+         * current map from them. The game over handler already clears them; a map changed directly never
+         * fires one. The flush first is so that rows still sitting in the buffer cannot land after the
+         * table has been emptied.
+         */
+        private fun discardWorldHistory() {
+            scope.launch {
+                WorldHistoryBuffer.flush()
+                clearWorldHistory()
+            }
+        }
+
+        /**
+         * Registers a menu that only [owner] is allowed to answer.
+         *
+         * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
+         * may call with any id, so the engine hands every id it receives straight to the listener
+         * registered under it. A menu that acts on behalf of the player it was opened for therefore
+         * has to check the responder itself; nothing below this call does it.
+         */
+        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int =
+            Menus.registerMenu { player, option ->
+                if (player.uuid() == owner.uuid) listener(player, option)
+            }
 
         /**
          * Calculate the Levenshtein distance between two strings
@@ -139,6 +170,7 @@ class Commands {
                 Vars.state.rules = Vars.state.map.applyRules(mode)
                 Vars.logic.play()
                 reloader.end()
+                discardWorldHistory()
             } catch (_: IllegalArgumentException) {
                 playerData.err("command.changeMap.mode.not.found", arg[1])
             }
@@ -603,10 +635,10 @@ class Commands {
                 arrayOf(bundle[close])
             )
 
-            val mainMenu = Menus.registerMenu { p, select ->
+            val mainMenu = registerOwnedMenu(playerData) { p, select ->
                 when (select) {
                     1 if !isBanned -> {
-                        val innerMenu = Menus.registerMenu { _, s ->
+                        val innerMenu = registerOwnedMenu(playerData) { _, s ->
                             val time: Int = when (s) {
                                 0 -> 10
                                 1 -> 60
@@ -633,7 +665,7 @@ class Commands {
                                 }"]
 
                                 if (s <= 5) {
-                                    val tempBanConfirmMenu = Menus.registerMenu { _, i ->
+                                    val tempBanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                                         if (i == 0) {
                                             require(targetData != null) {
                                                 "DB error?"
@@ -665,7 +697,7 @@ class Commands {
                                         arrayOf(arrayOf(bundle[ban], bundle[cancel]))
                                     )
                                 } else if (s == 6) {
-                                    val banConfirmMenu = Menus.registerMenu { _, i ->
+                                    val banConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                                         if (i == 0) {
                                             val uuid = targetData!!.uuid
                                             val label = Undo.label(uuid)
@@ -695,7 +727,7 @@ class Commands {
                     }
 
                     1 -> {
-                        val unbanConfirmMenu = Menus.registerMenu { _, i ->
+                        val unbanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
                             if (i == 0) {
                                 targetData!!.banExpireDate = null
                                 scope.launch { targetData!!.update() }
@@ -990,7 +1022,7 @@ class Commands {
         playerData.status["page"] = "0"
 
         var mainMenu = 0
-        mainMenu = Menus.registerMenu { p, select ->
+        mainMenu = registerOwnedMenu(playerData) { p, select ->
             var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
@@ -1268,7 +1300,7 @@ class Commands {
         playerData.status["page"] = "0"
 
         var mainMenu = 0
-        mainMenu = Menus.registerMenu { p, select ->
+        mainMenu = registerOwnedMenu(playerData) { p, select ->
             var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
@@ -1733,7 +1765,16 @@ class Commands {
         val previous = Permission.groupOf(data.uuid, data.permission)
         val hadUserEntry = Permission.hasUserEntry(data.uuid)
 
-        if (!Permission.setGroup(data.uuid, group)) {
+        // permission_user.yaml is per server and wins over the shared permission column, so an entry
+        // written here would mask this group on this server and be pushed back over the shared row on
+        // the next load. The group belongs in the row every server reads. An entry the operator wrote by
+        // hand is left in place and kept in step; one this command created is not worth having.
+        val written = if (hadUserEntry) {
+            Permission.setGroup(data.uuid, group)
+        } else {
+            Permission.removeUserEntry(data.uuid, group)
+        }
+        if (!written) {
             val problem = Permission.userFileProblem().orEmpty()
             if (sender != null) {
                 sender.err("permission.user.file.invalid", problem)
@@ -1816,18 +1857,21 @@ class Commands {
     fun skip(playerData: PlayerData, arg: Array<out String>) {
         val wave = arg[0].toIntOrNull()
         if (wave != null) {
-            if (wave > 0) {
+            if (wave <= 0) {
+                playerData.err("command.skip.number.low")
+            } else if (wave > conf.command.skip.adminLimit) {
+                // Every wave is spawned before this command returns, on the main thread, so the count the
+                // caller picks is how long the server stops ticking and how many units it allocates. The
+                // vote path's limit is a different setting for a different command and is left alone.
+                playerData.err("command.skip.number.high", conf.command.skip.adminLimit)
+            } else {
                 val previousWave = Vars.state.wave
-                var loop = 0
-                while (arg[0].toInt() != loop) {
-                    loop++
+                repeat(wave) {
                     Vars.spawner.spawnEnemies()
                     Vars.state.wave++
                     Vars.state.wavetime = Vars.state.rules.waveSpacing
                 }
                 playerData.send("command.skip.process", previousWave, Vars.state.wave)
-            } else {
-                playerData.err("command.skip.number.low")
             }
         } else {
             playerData.err("command.skip.number.invalid")
@@ -2091,6 +2135,55 @@ class Commands {
         playerData.mouseTracking = !playerData.mouseTracking
         val msg = if (!playerData.mouseTracking) ".disabled" else ""
         playerData.send("command.track.toggle$msg")
+    }
+
+    @ServerCommand("permaban", "<player>", "Make an existing ban permanent by clearing its expiry")
+    fun permaban(arg: Array<out String>) {
+        val bundle = Bundle()
+        scope.launch {
+            val found = PlayerLookup.findExact(arg[0])
+            if (PlayerLookup.ambiguous(found, arg[0], null)) return@launch
+            val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
+
+            val data = findPlayerData(uuid)?.takeIf { !it.temporary } ?: getPlayerData(uuid)
+            val orphan = pluginData.data.tempBans[uuid]
+            val previous = data?.banExpireDate
+                ?: orphan?.let { runCatching { LocalDateTime.parse(it) }.getOrNull() }
+
+            if (found !is PlayerLookup.Result.Found && data == null && orphan == null) {
+                Log.warn(bundle[PlayerLookup.NOT_FOUND])
+                return@launch
+            }
+
+            // Only the expiry. Not unbanPlayerID, which drops every ip ban the player has and does not
+            // put them back when the id is banned again, and not the scheduler's lifting token, which
+            // would be spent here and turn the next genuine unban into a no-op.
+            TempBan.clearBanExpire(uuid)
+
+            // That call logs a database failure and carries on, so the row is read back rather than
+            // telling a moderator the ban is permanent when the write never landed. This is the whole
+            // reason the command exists: the bot already reports things that did not happen.
+            val cleared = getPlayerData(uuid)?.banExpireDate == null && !pluginData.data.tempBans.containsKey(uuid)
+
+            when {
+                !cleared -> Log.warn(bundle["command.permaban.failed", uuid])
+                previous == null -> Log.info(bundle["command.permaban.none", uuid])
+                else -> {
+                    Log.info(bundle["command.permaban.done", uuid])
+                    Undo.record(null, "permaban", uuid, Undo.label(uuid)) {
+                        scope.launch { TempBan.setBanExpire(it, previous) }
+                    }
+                }
+            }
+
+            // The ban list is game state, and this server may not be the one holding the ban: the expiry
+            // is shared through the database, the ban is not.
+            Core.app.post {
+                if (cleared && !Vars.netServer.admins.isIDBanned(uuid)) {
+                    Log.warn(bundle["command.permaban.not.banned", uuid])
+                }
+            }
+        }
     }
 
     @ServerCommand("unban", "<player>", "Unban player")
@@ -2374,6 +2467,7 @@ class Commands {
                                 Vars.state.rules = Vars.state.map.applyRules(currentRule)
                                 Vars.logic.play()
                                 reloader.end()
+                                discardWorldHistory()
                             }
                         } else {
                             playerData.err(mapNotFound)

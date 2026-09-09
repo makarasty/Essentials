@@ -111,10 +111,18 @@ object WorldHistoryBuffer {
         return batch
     }
 
+    /**
+     * Writes everything queued so far, under the same lock the periodic flush takes.
+     *
+     * The lock is what makes this usable as "the table now holds everything recorded up to here": without
+     * it a batch the periodic flush had already drained could still be inside its transaction, and its
+     * rows would land after a caller had gone on to empty the table.
+     */
     suspend fun flush() {
-        val batch = drain()
-        if (batch.isEmpty()) return
-        flushBatch(batch)
+        flushMutex.withLock {
+            val batch = drain()
+            if (batch.isNotEmpty()) flushBatch(batch)
+        }
     }
 
     suspend fun stop() {
