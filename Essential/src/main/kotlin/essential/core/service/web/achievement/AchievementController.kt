@@ -1,5 +1,6 @@
 package essential.core.service.web.achievement
 
+import essential.common.bundle.Bundle
 import essential.common.database.data.getPlayerAchievements
 import essential.common.database.data.getPlayerDataByName
 import essential.common.players
@@ -53,6 +54,22 @@ data class MyInfo(
     val achievements: List<AchievementInfo>
 )
 
+/**
+ * Resolves the achievements bundle for [locale]. Bundle.resolve, not ResourceBundle.getBundle: the
+ * two-arg form falls through the JVM default locale's candidates before reaching the base bundle, so
+ * a client whose language ships no file was answered in the host's language rather than English
+ * (task-044, answers/3-2.md). Verified against a `bundles/achievements/bundle_en.properties` that
+ * does not exist: the catch below is not a live fallback path (the base bundle always exists, so the
+ * try cannot throw), and is left as `Bundle.resolve(..., Locale.ENGLISH)` - the correct English
+ * fallback - rather than removed, since a future bundle reorganisation could make the base
+ * resolution fail for real.
+ */
+internal fun resolveAchievementBundle(locale: Locale): ResourceBundle = try {
+    Bundle.resolve("bundles/achievements/bundle", locale)
+} catch (e: MissingResourceException) {
+    Bundle.resolve("bundles/achievements/bundle", Locale.ENGLISH)
+}
+
 class AchievementController {
     suspend fun getMyInfo(call: ApplicationCall) {
         val session = call.sessions.get<UserSession>()
@@ -66,15 +83,8 @@ class AchievementController {
 
         val completed = getPlayerAchievements(dbData).map { it.achievementName.lowercase() }.toSet()
 
-        // Load achievement names/descriptions in the account's language
-        val bundle = try {
-            ResourceBundle.getBundle(
-                "bundles/achievements/bundle",
-                Locale.forLanguageTag(dbData.languageTag.replace("_", "-"))
-            )
-        } catch (e: MissingResourceException) {
-            ResourceBundle.getBundle("bundles/achievements/bundle", Locale.ENGLISH)
-        }
+        // Load achievement names/descriptions in the account's language.
+        val bundle = resolveAchievementBundle(Locale.forLanguageTag(dbData.languageTag.replace("_", "-")))
 
         fun localized(prefix: String, key: String, fallback: String): String = try {
             bundle.getString("$prefix.$key")
