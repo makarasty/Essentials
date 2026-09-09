@@ -84,6 +84,14 @@ class Commands {
         val charsPlacing = ConcurrentHashMap<String, Array<String>>()
 
         /**
+         * An admin's explicit /nextmap pick, so the popularity tally that runs after every later vote
+         * (including someone else's) re-affirms it instead of silently recomputing over it. Reset
+         * whenever a vote is cast into an empty mapVotes, which is how a fresh voting round is detected
+         * without needing CoreEvent.kt's game-over handler (which clears mapVotes) to know about this.
+         */
+        private var nextMapAdminOverride: Map? = null
+
+        /**
          * History rows are keyed by tile coordinates and by nothing else, so across a map change they
          * become claims about a map that is no longer loaded and a rollback rebuilds and removes real
          * blocks from them. The game over handler already clears them; a map changed directly never
@@ -2675,12 +2683,21 @@ class Commands {
 
             if (target != null) {
                 val playerUuid = playerData.uuid
+                // mapVotes only empties between rounds (the game-over handler clears it), so seeing it
+                // empty right before this vote lands means a fresh round is starting and any earlier
+                // admin override no longer applies to it.
+                if (mapVotes.isEmpty()) {
+                    nextMapAdminOverride = null
+                }
 
                 // Check if player already voted for this map
                 if (mapVotes[playerUuid] == target) {
                     // Cancel the vote
                     mapVotes.remove(playerUuid)
                     playerData.send("command.nextmap.vote.canceled", target.plainName())
+                    if (nextMapAdminOverride == target) {
+                        nextMapAdminOverride = null
+                    }
                 } else {
                     // Record the vote
                     val previousVote = mapVotes.put(playerUuid, target)
@@ -2691,22 +2708,27 @@ class Commands {
                         playerData.send("command.nextmap.vote.cast", target.plainName())
                     }
 
-                    // If admin, they can still override the next map
+                    // If admin, they can still override the next map. That choice is remembered so the
+                    // tally below - which runs after every vote from here on, including someone else's -
+                    // re-affirms it instead of silently recomputing over it.
                     if (Permission.check(playerData, "nextmap.admin")) {
+                        nextMapAdminOverride = target
                         Vars.maps.setNextMapOverride(target)
                         playerData.send("command.nextmap.set", target.plainName())
+                        return
                     }
                 }
 
                 if (mapVotes.isNotEmpty()) {
-                    val voteCount = HashMap<Map, Int>()
-                    mapVotes.values.forEach { map ->
-                        voteCount[map] = voteCount.getOrDefault(map, 0) + 1
+                    val winner = nextMapAdminOverride ?: run {
+                        val voteCount = HashMap<Map, Int>()
+                        mapVotes.values.forEach { map ->
+                            voteCount[map] = voteCount.getOrDefault(map, 0) + 1
+                        }
+                        voteCount.maxByOrNull { it.value }?.key
                     }
-
-                    val mostVotedMap = voteCount.maxByOrNull { it.value }?.key
-                    if (mostVotedMap != null) {
-                        Vars.maps.setNextMapOverride(mostVotedMap)
+                    if (winner != null) {
+                        Vars.maps.setNextMapOverride(winner)
                     }
                 }
             } else {
