@@ -594,8 +594,10 @@ fun updateSecond() {
 }
 
 /**
- * Groups.player, Groups.build and PlayerData.status all belong to the game loop, and the caller is
- * Arc's Timer daemon thread, so the work is handed to the game thread rather than done here.
+ * Groups.player, Groups.build and PlayerData.status all belong to the game loop. Arc's Timer already
+ * posts task bodies to the application thread (Timer.update calls task.app.post), so in production the
+ * caller is the game thread and this post only defers the work by a frame. It is left in place as cheap
+ * insurance for any future caller that is not on that thread.
  */
 internal fun achievementSweep() {
     Core.app.post {
