@@ -1285,7 +1285,10 @@ fun connectPacket(event: ConnectPacketEvent) {
                     consumeRoutingPermission(event.packet.uuid, targetServerName, targetPort)
 
                 if (!hasRoutingPermission) {
-                    event.connection.kick("Direct connection denied - must route through hub server", 0L)
+                    // This closure runs on Dispatchers.IO, unlike a Timer.Task body - a real other
+                    // thread, so the kick has to reach the connection the way its siblings in
+                    // playerConnect do: posted to the game thread rather than called from here.
+                    Core.app.post { event.connection.kick("Direct connection denied - must route through hub server", 0L) }
                     writeLog(
                         LogType.Player,
                         Bundle()["event.player.kick", event.packet.name, event.packet.uuid, event.connection.address, "Direct connection denied - must route through hub"]
