@@ -30,13 +30,29 @@ RENDEZVOUS=${RENDEZVOUS:-$NEW_TREE/build/mixed-version}
 : "${JAVA_HOME:?set JAVA_HOME to a JDK 21}"
 JAVA="$JAVA_HOME/bin/java"
 
-if [ ! -d "$OLD_TREE" ]; then
+# By the worktree list rather than by the directory: a leftover directory at that path would skip the
+# checkout and the driver would be copied outside a repository.
+if ! git -C "$NEW_TREE" worktree list --porcelain | grep -qF "worktree $OLD_TREE"; then
   echo "== creating a worktree at $OLD_REF in $OLD_TREE"
   git -C "$NEW_TREE" worktree add --detach "$OLD_TREE" "$OLD_REF"
 fi
 cp "$HERE/OldInstanceDriver.kt" "$OLD_TREE/Essential/src/test/kotlin/OldInstanceDriver.kt"
 
+# Neither databaseInit nor either driver creates the database, so do it here; both processes would
+# otherwise die in their first transaction.
+DB_NAME=${DB_URL##*/}
+DB_HOST_PORT=${DB_URL#*//}
+DB_HOST=${DB_HOST_PORT%%:*}
+DB_PORT=${DB_HOST_PORT#*:}; DB_PORT=${DB_PORT%%/*}
+CLIENT=$(command -v mariadb || command -v mysql || true)
+if [ -n "$CLIENT" ]; then
+  "$CLIENT" -u "$DB_USER" ${DB_PASS:+-p"$DB_PASS"} -h "$DB_HOST" -P "$DB_PORT"     -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4"
+else
+  echo "== no mariadb/mysql client on PATH; create $DB_NAME yourself if the instances fail to connect"
+fi
+
 INIT=$(mktemp)
+trap 'rm -f "$INIT"' EXIT
 cat > "$INIT" <<'GRADLE'
 allprojects {
     plugins.withId('java') {

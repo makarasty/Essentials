@@ -28,11 +28,18 @@ fun main(args: Array<String>) {
     // staggered rollout says, so print it instead.
     Log.logger = Log.LogHandler { _, text -> println("[old] $text") }
 
+    // An exception out of main would otherwise leave the headless application's non-daemon threads
+    // running, so the script waits forever on a process that has already failed. Halt instead.
+    Thread.setDefaultUncaughtExceptionHandler { _, e ->
+        e.printStackTrace()
+        Runtime.getRuntime().halt(1)
+    }
+
     runBlocking {
         databaseInit(url, user, pass)
-        // The two instances boot one after the other on purpose. Booting both at once against an empty
-        // database is its own defect - SchemaUtils.create races itself and one instance dies with
-        // "Duplicate key name" - and mixing the two would leave this run unable to say which it saw.
+        // The two instances boot one after the other on purpose. Booting both at once against an
+        // empty database is its own defect - SchemaUtils.create races itself and one instance dies
+        // with "Duplicate key name" - and mixing the two would leave this unable to say which it saw.
         File(dir, "old-booted").writeText("ok")
 
         await(File(dir, "new-ready"))

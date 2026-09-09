@@ -21,6 +21,9 @@ import java.io.File
  *
  * args: r2dbcUrl user password uuid rendezvousDir
  */
+/** What the old instance adds to the blob on its way past; the new instance clears it first. */
+private const val OLD_INSTANCE_MARK = "old-instance-was-here"
+
 fun main(args: Array<String>) {
     val (url, user, pass, uuid, rendezvous) = args
     val dir = File(rendezvous).also { it.mkdirs() }
@@ -31,6 +34,13 @@ fun main(args: Array<String>) {
     File("config/mods/Essentials/data").mkdirs()
     Log.logger = Log.LogHandler { _, text -> println("[new] $text") }
 
+    // An exception out of main would otherwise leave the headless application's non-daemon threads
+    // running, so the script waits forever on a process that has already failed. Halt instead.
+    Thread.setDefaultUncaughtExceptionHandler { _, e ->
+        e.printStackTrace()
+        Runtime.getRuntime().halt(1)
+    }
+
     val failures = mutableListOf<String>()
 
     runBlocking {
@@ -40,12 +50,23 @@ fun main(args: Array<String>) {
         await(File(dir, "old-booted"))
         databaseInit(url, user, pass)
 
+        // Everything this run asserts on, cleared first. The database is not dropped between runs and
+        // the uuid is stable, so without this the two "never landed, so nothing means anything" controls
+        // below would be satisfied by the previous run's leftovers - and those controls are the only
+        // thing separating "the fix worked" from "the old instance never started".
         val plugin = getPluginData() ?: createPluginData()
         plugin.data.warpBlock.removeAll { it.mapName == map }
         plugin.data.tempBans.remove(victim)
+        plugin.data.blacklistedNames.remove(OLD_INSTANCE_MARK)
         plugin.update()
 
         val player = getPlayerData(uuid) ?: createPlayerData(uuid, uuid, uuid, uuid)
+        player.blockPlaceCount = 0
+        player.isBanned = false
+        player.chatMuted = false
+        player.permission = "default"
+        player.exp = 0
+        player.update()
         println("[new] row ready for $uuid")
         File(dir, "new-ready").writeText("ok")
 
@@ -77,7 +98,7 @@ fun main(args: Array<String>) {
         if (after.exp != 777) failures += "the old instance reverted exp to ${after.exp}"
         if (blob.data.warpBlock.none { it.mapName == map }) failures += "the old instance erased the warp the new one added"
         if (!blob.data.tempBans.containsKey(victim)) failures += "the old instance erased the temp ban the new one issued"
-        if (!blob.data.blacklistedNames.contains("old-instance-was-here")) {
+        if (!blob.data.blacklistedNames.contains(OLD_INSTANCE_MARK)) {
             failures += "the old instance's own blob write never landed, so nothing above means anything"
         }
 
