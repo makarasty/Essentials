@@ -160,6 +160,9 @@ class CommandProcessor(
             .addImport("essential.common.database.data", "PlayerData")
             .addImport("essential.common.database.data", "createTemporaryPlayerData")
             .addImport("essential.common.command", "CommandRegistry")
+            .addImport("arc", "Events")
+            .addImport("mindustry.game", "EventType")
+            .addImport("java.util.concurrent", "ConcurrentHashMap")
             .addFunction(generateRegisterClientCommandsFunction(functions))
 
         val fileSpec = builder.build()
@@ -253,6 +256,13 @@ class CommandProcessor(
             .addCode(
                 """
                 val commands = Commands()
+                // A placeholder has to outlive the one invocation that made it: /login keeps its
+                // device-conflict confirmation on this object, and a fresh one per invocation made
+                // that loop unreachable. Dropped when the player leaves, so a confirmation never
+                // carries into a later session.
+                val temporaryData = ConcurrentHashMap<String, PlayerData>()
+                Events.on(EventType.PlayerLeave::class.java) { temporaryData.remove(it.player.uuid()) }
+
                 val clientCommands = listOf(
                 ${
                     functions.joinToString(",\n                    ") { function ->
@@ -293,7 +303,11 @@ class CommandProcessor(
                         } else if (annotation.name == "login" || annotation.name == "reg") {
                             // Player has no stored data yet (e.g. new device under password auth);
                             // still allow authentication commands using a temporary data object.
-                            command(createTemporaryPlayerData(player), args)
+                            val placeholder = temporaryData.compute(player.uuid()) { _, existing ->
+                                if (existing != null && existing.player === player) existing
+                                else createTemporaryPlayerData(player).apply { temporary = true }
+                            }!!
+                            command(placeholder, args)
                         } else {
                             player.sendMessage(Bundle(player.locale())["command.data.loading"])
                         }
