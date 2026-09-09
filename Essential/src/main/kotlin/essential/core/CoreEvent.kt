@@ -717,28 +717,12 @@ fun mergeTemporaryPlayerData(temporary: PlayerData, data: PlayerData) {
     data.strictMode = data.strictMode || temporary.strictMode
     data.isBanned = data.isBanned || temporary.isBanned
     if (temporary.banExpireDate != null) data.banExpireDate = temporary.banExpireDate
-    // The other half of this pair is PlayerMerge.kt, which merges two accounts; both carry the same
-    // record.* keys and must agree about which of them may be summed. The two lists are kept in step by
-    // hand and must be edited together - a key added to one and not the other is a silent divergence.
     // The record.* keys are the achievement counters and the only persisted part of status, so progress
     // earned on the temporary object is lost unless it is carried across. Everything else in status is
     // session state - one key is a login consent token whose second use deletes the player row.
     for ((key, value) in temporary.status) {
         if (!key.startsWith("record.")) continue
-        // Not every record.* key is a running total. The .time keys hold a raw System.currentTimeMillis
-        // stamp, and the .current and .duration keys - and record.time.noafk - are windows that get reset
-        // to zero. Summing a window turns two half-runs into a whole one and awards something that never
-        // happened; summing a timestamp lands so far in the future that the check it guards never closes.
-        if (key.endsWith(".time") || key.endsWith(".current") || key.endsWith(".duration")) continue
-        // The two turret kill counts read like lifetime totals and are not: AchievementEvents assigns 1
-        // rather than incrementing once more than ten seconds have passed since the paired .time stamp,
-        // so they are bursts with no suffix to give them away. Excluding the stamp does not protect them,
-        // because the achievement sweep at load reads the count without ever consulting it - two players
-        // mid-burst at three each would merge to six and be handed QuillKiller on the next join.
-        if (key == "record.time.noafk" ||
-            key == "record.turret.quill.kill" ||
-            key == "record.turret.zenith.kill"
-        ) continue
+        if (!isRunningTotalRecordKey(key)) continue
         val carried = value.toLongOrNull() ?: continue
         data.status[key] = ((data.status[key]?.toLongOrNull() ?: 0L) + carried).toString()
     }
