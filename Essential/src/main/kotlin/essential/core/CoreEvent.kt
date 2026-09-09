@@ -207,22 +207,38 @@ fun config(event: ConfigEvent) {
     }
 }
 
+// Accepted: no engine-side rate limit exists on tap RPCs at all (checked mindustry.core.NetServer
+// and mindustry.net.Administration - neither has one), so a client can drive this handler at
+// whatever rate it can push packets, unthrottled, and every call reaches the world-history buffer
+// and the tap log before anything else in this function looks at who is tapping. Cap the logging
+// side per uuid rather than building real interaction throttling; upgrade if another action needs it.
+private val lastLoggedTap = HashMap<String, Long>()
+private const val TAP_LOG_INTERVAL_MS = 100L
+
 @Event
 fun tap(event: TapEvent) {
-    writeLog(LogType.Tap) { Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)] }
-    addLog(
-        TileLog(
-            System.currentTimeMillis(),
-            event.player.name,
-            "tap",
-            event.tile.x,
-            event.tile.y,
-            checkValidBlock(event.tile),
-            if (event.tile.build != null) event.tile.build.rotation else 0,
-            if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-            null
+    val uuid = event.player.uuid()
+    val now = System.currentTimeMillis()
+    val lastLogged = lastLoggedTap[uuid]
+    val shouldLog = lastLogged == null || now - lastLogged >= TAP_LOG_INTERVAL_MS
+    if (shouldLog) {
+        lastLoggedTap[uuid] = now
+        writeLog(LogType.Tap) { Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)] }
+        addLog(
+            TileLog(
+                System.currentTimeMillis(),
+                event.player.name,
+                "tap",
+                event.tile.x,
+                event.tile.y,
+                checkValidBlock(event.tile),
+                if (event.tile.build != null) event.tile.build.rotation else 0,
+                if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
+                null
+            )
         )
-    )
+    }
+
     val data = findPlayerData(event.player.uuid())
     if (data != null) {
         if (data.status.containsKey("chars_text")) {
