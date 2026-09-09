@@ -1557,7 +1557,6 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     // Final guard: do not add if player already disconnected
     if (playerData.player.con() == null || playerData.player.con().hasDisconnected) return
     players.add(playerData)
-    playerNumber++
 
 
     // If the current mode is PvP

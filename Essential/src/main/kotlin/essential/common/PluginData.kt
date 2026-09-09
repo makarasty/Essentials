@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
@@ -73,8 +74,15 @@ val players = CopyOnWriteArrayList<PlayerData>()
 /** System time zone */
 val systemTimezone = TimeZone.currentSystemDefault()
 
-/** Player number sequence */
-var playerNumber = 0
+/**
+ * Per-session entity id sequence, a process-local counter and not shared/serialised state - it is
+ * a file-level global, not a field of the [essential.common.database.data.PluginData] the six
+ * servers share. Atomic because the old plain Int was read at PlayerData construction time, inside
+ * the join coroutine, and only incremented later on the game thread: two players joining close
+ * together could be constructed before either increment ran, and both got entityId 0. #-lookups
+ * then resolved to whichever of them sorted first, silently - task-067.
+ */
+val playerNumber = AtomicInteger(0)
 
 /** Players who left during a match */
 var offlinePlayers = mutableListOf<PlayerData>()
