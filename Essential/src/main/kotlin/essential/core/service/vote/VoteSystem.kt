@@ -5,7 +5,6 @@ import arc.Events
 import arc.files.Fi
 import arc.func.Cons
 import arc.graphics.Color
-import arc.util.Time
 import arc.util.Timer
 import essential.common.*
 import essential.common.database.data.PlayerData
@@ -106,6 +105,49 @@ internal fun scheduleFireDecay(ticks: Int = 600, onSupply: () -> Unit): Timer.Ta
     }
 
     Timer.schedule(task, 0f, 10f)
+    return task
+}
+
+/**
+ * The delayed roll the `vote random` outcome runs three seconds after the vote passes: [outcome] once,
+ * and not at all if the world is replaced first.
+ *
+ * The returned task is the one that was scheduled. `Time.runTask` cannot be used here even though it
+ * takes the delay in ticks: it binds `Timer.schedule(Runnable, float)`, which wraps its argument in an
+ * arc task of its own, so a [Timer.Task] handed to it is never itself scheduled and its own `cancel()`
+ * reaches nothing - the same trap as the fire decay above.
+ *
+ * [stopped] is not redundant with `cancel()`. Arc drops a one shot task from the timer's list before it
+ * posts it to the app thread, so a world load landing in that gap has nothing left to unschedule and the
+ * body would run on the new map anyway.
+ */
+internal fun scheduleRandomOutcome(delaySeconds: Float = 3f, outcome: () -> Unit): Timer.Task {
+    val task = object : Timer.Task() {
+        var stopped = false
+        val listener: Cons<WorldLoadEvent>
+
+        init {
+            listener = Cons<WorldLoadEvent> {
+                this.cancel()
+            }
+
+            Events.on(WorldLoadEvent::class.java, listener)
+        }
+
+        override fun cancel() {
+            stopped = true
+            Events.remove(WorldLoadEvent::class.java, listener)
+            super.cancel()
+        }
+
+        override fun run() {
+            if (stopped) return
+            cancel()
+            outcome()
+        }
+    }
+
+    Timer.schedule(task, delaySeconds)
     return task
 }
 
@@ -401,87 +443,85 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             nextVoteAvailable = timeSource.markNow().plus(5.minutes)
                             send("command.vote.random.done")
                             send("command.vote.random.is")
-                            Time.runTask(180f, object : Timer.Task() {
-                                    override fun run() {
-                                        when (kotlin.random.Random.nextInt(7)) {
-                                            0 -> {
-                                                send("command.vote.random.unit")
-                                                Groups.unit.each {
-                                                    if (it.team == voteData.starter.player.team()) it.kill()
-                                                }
-                                                send("command.vote.random.unit.wave")
-                                                Vars.logic.runWave()
-                                            }
+                            scheduleRandomOutcome {
+                                when (kotlin.random.Random.nextInt(7)) {
+                                    0 -> {
+                                        send("command.vote.random.unit")
+                                        Groups.unit.each {
+                                            if (it.team == voteData.starter.player.team()) it.kill()
+                                        }
+                                        send("command.vote.random.unit.wave")
+                                        Vars.logic.runWave()
+                                    }
 
-                                            1 -> {
-                                                send("command.vote.random.wave")
-                                                for (a in 0..5) Vars.logic.runWave()
-                                            }
+                                    1 -> {
+                                        send("command.vote.random.wave")
+                                        for (a in 0..5) Vars.logic.runWave()
+                                    }
 
-                                            2 -> {
-                                                send("command.vote.random.health")
-                                                Groups.build.each {
-                                                    it.health(it.health / 2)
-                                                }
-                                            }
+                                    2 -> {
+                                        send("command.vote.random.health")
+                                        Groups.build.each {
+                                            it.health(it.health / 2)
+                                        }
+                                    }
 
-                                            3 -> {
-                                                send("command.vote.random.fill.core")
-                                                Vars.content.items().forEach {
-                                                    if (!it.isHidden) {
-                                                        Vars.state.teams.cores(voteData.starter.player.team())
-                                                            .first().items.add(
-                                                                it,
-                                                                kotlin.random.Random.nextInt(2000)
-                                                            )
-                                                    }
-                                                }
-                                            }
-
-                                            4 -> {
-                                                send("command.vote.random.storm")
-                                                Call.createWeather(
-                                                    Weathers.rain,
-                                                    10f,
-                                                    60 * 60f,
-                                                    50f,
-                                                    10f
-                                                )
-                                            }
-
-                                            5 -> {
-                                                send("command.vote.random.fire")
-                                                for (x in 0 until Vars.world.width()) {
-                                                    for (y in 0 until Vars.world.height()) {
-                                                        Call.effect(
-                                                            Fx.fire,
-                                                            (x * 8).toFloat(),
-                                                            (y * 8).toFloat(),
-                                                            0f,
-                                                            Color.red
-                                                        )
-                                                    }
-                                                }
-
-                                                scheduleFireDecay {
-                                                    send("command.vote.random.supply")
-                                                    repeat(2) {
-                                                        UnitTypes.oct.spawn(
-                                                            voteData.starter.player.team(),
-                                                            voteData.starter.player.x,
-                                                            voteData.starter.player.y
-                                                        )
-                                                    }
-                                                }
-
-                                            }
-
-                                            else -> {
-                                                send("command.vote.random.nothing")
+                                    3 -> {
+                                        send("command.vote.random.fill.core")
+                                        Vars.content.items().forEach {
+                                            if (!it.isHidden) {
+                                                Vars.state.teams.cores(voteData.starter.player.team())
+                                                    .first().items.add(
+                                                        it,
+                                                        kotlin.random.Random.nextInt(2000)
+                                                    )
                                             }
                                         }
                                     }
-                                })
+
+                                    4 -> {
+                                        send("command.vote.random.storm")
+                                        Call.createWeather(
+                                            Weathers.rain,
+                                            10f,
+                                            60 * 60f,
+                                            50f,
+                                            10f
+                                        )
+                                    }
+
+                                    5 -> {
+                                        send("command.vote.random.fire")
+                                        for (x in 0 until Vars.world.width()) {
+                                            for (y in 0 until Vars.world.height()) {
+                                                Call.effect(
+                                                    Fx.fire,
+                                                    (x * 8).toFloat(),
+                                                    (y * 8).toFloat(),
+                                                    0f,
+                                                    Color.red
+                                                )
+                                            }
+                                        }
+
+                                        scheduleFireDecay {
+                                            send("command.vote.random.supply")
+                                            repeat(2) {
+                                                UnitTypes.oct.spawn(
+                                                    voteData.starter.player.team(),
+                                                    voteData.starter.player.x,
+                                                    voteData.starter.player.y
+                                                )
+                                            }
+                                        }
+
+                                    }
+
+                                    else -> {
+                                        send("command.vote.random.nothing")
+                                    }
+                                }
+                            }
                         }
                     }
 
