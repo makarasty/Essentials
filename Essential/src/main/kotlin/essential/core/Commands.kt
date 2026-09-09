@@ -2250,7 +2250,11 @@ class Commands {
 
         scope.launch {
             val target = PlayerLookup.offline(arg[0]) ?: return@launch
-            applyTempBan(target.uuid, target.name, expire, reason)
+            // applyTempBan mutates Vars.netServer.admins and kicks a Player; both are engine state the
+            // main thread also touches, and this coroutine is not that thread. setBanExpire has no
+            // ordering dependency on it (a database write, independent of the in-engine ban), so it is
+            // left running here rather than also bounced through Core.app.post.
+            Core.app.post { applyTempBan(target.uuid, target.name, expire, reason) }
             TempBan.setBanExpire(target.uuid, expire)
         }
     }
@@ -2337,17 +2341,21 @@ class Commands {
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
             TempBan.clearBanExpire(uuid)
 
-            if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
-                if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
-                    Log.warn(bundle[PlayerLookup.NOT_FOUND])
+            // unbanPlayerID/unbanPlayerIP mutate Vars.netServer.admins, engine state the main thread
+            // also reads and writes; this coroutine is not that thread.
+            Core.app.post {
+                if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
+                    if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
+                        Log.warn(bundle[PlayerLookup.NOT_FOUND])
+                    } else {
+                        Log.info(bundle["command.unban.ip", arg[0]])
+                    }
                 } else {
-                    Log.info(bundle["command.unban.ip", arg[0]])
+                    Log.info(bundle["command.unban.id", uuid])
+                    Undo.record(
+                        null, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                    ) { Undo.ban(it) }
                 }
-            } else {
-                Log.info(bundle["command.unban.id", uuid])
-                Undo.record(
-                    null, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
-                ) { Undo.ban(it) }
             }
         }
     }
@@ -2360,17 +2368,21 @@ class Commands {
             val uuid = if (found is PlayerLookup.Result.Found) found.value.uuid else arg[0]
             TempBan.clearBanExpire(uuid)
 
-            if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
-                if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
-                    playerData.err(PLAYER_NOT_FOUND)
+            // unbanPlayerID/unbanPlayerIP mutate Vars.netServer.admins, engine state the main thread
+            // also reads and writes; this coroutine is not that thread.
+            Core.app.post {
+                if (!Vars.netServer.admins.unbanPlayerID(uuid)) {
+                    if (!Vars.netServer.admins.unbanPlayerIP(arg[0])) {
+                        playerData.err(PLAYER_NOT_FOUND)
+                    } else {
+                        playerData.send("command.unban.ip", arg[0])
+                    }
                 } else {
-                    playerData.send("command.unban.ip", arg[0])
+                    playerData.send("command.unban.id", uuid)
+                    Undo.record(
+                        playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                    ) { Undo.ban(it) }
                 }
-            } else {
-                playerData.send("command.unban.id", uuid)
-                Undo.record(
-                    playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
-                ) { Undo.ban(it) }
             }
         }
     }
