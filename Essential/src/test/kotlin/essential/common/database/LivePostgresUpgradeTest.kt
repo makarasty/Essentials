@@ -9,6 +9,7 @@ import essential.common.database.data.getPlayerData
 import essential.common.database.data.getPluginData
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.vendors.PostgreSQLDialect
+import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.junit.Assume.assumeTrue
 import java.io.File
 import java.sql.Connection
@@ -52,10 +53,12 @@ import kotlin.test.assertTrue
  * `42703 column is_upvote does not exist`, since by then `SchemaUtils` had built `map_ratings` at the
  * current shape.
  *
- * The `map_ratings` statements can no longer fail in any of those states, which is what the stored
- * version reaching 5 and the second start finding nothing to do now assert. The swallow rule in
- * `upgradeLegacyDatabase` is still the trap underneath: the next script statement that can fail on
- * PostgreSQL will poison its transaction the same way.
+ * Both halves are repaired: the `map_ratings` statements in `v5_postgres.sql` can no longer fail in any
+ * of those states, and `applyLegacyScript` now rolls a swallowed failure back to its own savepoint
+ * instead of leaving the transaction poisoned. The stored version reaching 5, the second start finding
+ * nothing to do, and `aSwallowedFailureDoesNotCostTheStatementsAfterIt` are the assertions that say so.
+ * All three are PostgreSQL-only, and so is the defect: the other engines implicitly commit at every DDL
+ * statement, so they never had a transaction to poison and never had a whole-script rollback either.
  */
 class LivePostgresUpgradeTest {
     private val host = System.getProperty("essential.test.postgres.host", "127.0.0.1")
@@ -437,6 +440,74 @@ class LivePostgresUpgradeTest {
             assertEquals(
                 "5", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
                 "the stored version did not survive a second start. $why"
+            )
+        }
+    }
+
+    /**
+     * The swallow rule, made to mean what it says.
+     *
+     * `upgradeLegacyDatabase` carries on past a failing statement that names neither `players` nor
+     * `plugin_data`. On PostgreSQL the transaction the rest of the script shares is aborted from that
+     * moment, so every later statement answered `25P02` and one missing table ended the whole step. The
+     * savepoint is what makes the swallow local to its own statement.
+     *
+     * **This is the only one of the two savepoint tests that discriminates.** Reverted, the second
+     * statement answers `25P02`, is swallowed in its turn, and `savepoint_probe` is not there.
+     */
+    @Test
+    fun aSwallowedFailureDoesNotCostTheStatementsAfterIt() = onAServer {
+        reset()
+        boot()
+
+        val script = "ALTER TABLE no_such_table DROP COLUMN nope;CREATE TABLE savepoint_probe (id INT)"
+        runBlocking { suspendTransaction { applyLegacyScript(script) } }
+
+        open(DATABASE).use { connection ->
+            // diagnosis() is not used here: it reads the log boot() collects, and boot() has already put
+            // the handler back by the time this script runs, so it would promise evidence it cannot hold.
+            assertTrue(
+                "savepoint_probe" in connection.tables(),
+                "a swallowed failure took the statement after it down with it. Script: $script. " +
+                    "Tables afterwards: ${connection.tables()}"
+            )
+        }
+    }
+
+    /**
+     * The other half, which is why the repair is a savepoint per statement rather than a transaction per
+     * statement: a critical failure still has to take the whole script back with it. A script that
+     * half-applies is worse than one that does not run.
+     *
+     * This one passes with the savepoint reverted, and is meant to - it is the guard on the shape that
+     * was rejected, not evidence for the shape that was taken. Deleting it because it does not
+     * discriminate would remove the only check that the rejected shape stays rejected.
+     */
+    @Test
+    fun aCriticalFailureStillRollsTheWholeScriptBack() = onAServer {
+        reset()
+        boot()
+
+        val script = "CREATE TABLE rollback_probe (id INT);ALTER TABLE players DROP COLUMN no_such_column"
+        val failure = runCatching {
+            runBlocking { suspendTransaction { applyLegacyScript(script) } }
+        }.exceptionOrNull()
+
+        // Asserted on the message, not merely on something having been thrown: a savepoint statement
+        // that threw would also leave rollback_probe absent, and both assertions would pass with the
+        // machinery under test entirely broken.
+        assertTrue(
+            generateSequence(failure) { it.cause }.any {
+                it.message?.startsWith("Critical statement failed: ALTER TABLE players") == true
+            },
+            "the statement naming players was not the one that ended the script: $failure"
+        )
+
+        open(DATABASE).use { connection ->
+            assertTrue(
+                "rollback_probe" !in connection.tables(),
+                "a critical failure left the statement before it committed. Script: $script. " +
+                    "Tables afterwards: ${connection.tables()}"
             )
         }
     }

@@ -317,6 +317,64 @@ internal fun legacySqlCandidates(version: UByte, dialect: DatabaseDialect?): Lis
 
 internal const val LEGACY_BASELINE_VERSION: UByte = 5u
 
+/**
+ * Runs [body] between a savepoint and its release, and hands back what it threw rather than throwing.
+ *
+ * Only PostgreSQL takes the savepoint, because only PostgreSQL aborts a transaction on a failed
+ * statement - and the whole-script rollback a critical failure relies on is that same behaviour, which
+ * is why the repair had to be a savepoint rather than a transaction per statement. MySQL, MariaDB and
+ * H2 implicitly commit at every DDL statement, so they have no whole-script rollback to protect and
+ * they drop every savepoint the moment one of those runs. H2 has no `RELEASE SAVEPOINT` at all.
+ *
+ * The release runs on the failing path too: `ROLLBACK TO SAVEPOINT` does not destroy the savepoint, and
+ * a script that leaves more than 64 of them live costs every snapshot the backend takes afterwards.
+ */
+private suspend fun R2dbcTransaction.withSavepoint(name: String, body: suspend () -> Unit): Throwable? {
+    val poisons = db.dialect is PostgreSQLDialect
+    if (poisons) exec("SAVEPOINT $name")
+    val failure = runCatching { body() }.exceptionOrNull()
+    if (poisons) {
+        if (failure != null) {
+            // Logged rather than swallowed: a rollback that did not happen leaves the transaction
+            // aborted, and then the next statement fails for a reason that has nothing to do with it.
+            runCatching { exec("ROLLBACK TO SAVEPOINT $name") }.onFailure {
+                Log.warn("Could not roll back to $name, so the rest of this upgrade will fail: ${it.message}")
+            }
+        }
+        runCatching { exec("RELEASE SAVEPOINT $name") }
+    }
+    return failure
+}
+
+/**
+ * Runs one legacy upgrade script inside the caller's transaction, a statement at a time.
+ *
+ * A failure that is not critical is rolled back to its own savepoint and the script carries on; a
+ * critical one is rethrown, and the caller's transaction takes the whole script back with it. Without
+ * the savepoint a swallowed failure poisoned the transaction the rest of the script shares - on
+ * PostgreSQL every later statement answers `25P02 current transaction is aborted`, so the upgrade died
+ * several statements away from its cause and left the version stamp behind.
+ *
+ * This is the third place in this file that has to say a failed statement poisons the transaction on
+ * PostgreSQL - see [reshapeMapRatingIndex] and the per-table create loop in [databaseInit].
+ *
+ * Savepoint names are per call, not per transaction, so two scripts applied in one transaction would
+ * shadow each other's. Nothing does: [upgradeLegacyDatabase] opens one transaction per script.
+ */
+internal suspend fun R2dbcTransaction.applyLegacyScript(script: String) {
+    script.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEachIndexed { index, statement ->
+        val failure = withSavepoint("essential_upgrade_$index") { exec(statement) }
+        if (failure != null) {
+            val isCritical = statement.contains("plugin_data", true) ||
+                statement.contains("players", true)
+            if (isCritical) {
+                throw IllegalStateException("Critical statement failed: $statement", failure)
+            }
+            Log.warn("Failed to execute statement: $statement. Reason: ${failure.message}")
+        }
+    }
+}
+
 private suspend fun upgradeLegacyDatabase() {
     try {
         var currentVersion: UByte?
@@ -379,24 +437,19 @@ private suspend fun upgradeLegacyDatabase() {
                             Log.info(bundle["database.upgrade.execute", sqlFile])
 
                             suspendTransaction {
-                                sqlScript.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { statement ->
-                                    try {
-                                        exec(statement)
-                                    } catch (e: Throwable) {
-                                        val isCritical = statement.contains("plugin_data", true) ||
-                                            statement.contains("players", true)
-                                        if (isCritical) {
-                                            throw IllegalStateException("Critical statement failed: $statement", e)
-                                        }
-                                        Log.warn("Failed to execute statement: $statement. Reason: ${e.message}")
-                                    }
-                                }
+                                applyLegacyScript(sqlScript)
 
                                 updatePluginVersion(version)
-                                
-                                if (version == 4u.toUByte()) {
-                                    migrateStatusToAchievements()
-                                }
+                            }
+
+                            // Outside the transaction above, not inside it. This opens its own and
+                            // swallows every failure it meets, so within the script's transaction a
+                            // failure it swallowed left that transaction aborted on PostgreSQL - after
+                            // the version stamp had already been written, and with COMMIT answering an
+                            // aborted transaction by rolling it back silently. The step would then
+                            // report success having applied nothing.
+                            if (version == 4u.toUByte()) {
+                                migrateStatusToAchievements()
                             }
                             break
                         } catch (e: Throwable) {
