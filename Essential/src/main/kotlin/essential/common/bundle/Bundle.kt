@@ -4,12 +4,27 @@ import java.text.MessageFormat
 import java.util.*
 
 class Bundle {
+    companion object {
+        /**
+         * ResourceBundle's documented search order tries the requested locale's candidates, then the
+         * JVM default locale's candidates, and only then the base bundle. This ships bundles for ja,
+         * ko, uk and zh, so on a ko-locale host a de client was answered in Korean instead of English.
+         * A no-fallback control drops that middle step, leaving requested locale then base bundle.
+         */
+        private val CONTROL: ResourceBundle.Control =
+            ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES)
+
+        /** Resolves a bundle without the JVM default locale standing in for a missing translation. */
+        fun resolve(baseName: String, locale: Locale): ResourceBundle =
+            ResourceBundle.getBundle(baseName, locale, CONTROL)
+    }
+
     var resource: ResourceBundle
     var prefix: String = ""
     var locale: Locale = Locale.getDefault()
 
     constructor() {
-        resource = ResourceBundle.getBundle("bundles/common/bundle", locale)
+        resource = resolve("bundles/common/bundle", locale)
     }
 
     constructor(source: ResourceBundle) {
@@ -18,12 +33,12 @@ class Bundle {
 
     constructor(baseName: String, locale: Locale) {
         this.locale = locale
-        resource = ResourceBundle.getBundle(baseName, locale)
+        resource = resolve(baseName, locale)
     }
 
     constructor(languageTag: String) {
         this.locale = Locale.forLanguageTag(languageTag.replace("_", "-"))
-        resource = ResourceBundle.getBundle("bundles/common/bundle", locale)
+        resource = resolve("bundles/common/bundle", locale)
     }
 
     constructor(languageTag: String, source: ResourceBundle) {
