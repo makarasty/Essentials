@@ -2156,8 +2156,8 @@ class Commands {
             }
 
             // Only the expiry. Not unbanPlayerID, which drops every ip ban the player has and does not
-            // put them back when the id is banned again, and not the scheduler's lifting token, which
-            // would be spent here and turn the next genuine unban into a no-op.
+            // put them back when the id is banned again. Withdrawing the scheduler's lifting token is
+            // clearBanExpire's own business and is documented there.
             TempBan.clearBanExpire(uuid)
 
             // That call logs a database failure and carries on, so the row is read back rather than
