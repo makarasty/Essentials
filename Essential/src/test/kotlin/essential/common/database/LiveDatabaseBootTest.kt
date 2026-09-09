@@ -164,6 +164,8 @@ class LiveDatabaseBootTest {
 
     private fun List<String>.emittedDdl() = filter { it.startsWith(DDL_TAG) }.map { it.removePrefix(DDL_TAG) }
 
+    private fun List<String>.declinedRepairs() = filter { it.startsWith(DECLINED_TAG) }
+
     private fun List<String>.report() = joinToString("\n").ifEmpty { "(nothing was logged)" }
 
     /** Everything the next person needs to place a failure: what ran, what was swallowed, what threw. */
@@ -394,6 +396,45 @@ class LiveDatabaseBootTest {
     }
 
     /**
+     * A schema the `resources/sql` scripts built has none of the unique indexes the Kotlin tables
+     * declare, and the boot repair pass drops every statement that would add one - deliberately, since
+     * a unique index over a live column that already holds duplicates fails the ALTER and would take
+     * the boot with it. What was missing was any record of the refusal.
+     *
+     * If this finds nothing declined, the premise of the finding is wrong for these engines and the
+     * assertion message is the reading.
+     */
+    @Test
+    fun theBootNamesTheRepairsItRefusesToMake() = onEachEngine { engine ->
+        engine.reset(legacyDb)
+        engine.open(legacyDb).use {
+            it.execScript(VERSION_FOUR_SCHEMA)
+            it.execScript(VERSION_FIVE_ADDITIONS)
+            it.execScript(BASELINE_STAMP)
+        }
+
+        val failure = engine.bootCatching(legacyDb)
+        val why by lazy { diagnosis(engine, failure) }
+        assertNull(failure, "a database at the baseline could not start. $why")
+
+        val declined = bootLog.declinedRepairs()
+        assertTrue(
+            declined.isNotEmpty(),
+            "the boot declined nothing on a schema the legacy scripts built, so either " +
+                "addMissingColumnsStatements offers no index statements on this engine or there is " +
+                "nothing to add. $why"
+        )
+        // Named against players itself, not merely mentioning it: a foreign key on another table
+        // carries players in its REFERENCES clause, and a report that pointed at the wrong table would
+        // send an operator to look for an index that was never missing.
+        assertTrue(
+            declined.any { it.startsWith(DECLINED_TAG + "players:") },
+            "no repair was declined against players, whose uuid and name unique indexes are the ones " +
+                "the legacy schema is missing. Declined: ${declined.report()}"
+        )
+    }
+
+    /**
      * The v3 step picks the engine's own script against a live server, which is the half of the suffix
      * fix `LegacyMigrationTest` can only assert against dialect objects. Neither engine ships a
      * `v4_<engine>.sql`, so both must land on the generic file and neither may reach for `_h2`.
@@ -414,6 +455,9 @@ class LiveDatabaseBootTest {
     private companion object {
         /** The tag `Database.kt` prints each add-missing-columns statement under. */
         const val DDL_TAG = "[Database] "
+
+        /** The tag `Database.kt` prints each repair it refuses to attempt under. */
+        const val DECLINED_TAG = "[Database/schema] repair declined on "
 
         /**
          * The schema a database upgraded by `sql/v4.sql` has: v3, as `database-v3.mv.db` holds it, with

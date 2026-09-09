@@ -166,16 +166,46 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     // Only the tables that are actually there: asking Exposed which columns a missing table is short of
     // throws out of the metadata read, which would undo the whole point of surviving the create above.
-    val repairStatements = runCatching {
+    //
+    // statementsRequiredToActualizeScheme rather than addMissingColumnsStatements, which is what this
+    // used to ask. The two differ by exactly the indexes and foreign keys, and measured against a real
+    // MariaDB holding a schema the v4 script built, addMissingColumnsStatements offers none of them -
+    // so the CONSTRAINT/INDEX filter below removed nothing and the difference between the live schema
+    // and the Kotlin tables stayed invisible. The wider call is asked here so that difference can be
+    // named; what is executed is still only the column half.
+    val offered = runCatching {
         suspendTransaction {
-            SchemaUtils.addMissingColumnsStatements(*existingTables.toTypedArray())
-                .filter { statement ->
-                    listOf("CONSTRAINT", "INDEX").none { statement.contains(it, ignoreCase = true) }
-                }
+            SchemaUtils.statementsRequiredToActualizeScheme(*existingTables.toTypedArray(), withLogs = false)
         }
     }.onFailure {
-        Log.err("[Database] could not work out which columns are missing: ${it.message}")
+        Log.err("[Database] could not work out what the schema is missing: ${it.message}")
     }.getOrDefault(emptyList())
+
+    // Constraints and indexes are declined rather than run, and now said out loud.
+    //
+    // They stay declined because adding one to a live table is not a repair the plugin can make
+    // safely: a unique index over a column that already holds duplicates fails the ALTER and would
+    // take the boot with it, and a legacy schema built by resources/sql - which carries far fewer
+    // unique indexes than the Kotlin tables declare - is exactly where duplicates would have
+    // accumulated. Whether they exist is something only somebody who can query the live data knows.
+    //
+    // So this is the report rather than the repair. Every line names one difference between what the
+    // Kotlin tables declare and what the six servers are actually running, on the first boot, without
+    // anyone having to know to go and run SHOW INDEX.
+    val (declined, repairStatements) = offered.partition { statement ->
+        listOf("CONSTRAINT", "INDEX").any { statement.contains(it, ignoreCase = true) }
+    }
+
+    for (statement in declined) {
+        // Longest match, not first: a foreign key on player_achievements names players in its
+        // REFERENCES clause, and reporting that repair against players sends the operator to the
+        // wrong table.
+        val table = existingTables
+            .filter { statement.contains(it.tableName, ignoreCase = true) }
+            .maxByOrNull { it.tableName.length }
+            ?.tableName
+        Log.warn("[Database/schema] repair declined on ${table ?: "an unrecognised table"}: $statement")
+    }
 
     // A repair statement the engine refuses used to leave databaseInit, which stops the plugin loading
     // at all. Every statement here is a repair, so the schema without it is the one this server was
