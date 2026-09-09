@@ -290,15 +290,14 @@ fun connectPacket(event: EventType.ConnectPacketEvent) {
         kickReason = "name.short"
     }
     if (kickReason.isEmpty() && conf.rules.vpn) {
-        for (ip in pluginData.vpnList) {
-            // IpAddressMatcher throws on a line it cannot parse, and the list is downloaded. Letting
-            // that escape would skip every rule below.
-            val matched = runCatching { IpAddressMatcher(ip).matches(event.connection.address) }.getOrDefault(false)
-            if (matched) {
-                event.connection.kick(Bundle(event.packet.locale)["anti-grief.vpn"])
-                kickReason = "vpn"
-                break
-            }
+        // The matchers are built once when the list is set and the remote address is parsed once per
+        // connection, not once per entry: this runs on the main thread and the list is tens of
+        // thousands of lines long. An address that will not parse matches nothing rather than
+        // throwing, which would skip every rule below.
+        val remote = runCatching { InetAddress.getByName(event.connection.address) }.getOrNull()
+        if (remote != null && pluginData.vpnMatchers.any { it.matches(remote) }) {
+            event.connection.kick(Bundle(event.packet.locale)["anti-grief.vpn"])
+            kickReason = "vpn"
         }
     }
     if (kickReason.isEmpty() && conf.rules.blockNewUser && coldData?.contains(event.packet.uuid) == false) {
@@ -362,8 +361,7 @@ class IpAddressMatcher(ipAddress: String) {
         }
     }
 
-    fun matches(address: String?): Boolean {
-        val remoteAddress = parseAddress(address)
+    fun matches(remoteAddress: InetAddress): Boolean {
         if (requiredAddress.javaClass != remoteAddress.javaClass) {
             return false
         }
