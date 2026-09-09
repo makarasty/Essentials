@@ -40,17 +40,22 @@ import kotlin.test.assertTrue
  * instance only. Connection details move with -Dessential.test.postgres.host / .port / .user /
  * .password; the database name is generated per run and needs no property.
  *
- * ## What this class asserts, and what it deliberately does not
+ * ## The defect these were written for
  *
- * Three of these assertions pin behaviour that is **wrong**. The `v4 -> v5` step cannot complete on
- * PostgreSQL: `v5_postgres.sql` opens with five statements against `map_ratings`, a table that
- * `SchemaUtils` creates *after* the legacy upgrade has run, so the first of them answers `42P01` - and
- * on PostgreSQL a failed statement aborts the transaction the whole script shares, so everything after
- * it answers `25P02` and the step is abandoned with `plugin_data.database_version` still at 4. Each
- * such assertion says so on the line, and names what it will look like when somebody fixes it. Chip 3
- * of the `green-2026-09-09` run was asked to report that defect rather than repair it, so the tests
- * describe the engine's real answers today; the moment the repair lands they fail, loudly, which is the
- * signal that they should be turned round.
+ * The `v4 -> v5` step could not complete on PostgreSQL at all. `v5_postgres.sql`'s fourth statement
+ * touches `map_ratings`, a table `SchemaUtils` creates *after* the legacy upgrade has run, so it
+ * answered `42P01` - and on PostgreSQL a failed statement aborts the transaction the whole script
+ * shares, so the four statements after it answered `25P02` and were swallowed too, and then the
+ * script's last statement, `CREATE TABLE player_contributions`, was rethrown as critical because it
+ * names `players` in its foreign key. The step was abandoned with `plugin_data.database_version` still
+ * at 4, and every later start repeated it - failing one statement earlier the second time round, on
+ * `42703 column is_upvote does not exist`, since by then `SchemaUtils` had built `map_ratings` at the
+ * current shape.
+ *
+ * The `map_ratings` statements can no longer fail in any of those states, which is what the stored
+ * version reaching 5 and the second start finding nothing to do now assert. The swallow rule in
+ * `upgradeLegacyDatabase` is still the trap underneath: the next script statement that can fail on
+ * PostgreSQL will poison its transaction the same way.
  */
 class LivePostgresUpgradeTest {
     private val host = System.getProperty("essential.test.postgres.host", "127.0.0.1")
@@ -62,23 +67,30 @@ class LivePostgresUpgradeTest {
     private var bootLog = CopyOnWriteArrayList<String>()
     private var booted = false
 
+    /** Separate from [booted]: a test that fails while seeding still has a database to drop. */
+    private var created = false
+
     private fun jdbc(database: String) =
         "jdbc:postgresql://$host:$port/$database?connectTimeout=3&socketTimeout=30"
 
     private fun open(database: String = "postgres"): Connection =
         DriverManager.getConnection(jdbc(database), user, pass)
 
-    private fun answers() =
-        runCatching { open().use { it.createStatement().use { s -> s.execute("SELECT 1") } } }.isSuccess
-
-    /** Skips the test when nothing is listening, which is this machine's and CI's normal state. */
+    /**
+     * Skips the test when nothing is listening, which is this machine's and CI's normal state.
+     *
+     * The reason travels with the skip: a wrong password, a listener that is not PostgreSQL and an
+     * absent server all fail the same probe, and a permanent silent skip is the same thing as the
+     * permanent failure this class replaced.
+     */
     private fun onAServer(body: () -> Unit) {
-        assumeTrue("no PostgreSQL server on $host:$port, skipping", answers())
-        try {
-            body()
-        } finally {
-            closeDatabase()
-        }
+        val probe = runCatching { open().use { it.createStatement().use { s -> s.execute("SELECT 1") } } }
+        assumeTrue(
+            "no PostgreSQL server answering on $host:$port as $user (${probe.exceptionOrNull()?.message}), skipping",
+            probe.isSuccess
+        )
+        // The teardown is a JUnit @AfterTest and runs on its own, including after an assumption.
+        body()
     }
 
     private fun Connection.exec(sql: String) = createStatement().use { it.execute(sql) }
@@ -114,10 +126,31 @@ class LivePostgresUpgradeTest {
     private fun reset() = open().use {
         it.exec("DROP DATABASE IF EXISTS $DATABASE WITH (FORCE)")
         it.exec("CREATE DATABASE $DATABASE")
+        created = true
     }
 
     private fun seedVersionThree() = open(DATABASE).use {
         it.execScript(readResource("v3_postgres.sql"))
+    }
+
+    /**
+     * `map_ratings` as an older build of this plugin declared it, before difficulty and rating replaced
+     * a single up-or-down vote.
+     *
+     * No legacy script ever created this table - `SchemaUtils` did - so a v3 fixture does not carry it,
+     * and without it `v5_postgres.sql`'s conversion is skipped by its own `IF EXISTS` guards and never
+     * runs. `rated_at` is here because that build declared it too, with the `CURRENT_TIMESTAMP` default
+     * `defaultExpression` renders, and the upgrade leaves it behind.
+     */
+    private fun seedLegacyMapRatings() = open(DATABASE).use {
+        it.exec(
+            "CREATE TABLE map_ratings (id BIGSERIAL PRIMARY KEY, map_name VARCHAR(100), " +
+                "map_hash VARCHAR(100), player_uuid VARCHAR(25), is_upvote BOOLEAN NOT NULL, " +
+                "rated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        it.exec("ALTER TABLE map_ratings ADD CONSTRAINT map_ratings_map_hash_unique UNIQUE (map_hash)")
+        it.exec("INSERT INTO map_ratings (map_name, map_hash, player_uuid, is_upvote) VALUES ('up', 'h1', 'u1', TRUE)")
+        it.exec("INSERT INTO map_ratings (map_name, map_hash, player_uuid, is_upvote) VALUES ('down', 'h2', 'u2', FALSE)")
     }
 
     private fun readResource(name: String) =
@@ -153,16 +186,21 @@ class LivePostgresUpgradeTest {
 
     private fun List<String>.swallowed() = filter { it.startsWith("Failed to execute statement:") }
 
-    private fun List<String>.emittedDdl() = filter { it.startsWith(DDL_TAG) }.map { it.removePrefix(DDL_TAG) }
+    /** `Database.kt` logs its refusals under the same tag as the DDL it runs, so those are filtered out. */
+    private fun List<String>.emittedDdl() =
+        filter { it.startsWith(DDL_TAG) && !it.contains("could not ") && !it.contains("refused") }
+            .map { it.removePrefix(DDL_TAG) }
+
+    private fun List<String>.refusals() = filter { it.contains("could not ") || it.contains("refused") }
 
     private fun List<String>.report() = joinToString("\n").ifEmpty { "(nothing was logged)" }
 
     /** Everything the next person needs to place a failure: what ran, what was swallowed, what threw. */
     private fun diagnosis(failure: Throwable?) = buildString {
         append("PostgreSQL on ").append(host).append(':').append(port).append(", database ").append(DATABASE)
-        append("\nBoot log:\n").append(bootLog.report())
         append("\nStatements the legacy upgrade swallowed:\n").append(bootLog.swallowed().report())
         append("\nDDL the boot ran:\n").append(bootLog.emittedDdl().report())
+        append("\nWhat the boot refused:\n").append(bootLog.refusals().report())
         if (failure != null) append("\ndatabaseInit threw:\n").append(failure.stackTraceToString())
     }
 
@@ -174,8 +212,9 @@ class LivePostgresUpgradeTest {
      */
     @AfterTest
     fun closeDatabase() {
-        if (!booted) return
-        stopBoot()
+        if (booted) stopBoot()
+        if (!created) return
+        created = false
         runCatching { open().use { it.exec("DROP DATABASE IF EXISTS $DATABASE WITH (FORCE)") } }
     }
 
@@ -198,6 +237,7 @@ class LivePostgresUpgradeTest {
     fun aVersionThreeDatabaseWalksTheUpgradeChain() = onAServer {
         reset()
         seedVersionThree()
+        seedLegacyMapRatings()
 
         val failure = bootCatching()
         val why by lazy { diagnosis(failure) }
@@ -224,61 +264,105 @@ class LivePostgresUpgradeTest {
 
         open(DATABASE).use { connection ->
             // The v3 step is clean: v4_postgres.sql runs all 149 of its statements without one failing.
+            // Asserted on what only that script can do - it drops `banned` after folding it into
+            // player_banned - because SchemaUtils creates player_banned afterwards either way.
             assertTrue(
-                "player_banned" in connection.tables(),
-                "v4_postgres.sql did not finish - player_banned is one of the tables it creates. $why"
+                "banned" !in connection.tables(),
+                "v4_postgres.sql did not fold the v3 banned table away. $why"
             )
             assertNull(
                 connection.column("players", "freeze"),
                 "v4_postgres.sql did not drop the columns it renames past. $why"
             )
 
-            // DEFECT, reported not repaired: the v4 -> v5 step aborts, so the stamp never reaches 5.
-            // v5_postgres.sql's first map_ratings statement answers 42P01 - SchemaUtils creates that
-            // table after the upgrade, not before - and PostgreSQL then refuses every later statement in
-            // the transaction the script shares with 25P02, including the UPDATE that writes this row.
-            // When that is fixed this assertion reads 5, and this test says so rather than passing
-            // quietly on either answer.
+            // The stamp only moves for a step that finished, so this is the assertion that says the
+            // whole chain ran. It read 4 before the map_ratings statements were guarded.
             assertEquals(
-                "4", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
-                "the stored version is no longer 4, so the v4 -> v5 step now completes on PostgreSQL " +
-                    "and this assertion is the one that needs changing, to 5. $why"
+                "5", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
+                "the v4 -> v5 step did not reach the baseline. $why"
             )
             assertTrue(
-                bootLog.any { it.contains("Legacy database upgrade did not finish") },
-                "the upgrade no longer aborts, so the stored version above should have advanced. $why"
+                bootLog.none { it.contains("Legacy database upgrade did not finish") },
+                "the upgrade aborted. $why"
+            )
+            // player_contributions is present either way - SchemaUtils would build it after an aborted
+            // upgrade - so the column type is what tells the two apart. The script writes BIGINT, to
+            // match the legacy bigserial players.id; SchemaUtils writes Exposed's uinteger as integer.
+            assertEquals(
+                "bigint", connection.column("player_contributions", "player_id")?.first,
+                "player_contributions came from SchemaUtils, so v5_postgres.sql never reached its last " +
+                    "statement. $why"
+            )
+
+            // The conversion the map_ratings block exists for, on the fixture seeded above. Without a
+            // legacy map_ratings every statement in that block is skipped by its own IF EXISTS and the
+            // expression below is never executed at all.
+            assertEquals(
+                "5", connection.scalar("SELECT rating FROM map_ratings WHERE map_name = 'up'"),
+                "an upvote did not become a rating of 5. $why"
+            )
+            assertEquals(
+                "1", connection.scalar("SELECT rating FROM map_ratings WHERE map_name = 'down'"),
+                "a downvote did not become a rating of 1. $why"
+            )
+            assertEquals(
+                "3", connection.scalar("SELECT difficulty FROM map_ratings WHERE map_name = 'up'"),
+                "difficulty was not backfilled. $why"
+            )
+            assertNull(
+                connection.column("map_ratings", "is_upvote"),
+                "the vote column was converted and then left in place. $why"
             )
         }
+
+        // Nothing in v5_postgres.sql may fail any more, on any of the shapes above. This is the
+        // assertion that catches the next statement somebody adds that can.
+        assertEquals(
+            emptyList<String>(), bootLog.swallowed(),
+            "the upgrade swallowed a statement, which on PostgreSQL poisons the rest of the script. $why"
+        )
 
         // The row the container test asserted, carried through v4_postgres.sql's column renames and its
         // bigint-to-timestamp conversions. This is the half of the old test that was about migration
         // rather than about Docker, and it passes.
-        runBlocking {
-            val player = getPlayerData("migration-test-player")
-            assertNotNull(player, "the migrated player is gone after the upgrade. $why")
-            assertEquals(122213, player.blockPlaceCount, "block_place_count did not survive the upgrade. $why")
-            assertEquals(1, player.level, "level did not survive the upgrade. $why")
-            assertEquals(56, player.exp, "exp did not survive the upgrade. $why")
-            assertTrue(!checkPlayerBanned(player.player), "the migrated player came back banned. $why")
+        // Guarded, because a repair statement the boot logged rather than threw leaves these reads
+        // throwing out of runBlocking with none of the diagnosis above attached.
+        val read = runCatching {
+            runBlocking {
+                val player = getPlayerData("migration-test-player")
+                assertNotNull(player, "the migrated player is gone after the upgrade. $why")
+                assertEquals(122213, player.blockPlaceCount, "block_place_count did not survive. $why")
+                assertEquals(1, player.level, "level did not survive the upgrade. $why")
+                assertEquals(56, player.exp, "exp did not survive the upgrade. $why")
+                // player.player is a blank pooled entity, not this row, so the row's own identity is what
+                // has to be asked about - with an address the fixture does not carry, so a hit is a hit
+                // on the uuid and not on the ip.
+                assertTrue(
+                    !checkPlayerBanned(player.uuid, "198.51.100.9", player.name),
+                    "the migrated player came back banned. $why"
+                )
 
-            // The two rows of the v3 `banned` table, which v4_postgres.sql rewrites into player_banned
-            // as a jsonb array each - one keyed by name and uuid, one by ip. checkPlayerBanned returns
-            // false when its own query throws, so these two are the assertions that say the migrated
-            // rows are readable as well as present.
-            assertTrue(
-                checkPlayerBanned("test-banned-player", "198.51.100.1", "no-such-name"),
-                "the v3 name ban did not survive v4_postgres.sql. $why"
-            )
-            assertTrue(
-                checkPlayerBanned("no-such-uuid", "203.0.113.7", "no-such-name"),
-                "the v3 ip ban did not survive v4_postgres.sql. $why"
-            )
+                // The two rows of the v3 `banned` table, which v4_postgres.sql rewrites into
+                // player_banned as a jsonb array each - one keyed by name and uuid, one by ip.
+                // checkPlayerBanned returns false when its own query throws, so these two are the
+                // assertions that say the migrated rows are readable as well as present.
+                assertTrue(
+                    checkPlayerBanned("test-banned-player", "198.51.100.1", "no-such-name"),
+                    "the v3 name ban did not survive v4_postgres.sql. $why"
+                )
+                assertTrue(
+                    checkPlayerBanned("no-such-uuid", "203.0.113.7", "no-such-name"),
+                    "the v3 ip ban did not survive v4_postgres.sql. $why"
+                )
+            }
         }
+        val readFailure = read.exceptionOrNull()
+        if (readFailure is AssertionError) throw readFailure
+        assertNull(readFailure, "the upgraded rows could not be read back at all. $why")
     }
 
     /**
-     * What the boot then builds on top of a half-upgraded legacy schema, which is the state every
-     * PostgreSQL server upgrading from v3 or v4 is actually left in today.
+     * What the boot builds on top of a schema the legacy scripts wrote, rather than one SchemaUtils did.
      *
      * `SchemaUtils.create` has to survive meeting the legacy `players`, whose `id` is a `bigserial`
      * against this build's `uinteger` declaration; on MySQL and MariaDB that pairing is refused outright.
@@ -302,17 +386,14 @@ class LivePostgresUpgradeTest {
             )) {
                 assertTrue(table in tables, "SchemaUtils.create left out $table. $why")
             }
-            // DEFECT, same one: on a finished upgrade v5_postgres.sql creates this table itself, in
-            // bigint, before SchemaUtils ever looks at it. The step aborts, so what is here instead is
-            // whatever SchemaUtils made of it beside a bigserial players.id - and PostgreSQL, unlike
-            // MySQL, accepts a foreign key whose two sides differ in width, so it is here.
-            assertTrue(
-                "player_contributions" in tables,
-                "SchemaUtils could not create player_contributions beside the legacy players.id. $why"
-            )
+            // player_contributions is deliberately not asserted here: on a finished upgrade the script
+            // builds it, so its presence would say nothing about SchemaUtils. Its type is checked in
+            // aVersionThreeDatabaseWalksTheUpgradeChain, which is where it discriminates.
 
+            // No legacy script adds this column, so it is the repair pass or nothing. hub_map_name is
+            // not asserted beside it: v4_postgres.sql creates plugin_data carrying it already, so that
+            // assertion would pass whatever the repair pass did.
             assertNotNull(connection.column("players", "status_data"), "status_data was not added. $why")
-            assertNotNull(connection.column("plugin_data", "hub_map_name"), "hub_map_name is missing. $why")
         }
 
         // A repair statement the engine refuses is logged rather than thrown, and on PostgreSQL a
@@ -331,35 +412,31 @@ class LivePostgresUpgradeTest {
     }
 
     /**
-     * The second start of the same database.
+     * The second start of a database the first start upgraded.
      *
-     * On a healthy upgrade there is nothing left to do and the boot emits no DDL at all. Today the
-     * version stamp is still 4, so the second start runs the whole failing v5 step again - which is the
-     * cost of the defect above, and the reason it is a blocker rather than a one-off: it is not a
-     * database that upgraded badly once, it is one that fails the same upgrade on every start forever.
+     * This is the assertion the defect cost most: while the step could not finish, the stamp stayed at
+     * 4 and every start re-ran the whole failing v5 script, forever. A finished upgrade has to leave the
+     * legacy path behind for good.
      */
     @Test
-    fun theSecondStartOfALegacyDatabaseRepeatsTheFailedUpgrade() = onAServer {
+    fun theSecondStartOfAnUpgradedDatabaseLeavesTheLegacyPathAlone() = onAServer {
         reset()
         seedVersionThree()
-        boot()
+        assertNull(bootCatching(), "the first start of a version 3 database failed. ${diagnosis(null)}")
         stopBoot()
 
         val failure = bootCatching()
         val why by lazy { diagnosis(failure) }
         assertNull(failure, "the second start of an upgraded database failed. $why")
 
-        // DEFECT: when the v4 -> v5 step is fixed the stamp reaches 5 on the first start and this second
-        // one skips the legacy path entirely, so both of these assertions invert.
         assertTrue(
-            bootLog.any { it.contains(bundle["database.upgrade.execute", "v5_postgres.sql"]) },
-            "the second start no longer re-runs v5_postgres.sql, so the first start must now be " +
-                "completing it - invert this test. $why"
+            bootLog.none { it.contains(bundle["database.upgrade.execute", "v5_postgres.sql"]) },
+            "the second start ran the upgrade script again, so the first one did not finish it. $why"
         )
         open(DATABASE).use { connection ->
             assertEquals(
-                "4", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
-                "the stored version moved on a start that changed nothing. $why"
+                "5", connection.scalar("SELECT database_version FROM plugin_data ORDER BY id LIMIT 1"),
+                "the stored version did not survive a second start. $why"
             )
         }
     }
@@ -372,6 +449,6 @@ class LivePostgresUpgradeTest {
          * One database per run rather than the shared `essential_test`, which other tests use. Held on
          * the companion so every test in one JVM names the same one, and dropped by each teardown.
          */
-        val DATABASE = "essential_upgrade_" + System.currentTimeMillis()
+        val DATABASE = "essential_upgrade_${ProcessHandle.current().pid()}_${System.currentTimeMillis()}"
     }
 }
