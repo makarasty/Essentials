@@ -57,7 +57,6 @@ import mindustry.world.blocks.ConstructBlock
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
-import java.io.FileNotFoundException
 import java.io.IOException
 import java.math.BigInteger
 import java.nio.file.Files
@@ -1425,18 +1424,21 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
     if (event.kind == StandardWatchEventKinds.ENTRY_MODIFY) {
         when (event.paths) {
             "config.yaml" -> {
-                try {
-                    val newConf = Config.load("config", CoreConfig.serializer(), CoreConfig())
-                    if (newConf != null) {
-                        conf = newConf
-                        // The description timer is built from the config; rebuild it with the new one.
-                        // Config events already arrive on the game thread, so this only defers start()
-                        // to the next frame rather than rendering inside the reload.
-                        Core.app.post { ServerDescription.start() }
-                    }
+                // Config.load already catches IOException/SerializationException itself and logs the
+                // specific failure at err level, then returns null - there is nothing left here that
+                // throws. A failed reload used to still print "reloaded" unconditionally below.
+                val newConf = Config.load("config", CoreConfig.serializer(), CoreConfig())
+                if (newConf != null) {
+                    conf = newConf
+                    // Toggling a module or a listener needs the services that read conf re-synced
+                    // explicitly - swapping the reference alone leaves every already-registered
+                    // listener and timer running against whichever conf it captured at registration.
+                    syncProtectFallbackJoinListener()
+                    // The description timer is built from the config; rebuild it with the new one.
+                    // Config events already arrive on the game thread, so this only defers start()
+                    // to the next frame rather than rendering inside the reload.
+                    Core.app.post { ServerDescription.start(); ModuleRuntime.reloadEnabledConfigurations() }
                     Log.info(Bundle()["config.reloaded"])
-                } catch (_: FileNotFoundException) {
-                    Log.debug(Bundle()["config.file.missing"])
                 }
             }
         }
