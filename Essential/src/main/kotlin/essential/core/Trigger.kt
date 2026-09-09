@@ -97,6 +97,8 @@ class Trigger {
         private var ping = 0.000
         private var lastFailure: String? = null
         private var lastFailureLoggedAt = 0L
+        private var lastWarpZoneWarning: String? = null
+        private var lastWarpZoneWarningAt = 0L
 
         private fun calculateCenter(startTile: Tile, endTile: Tile): Pair<Int, Int> {
             data class Point(val x: Int, val y: Int)
@@ -335,7 +337,23 @@ class Trigger {
 
                                 for (value in warpZone) {
                                     if (Vars.state.map.name() == value.mapName) {
-                                        val center = calculateCenter(value.startTile, value.finishTile)
+                                        val start = value.startTile
+                                        val finish = value.finishTile
+                                        if (start == null || finish == null) {
+                                            // A zone stored on a larger map of this name renders nothing here,
+                                            // while getServerInfo keeps pinging its address every three seconds.
+                                            // Its own rate-limit fields, so a permanently broken zone cannot hide
+                                            // a real exception from the cycle catch below.
+                                            val signature = "warpzone:${value.mapName}:${value.start}:${value.finish}"
+                                            val now = System.currentTimeMillis()
+                                            if (signature != lastWarpZoneWarning || now - lastWarpZoneWarningAt > 300000) {
+                                                lastWarpZoneWarning = signature
+                                                lastWarpZoneWarningAt = now
+                                                Log.warn("Warp zone for ${value.ip}:${value.port} has no tiles on the current map, skipping")
+                                            }
+                                            continue
+                                        }
+                                        val center = calculateCenter(start, finish)
 
                                         var alive = false
                                         var alivePlayer = 0
@@ -624,12 +642,10 @@ class Trigger {
                 // unit() at null indefinitely, and tileOn() is nullable in its own right.
                 val unitTile = data.player.unit()?.tileOn()
                 for (two in pluginData.data.warpZone) {
-                    if (unitTile != null && two.mapName == Vars.state.map.name() && !two.click && isUnitInside(
-                            unitTile,
-                            two.startTile,
-                            two.finishTile
-                        )
-                    ) {
+                    if (unitTile == null || two.mapName != Vars.state.map.name() || two.click) continue
+                    val start = two.startTile ?: continue
+                    val finish = two.finishTile ?: continue
+                    if (isUnitInside(unitTile, start, finish)) {
                         Log.info(Bundle()["log.warp.move", data.player.plainName(), two.ip, two.port.toString()])
 
                         val currentMapName = Vars.state.map.name()
