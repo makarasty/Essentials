@@ -435,6 +435,21 @@ object Permission {
      * old fork therefore grants nothing at all, and does it silently. Only nodes that
      * become known once the prefix is dropped are reported, so a node belonging to a
      * disabled module stays quiet.
+     *
+     * Deliberately narrow, and this is the part to read before widening it. It does not
+     * report a granted node that is simply wrong rather than prefixed, and it does not
+     * look the other way at all - at a node the code asks for that no group holds, which
+     * is the direction that silently disables a feature for everyone but the owner. Both
+     * are covered by PermissionNodeInventoryTest, at build time, where a config that
+     * cannot work stops the jar instead of printing a line on six live servers.
+     *
+     * A boot-time version needs [known] built *after* client-command registration.
+     * ServerLoadEvent fires before it: ServerLauncher.init adds NetServer as a listener
+     * and fires the event before returning, and HeadlessApplication.mainLoop calls each
+     * listener's init() in one pass afterwards, so NetServer.init - which is what runs
+     * mods.eachClass(Mod::registerClientCommands) - has not happened yet. Handed the set
+     * that exists at that moment, an unreachable-node warning would name almost every
+     * command this plugin has, on every start.
      */
     fun validate(known: Set<String>) {
         for (node in main.values.flatMap { it.permission }.toSet()) {
