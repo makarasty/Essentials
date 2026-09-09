@@ -12,5 +12,12 @@ object PlayerBannedTable : Table("player_banned") {
     val reason = varchar("reason", 256)
     val date = long("date")
 
+    /**
+     * Which server issued this ban. Six servers share the table and each writes its own row, so an
+     * unban has to be able to lift one of them without lifting the other five. Nullable because a row
+     * written before this column existed says nothing about who owns it.
+     */
+    val serverId = varchar("server_id", 100).nullable().default(null)
+
     override val primaryKey = PrimaryKey(id)
 }
