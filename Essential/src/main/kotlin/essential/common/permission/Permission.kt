@@ -295,6 +295,13 @@ object Permission {
         return result
     }
 
+    /**
+     * Whether this player wears the admin flag: vanilla's own admin list counts here, and so does an
+     * explicit `admin: true` in permission_user.yaml or on the resolved role.
+     *
+     * This decides a flag, not a permission. [check] decides permissions and deliberately does not
+     * call this - see its own documentation for why the two cannot be merged.
+     */
     fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
         val entry = user?.get(uuid)
         return entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)
@@ -439,6 +446,33 @@ object Permission {
         }
     }
 
+    /**
+     * Whether the group [data] resolves to holds the node [command], or the wildcard `all`. A group
+     * name no role in permission.yaml defines answers false.
+     *
+     * The rule, written down once because two mechanisms in this file both use the word admin:
+     * a permission is decided by the group the player resolves to - permission_user.yaml when it
+     * names them, otherwise their PlayerData.permission row - by the nodes permission.yaml gives
+     * that group, and by nothing else. [isAdmin] is not consulted here.
+     *
+     * That is deliberate and it is not an oversight, because the bounded version of "a vanilla admin
+     * should get plugin permissions" already ships: the join handler in core/CoreEvent.kt puts a
+     * vanilla admin who is not already in an admin group into `feature.permission.vanillaAdminGroup`
+     * - default `admin` - which moves the row, so [check] then grants them exactly what that group
+     * holds and nothing else. The operator names the group, and it is a group like any other.
+     *
+     * The unbounded version is what a short-circuit on [isAdmin] here would be, and it is much wider
+     * than it looks: the test would pass for every string, so it grants not what the admin group
+     * holds but every node that exists, including the ones no group holds at all - `js`, `setperm`,
+     * `unban`, `ws`. It is `all` by another name, reachable from the bare console `admin add`.
+     * ClientCommandTest pins that making somebody a vanilla admin mid-session does not retroactively
+     * hand them `/js`.
+     *
+     * So the honest reading of the gap: `admin add` grants nothing **for the rest of that session**,
+     * and the promotion happens on their next join. The other direction is wired and is destructive -
+     * [syncVanillaAdmin] calls unAdminPlayer whenever the resolved group is not an admin group, so a
+     * setperm into a non-admin group strips a vanilla admin's flag.
+     */
     fun check(data: PlayerData, command: String): Boolean {
         val group = main[this[data].group]
         return if (group != null) {
