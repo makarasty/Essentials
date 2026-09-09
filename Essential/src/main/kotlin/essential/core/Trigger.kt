@@ -522,6 +522,7 @@ class Trigger {
         var messageCount = conf.feature.motd.time
         var messageOrder = 0
         var dpsBlockCalculateTick = 0
+        var trackTick = 0
 
         Events.run(EventType.Trigger.update) {
             val stale = players.filter { it.player.con() == null || it.player.con().hasDisconnected }
@@ -529,6 +530,7 @@ class Trigger {
                 players.removeAll(stale.toSet())
                 return@run
             }
+            trackTick++
             for (data in players) {
                 val registeredTeam = pvpPlayer[data.uuid]
                 if (Vars.state.rules.pvp
@@ -608,7 +610,12 @@ class Trigger {
                     }
                 }
 
-                if (data.mouseTracking) {
+                // One label per player, to every tracking player: the cost is the product of two player
+                // counts. Fifteen ticks is the longest gate the label's own half second lifetime allows.
+                // The counter is local rather than Time.globalTime, which the neighbouring gates use:
+                // globalTime is a float that never resets, so after a few days of uptime it coarsens and
+                // the gate would fire in bursts with seconds of silence between them.
+                if (data.mouseTracking && trackTick % 15 == 0) {
                     Groups.player.forEach { player ->
                         Call.label(
                             data.player.con(),
