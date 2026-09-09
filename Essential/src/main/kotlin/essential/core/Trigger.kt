@@ -78,6 +78,32 @@ class Trigger {
         }
 
         /**
+         * What counts as this player having moved. `NetClient.sync` sends `0f, 0f` for the aim of a
+         * player with no unit and the server assigns that straight into mouseX/mouseY, so the
+         * pointer of a player who can never respawn is pinned - reading it would make the afk
+         * counter unescapable for exactly the players this fix is about. The camera they can still
+         * pan is the signal that survives.
+         */
+        fun activityMark(data: PlayerData): Float {
+            val con = data.player.con()
+            return if (data.player.unit() == null && con != null) con.viewX + con.viewY
+            else data.player.mouseX() + data.player.mouseY()
+        }
+
+        /**
+         * A player with no unit is dead on a team with no core to respawn from - every pvp loser
+         * this file moves to Team.derelict is in that state permanently - and can never move or
+         * mine again, so reading a null unit as activity exempted the idlest players on the
+         * server from afk handling for good.
+         */
+        fun isAfkCandidate(data: PlayerData): Boolean {
+            val unit = data.player.unit()
+            return (unit == null || (!unit.moving() && !unit.mining())) &&
+                !Permission.check(data, "afk.admin") &&
+                data.mousePosition == activityMark(data)
+        }
+
+        /**
          * Where an afk player is sent, or null to kick them instead. The config documents an empty
          * server as "disable teleport" and ships empty, while the reader tested for null, so the
          * shipped default hopped the player to host "" on port 6567 rather than kicking. A value
@@ -759,12 +785,7 @@ class Trigger {
                 }
 
                 // 잠수 플레이어 카운트
-                if (it.player.unit() != null &&
-                    !it.player.unit().moving() &&
-                    !it.player.unit().mining() &&
-                    !Permission.check(it, "afk.admin") &&
-                    it.mousePosition == it.player.mouseX() + it.player.mouseY()
-                ) {
+                if (isAfkCandidate(it)) {
                     it.afkTime++
                     if (it.afkTime == conf.feature.afk.time.toUShort()) {
                         it.afk = true
@@ -808,7 +829,7 @@ class Trigger {
                 } else {
                     it.afkTime = 0u
                     it.afk = false
-                    it.mousePosition = it.player.mouseX() + it.player.mouseY()
+                    it.mousePosition = activityMark(it)
                 }
 
                 val randomResult = (Random.nextInt(7) * it.expMultiplier)
