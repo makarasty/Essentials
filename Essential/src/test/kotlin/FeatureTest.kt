@@ -15,6 +15,7 @@ import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.data.getPlayerData
 import essential.common.database.data.setAchievement
 import essential.common.database.data.plugin.WarpBlock
+import essential.common.database.WorldHistoryBuffer
 import essential.common.database.databaseClose
 import essential.common.database.databaseInit
 import essential.common.database.defaultDatabase
@@ -44,6 +45,7 @@ import essential.core.playerIpUnban
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
+import essential.core.worldLoad
 import arc.Events
 import arc.func.Cons
 import arc.util.Log
@@ -1413,6 +1415,45 @@ class FeatureTest {
             leavePlayer(temporary.first)
             leavePlayer(target.first)
         }
+    }
+
+    /**
+     * Every world replacement fires WorldLoadEvent, so clearing the block history there is the only way
+     * to catch /vote back and console load, which rewind the world without going through a command site.
+     */
+    @Test
+    fun aWorldLoadClearsTheBlockHistory() {
+        val x: Short = 41
+        val y: Short = 41
+
+        WorldHistoryBuffer.enqueue(
+            time = System.currentTimeMillis(),
+            player = "fleet",
+            action = "place",
+            x = x,
+            y = y,
+            tile = "copper-wall",
+            rotate = 0,
+            team = Team.sharded.name,
+            value = null
+        )
+        assertEquals(
+            "copper-wall",
+            WorldHistoryBuffer.getLastBlock(x, y),
+            "Precondition: the buffer has to hold the block, or this test proves nothing"
+        )
+
+        worldLoad(WorldLoadEvent())
+
+        // This asserts the cache, which is what clearWorldHistory clears last and therefore only
+        // reaches if its TRUNCATE succeeded. It does not assert the table stays empty afterwards:
+        // WorldHistoryBuffer.clear() leaves the pending queue alone, so rows enqueued just before the
+        // map change are still inserted after the truncate. That gap is filed, and it is not in a file
+        // this chip owns.
+        assertTrue(
+            awaitPumped(10000L) { WorldHistoryBuffer.getLastBlock(x, y) == null },
+            "A world load must clear the block history recorded on the map that was just replaced"
+        )
     }
 
 }

@@ -1139,6 +1139,12 @@ fun worldLoad(event: WorldLoadEvent) {
     isCheated = false
     mapRatings.clear()
 
+    // Every world replacement routes through WorldLoadEvent - loadMap, save loading, the console's own
+    // host and load, and /vote back - so this is the one place that catches all of them. Clearing only at
+    // the command sites leaves a /vote back rewinding the world while every row recorded after the save
+    // point stays in the table, on the same map.
+    scope.launch { clearWorldHistory() }
+
     // Load map ratings for the current map from the database
     val currentMapName = Vars.state.map.plainName()
 
