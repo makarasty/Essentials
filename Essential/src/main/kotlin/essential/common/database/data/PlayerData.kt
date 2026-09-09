@@ -85,8 +85,12 @@ data class PlayerData(
     var isBanned: Boolean = false,
     var banExpireDate: LocalDateTime? = null,
     var attendanceDays: Int = 0,
-    /** The `record.*` half of [status] as JSON; read on load, rewritten from the map on every [update]. */
-    var statusData: String = "{}"
+    /**
+     * The `record.*` half of [status] as JSON; read on load, rewritten from the map on every [update].
+     *
+     * Null on a row written before the column existed.
+     */
+    var statusData: String? = null
 ) {
     // Exp
     var expMultiplier: Double = 1.0
@@ -149,9 +153,10 @@ data class PlayerData(
     val status: MutableMap<String, String> = ConcurrentHashMap()
 
     init {
-        if (statusData.isNotBlank()) {
+        val stored = statusData
+        if (!stored.isNullOrBlank()) {
             try {
-                status.putAll(statusJson.decodeFromString<Map<String, String>>(statusData))
+                status.putAll(statusJson.decodeFromString<Map<String, String>>(stored))
             } catch (e: SerializationException) {
                 Log.warn("Unreadable status for $name ($uuid), starting from empty: ${e.message}")
             }

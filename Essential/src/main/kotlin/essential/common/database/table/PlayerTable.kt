@@ -51,8 +51,13 @@ object PlayerTable : Table("players") {
      * Deliberately not called `status`: a nullable legacy `status` column still exists on databases
      * upgraded through the v4 scripts, and reusing the name would make Exposed emit an ALTER to
      * make it NOT NULL on every boot, over a column that still holds pre-fork content.
+     *
+     * Nullable with a null default, the same shape as [PluginTable.hubMapName], because MySQL refuses
+     * a literal default on a TEXT column: `TEXT NOT NULL DEFAULT '{}'` is error 1101 there, and it
+     * would be emitted both by the create and by the add-missing-columns pass at boot. A row that
+     * predates the column reads as null and starts from an empty map.
      */
-    val statusData = text("status_data").default("{}")
+    val statusData = text("status_data").nullable().default(null)
 
     override val primaryKey = PrimaryKey(id)
 }
