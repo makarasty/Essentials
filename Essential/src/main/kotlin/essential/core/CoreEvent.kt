@@ -717,6 +717,23 @@ fun mergeTemporaryPlayerData(temporary: PlayerData, data: PlayerData) {
     data.strictMode = data.strictMode || temporary.strictMode
     data.isBanned = data.isBanned || temporary.isBanned
     if (temporary.banExpireDate != null) data.banExpireDate = temporary.banExpireDate
+    // The other half of this pair is PlayerMerge.kt, which merges two accounts; both carry the same
+    // record.* keys and must agree about which of them may be summed. Change one, change the other.
+    // The record.* keys are the achievement counters, and they are the only part of status that is
+    // persisted, so progress earned on the temporary object is lost here unless it is carried across.
+    // They are summed like the counter fields above. Everything else in status is session state - one
+    // of those keys is a login consent token whose second use deletes the player row - so it stays put.
+    for ((key, value) in temporary.status) {
+        if (!key.startsWith("record.")) continue
+        // Not every record.* key is a running total. The .time keys hold a raw System.currentTimeMillis
+        // stamp, and the .current and .duration keys - and record.time.noafk - are windows that get reset
+        // to zero. Summing a window turns two half-runs into a whole one and awards something that never
+        // happened; summing a timestamp lands so far in the future that the check it guards never closes.
+        if (key.endsWith(".time") || key.endsWith(".current") || key.endsWith(".duration")) continue
+        if (key == "record.time.noafk") continue
+        val carried = value.toLongOrNull() ?: continue
+        data.status[key] = ((data.status[key]?.toLongOrNull() ?: 0L) + carried).toString()
+    }
 }
 
 fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {

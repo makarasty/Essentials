@@ -38,6 +38,7 @@ import essential.core.connectPacket
 import essential.core.gameOver
 import essential.core.loadJoinedPlayerData
 import essential.core.mapRatings
+import essential.core.mergeTemporaryPlayerData
 import essential.core.playerDataRetries
 import essential.core.playerIpUnban
 import essential.core.service.achievements.AchievementHooks
@@ -1352,6 +1353,65 @@ class FeatureTest {
             Main.conf = originalConf
             leavePlayer(intruder.first)
             leavePlayer(owner.first)
+        }
+    }
+
+    /**
+     * The record.* status keys are the achievement counters chip 07 persists. Progress earned on a
+     * temporary player object was dropped when that object was merged into the real one.
+     */
+    @Test
+    fun mergingATemporaryPlayerCarriesTheAchievementCounters() {
+        val target = newPlayer()
+        val temporary = newPlayer()
+
+        try {
+            // Real running totals from AchievementEvents.
+            target.second.status["record.wave"] = "3"
+            temporary.second.status["record.wave"] = "4"
+            temporary.second.status["record.crawler.block.destroy"] = "2"
+            temporary.second.status["login_consent"] = "token"
+
+            // Not totals: a raw currentTimeMillis stamp, and two windows that are reset to zero.
+            target.second.status["record.turret.quill.kill.time"] = "1000"
+            temporary.second.status["record.turret.quill.kill.time"] = "2000"
+            target.second.status["record.pvp.win.streak.current"] = "3"
+            temporary.second.status["record.pvp.win.streak.current"] = "4"
+            target.second.status["record.time.noafk"] = "5"
+            temporary.second.status["record.time.noafk"] = "6"
+
+            mergeTemporaryPlayerData(temporary.second, target.second)
+
+            assertEquals("7", target.second.status["record.wave"], "A counter both objects hold must be summed")
+            assertEquals(
+                "2",
+                target.second.status["record.crawler.block.destroy"],
+                "A counter only the temporary object holds must be carried"
+            )
+            assertEquals(
+                "1000",
+                target.second.status["record.turret.quill.kill.time"],
+                "A currentTimeMillis stamp must not be summed: the sum is a future time and its window never closes"
+            )
+            assertEquals(
+                "3",
+                target.second.status["record.pvp.win.streak.current"],
+                "A streak that gets reset to zero must not be summed: two part-runs are not one run"
+            )
+            assertEquals(
+                "5",
+                target.second.status["record.time.noafk"],
+                "A per-map continuous window must not be summed"
+            )
+            assertFalse(
+                target.second.status.containsKey("login_consent"),
+                "Session state must not be carried across: one of these keys is a consent token whose second use deletes the row"
+            )
+        } finally {
+            target.second.status.clear()
+            temporary.second.status.clear()
+            leavePlayer(temporary.first)
+            leavePlayer(target.first)
         }
     }
 
