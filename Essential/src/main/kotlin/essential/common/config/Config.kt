@@ -97,15 +97,42 @@ object Config {
      * only the opposite question, so these are silently lost by the same re-save.
      */
     fun extraComments(userContent: String, canonicalContent: String): List<String> {
-        val canonicalComments = canonicalContent.lineSequence()
-            .map { it.trim() }
-            .filter { it.startsWith("#") }
-            .toSet()
-        return userContent.lineSequence()
-            .map { it.trim() }
-            .filter { it.startsWith("#") }
-            .filter { it !in canonicalComments }
-            .toList()
+        // From the first # to the end of the line, so a trailing `key: value  # why` counts as well as
+        // a whole-line comment. A # inside a quoted value is counted too; that only ever means one
+        // extra backup, which is the safe direction for something guarding against data loss.
+        fun comments(text: String) = text.lineSequence()
+            .mapNotNull { line -> line.indexOf('#').takeIf { it >= 0 }?.let { line.substring(it).trim() } }
+
+        val canonicalComments = comments(canonicalContent).toSet()
+        return comments(userContent).filter { it !in canonicalComments }.toList()
+    }
+
+    /**
+     * Copy the user's file aside before the migration re-save replaces it, and return where it went.
+     *
+     * Single slot, and written **only when something is actually being discarded**. An unconditional
+     * copy is worse than none: the boot after a rewrite would overwrite the good backup with the
+     * already-canonical file, leaving the operator holding a copy of exactly what they lost. Gating it
+     * on there being something to lose is also self-limiting - once the file is canonical there is
+     * nothing extra in it, so no further backup is written and the good one survives.
+     */
+    fun backup(name: String, content: String): String? {
+        val file = rootPath.child("config/$name.bak")
+        // Never overwrite one. A later rewrite - a build that retires a key, say - would otherwise
+        // replace the operator's hand-written file with an already-canonical one. The first backup is
+        // by construction the closest thing to what they wrote, so it is the one worth keeping.
+        if (file.exists()) {
+            Log.warn(bundle["config.backup.kept", name, file.absolutePath()])
+            return null
+        }
+        return try {
+            file.writeString(content, false)
+            file.absolutePath()
+        } catch (e: Exception) {
+            // A failed backup must not stop the load; it only removes the safety net.
+            Log.err(bundle["config.backup.failed", name], e)
+            null
+        }
     }
 
     /**
@@ -164,6 +191,9 @@ object Config {
                     val lostComments = extraComments(content, canonicalContent)
                     if (lostComments.isNotEmpty()) {
                         Log.warn(bundle["config.rewrite.comments", name, lostComments.size.toString()])
+                    }
+                    if (unknownKeys.isNotEmpty() || lostComments.isNotEmpty()) {
+                        backup(name, content)?.let { Log.warn(bundle["config.rewrite.backup", name, it]) }
                     }
                     save(name, serializer, config)
                 }

@@ -10,6 +10,7 @@ import java.io.FileOutputStream
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -18,7 +19,7 @@ import kotlin.test.assertTrue
  * Every failure path in [Config] used to be silent: an unparseable file returned null with nothing logged,
  * a failed directory rename was invisible because [java.io.File.renameTo] reports failure by returning
  * false rather than by throwing, and the migration re-save dropped the operator's unknown keys and their
- * comments without saying so.
+ * comments without saying so or leaving a copy behind.
  *
  * The expected text is read back out of the bundle rather than written in English here, because the top
  * level [bundle] follows the JVM default locale and these strings are translated.
@@ -42,6 +43,7 @@ class ConfigDiagnosticsTest {
             loadGame(true)
             done = true
         }
+        rootPath.child("config/$FILE.bak").delete()
         previousLogger = Log.logger
         Log.logger = Log.LogHandler { _, text -> lines += text }
     }
@@ -51,6 +53,7 @@ class ConfigDiagnosticsTest {
         previousLogger?.let { Log.logger = it }
         lines.clear()
         rootPath.child("config/$FILE").delete()
+        rootPath.child("config/$FILE.bak").delete()
     }
 
     private fun logged(expected: String) = lines.any { it.contains(expected) }
@@ -59,6 +62,8 @@ class ConfigDiagnosticsTest {
         rootPath.child("config").mkdirs()
         rootPath.child("config/$FILE").writeString(content, false)
     }
+
+    private fun backup() = rootPath.child("config/$FILE.bak")
 
     @Test
     fun unparseableFileIsLoggedRatherThanDegradingSilently() {
@@ -101,6 +106,74 @@ class ConfigDiagnosticsTest {
         assertFalse(
             logged(bundle["config.saved", FILE]),
             "a file with no missing keys must not be rewritten, but the log held: $lines"
+        )
+    }
+
+    @Test
+    fun theFileIsCopiedAsideWhenTheRewriteWouldDiscardSomething() {
+        val original = "# operator note: alpha is deliberate\nalpha: \"x\"\nbetaa: 7\n"
+        write(original)
+
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        assertTrue(backup().exists(), "the rewrite discarded a key and a comment, so the file must be recoverable")
+        assertEquals(original, backup().readString(), "the backup must hold what the file said before the rewrite")
+        assertTrue(
+            logged(bundle["config.rewrite.backup", FILE, backup().absolutePath()]),
+            "an operator told their comments will not survive must be told where the old file went: $lines"
+        )
+    }
+
+    @Test
+    fun aTrailingCommentAlsoCountsAsSomethingToLose() {
+        // The operator's only annotation is on the value line. Matching whole-line comments alone misses
+        // it, and the rewrite then deletes it with no warning and, once the backup is gated, no copy.
+        val original = "alpha: \"x\"  # do not raise this\n"
+        write(original)
+
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        assertTrue(backup().exists(), "a trailing comment is the operator's too, so the file must be recoverable")
+        assertEquals(original, backup().readString())
+    }
+
+    @Test
+    fun anEarlierBackupIsNotReplacedByALaterRewrite() {
+        // A build that retires a key makes an already-canonical file look like it carries an unknown one,
+        // so a second rewrite runs at a point where nothing of the operator's is left in the file.
+        // Overwriting the backup then would destroy their only copy.
+        val original = "# operator note: alpha is deliberate\nalpha: \"x\"\nbetaa: 7\n"
+        write(original)
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        write("alpha: \"y\"\nretired: 1\n")
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        assertEquals(
+            original,
+            backup().readString(),
+            "the first backup is closest to what the operator wrote and must survive later rewrites"
+        )
+        assertTrue(
+            logged(bundle["config.backup.kept", FILE, backup().absolutePath()]),
+            "keeping the older backup must be said out loud, but the log held: $lines"
+        )
+    }
+
+    @Test
+    fun aRewriteThatDiscardsNothingWritesNoBackup() {
+        // beta is missing so the re-save still runs, but there is no unknown key and no comment of the
+        // operator's to lose. Backing up unconditionally would mean the boot after a real rewrite
+        // overwrote the good backup with the already-canonical file, leaving the operator holding a
+        // copy of exactly what they lost.
+        write("alpha: \"x\"\n")
+
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        assertTrue(logged(bundle["config.saved", FILE]), "the migration re-save should still have run: $lines")
+        assertFalse(
+            backup().exists(),
+            "nothing was discarded, so a backup would only overwrite a good one on a later boot"
         )
     }
 
