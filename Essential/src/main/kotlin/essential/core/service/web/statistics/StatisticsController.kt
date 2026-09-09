@@ -5,11 +5,14 @@ import arc.Events
 import arc.util.Log
 import essential.common.database.data.getAverageContribution
 import essential.common.database.data.getContributionCount
+import essential.common.database.data.getPlayerDataByName
+import essential.common.permission.Permission
 import essential.common.playTime
 import essential.common.players
 import essential.common.systemTimezone
 import essential.common.util.size
 import essential.common.util.toHString
+import essential.core.isGlobalMute
 import essential.core.service.web.auth.UserSession
 import essential.core.service.web.onGameThread
 import io.ktor.http.*
@@ -28,6 +31,7 @@ import mindustry.Vars
 import mindustry.game.EventType
 import mindustry.gen.Call
 import mindustry.gen.Groups
+import java.lang.reflect.Method
 import java.util.*
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.milliseconds
@@ -251,12 +255,39 @@ class StatisticsController {
         }
     }
 
+    /**
+     * The chat service is an optional module: building with `-PexcludeModules=chat` drops its whole
+     * package from the source set while this file stays, so the blacklist cannot be a direct call. Same
+     * reason and same shape as WebServer's optional achievements route. No module means no list, so
+     * nothing to refuse against.
+     */
+    private val blacklistCheck: Method? by lazy {
+        try {
+            Class.forName("essential.core.service.chat.EventKt")
+                .getMethod("isChatBlacklisted", String::class.java)
+        } catch (_: ClassNotFoundException) {
+            null
+        }
+    }
+
+    private fun isBlacklisted(message: String): Boolean = try {
+        blacklistCheck?.invoke(null, message) as? Boolean == true
+    } catch (e: ReflectiveOperationException) {
+        Log.err("Failed to consult the chat blacklist", e)
+        false
+    }
+
     private fun sanitizeMessage(message: String): String {
-        // Remove potentially dangerous characters and HTML tags
+        // Remove potentially dangerous characters and HTML tags. The ampersand goes first, or it
+        // re-escapes the entities the replacements below it introduce.
         return message
+            .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
-            .replace("&", "&amp;")
+            // Mindustry's own markup, not HTML: an unescaped '[' lets a web message paint itself in the
+            // colours of a server line or of another player's name. '[[' is how the engine renders a
+            // literal one.
+            .replace("[", "[[")
             .replace("\"", "&quot;")
             .replace("'", "&#x27;")
             .replace("/", "&#x2F;")
@@ -305,6 +336,23 @@ class StatisticsController {
         // Validate chat message
         if (message.isBlank() || message.length > 100) {
             return call.respond(HttpStatusCode.BadRequest, "Invalid message")
+        }
+
+        // Every filter registered through admins.filterMessage takes a connected Player, and this
+        // endpoint authenticates a database row instead, so filterMessage cannot be reached from here.
+        // The checks that do not need a Player are applied directly, against the same blacklist body the
+        // registered filter uses. The vote filter is deliberately not among them: a web sender who is not
+        // in the game is not a participant in a vote.
+        val data = getPlayerDataByName(session.username)
+            ?: return call.respond(HttpStatusCode.Forbidden, "Chat is disabled")
+        if (data.chatMuted) {
+            return call.respond(HttpStatusCode.Forbidden, "You are muted")
+        }
+        if (isGlobalMute && !Permission.check(data, "chat.admin")) {
+            return call.respond(HttpStatusCode.Forbidden, "Chat is disabled")
+        }
+        if (isBlacklisted(message)) {
+            return call.respond(HttpStatusCode.Forbidden, "Message blocked")
         }
 
         // Sanitize message to prevent code injection

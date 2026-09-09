@@ -7,6 +7,7 @@ import essential.core.service.web.WebService.Companion.conf
 import essential.core.service.web.auth.AuthController
 import essential.core.service.web.auth.UserSession
 import essential.core.service.web.auth.authRoutes
+import essential.core.service.web.auth.isCurrent
 import essential.core.service.web.maps.MapController
 import essential.core.service.web.maps.mapRoutes
 import essential.core.service.web.statistics.StatisticsController
@@ -43,6 +44,11 @@ class WebServer {
         require(conf.sessionSecret.length >= 32) {
             "Web sessions require a configured sessionSecret of at least 32 characters"
         }
+        // The server enforces this as a session age now, so zero or less is no longer "until the browser
+        // closes" - it is a login already expired by the time the response carrying it arrives.
+        require(conf.sessionDuration > 0) {
+            "Web sessions require a sessionDuration greater than zero"
+        }
         val (encryptionKey, signingKey) = sessionKeys(conf.sessionSecret)
 
         with(application) {
@@ -77,7 +83,8 @@ class WebServer {
             install(Authentication) {
                 session<UserSession>("auth-session") {
                     validate { session ->
-                        getPlayerDataByName(session.username)
+                        session.takeIf { it.isCurrent() }
+                            ?.let { getPlayerDataByName(session.username) }
                             ?.takeIf { it.id.toString() == session.id }
                             ?.let { session }
                     }
