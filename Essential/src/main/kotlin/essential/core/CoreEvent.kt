@@ -720,10 +720,9 @@ fun mergeTemporaryPlayerData(temporary: PlayerData, data: PlayerData) {
     // The other half of this pair is PlayerMerge.kt, which merges two accounts; both carry the same
     // record.* keys and must agree about which of them may be summed. The two lists are kept in step by
     // hand and must be edited together - a key added to one and not the other is a silent divergence.
-    // The record.* keys are the achievement counters, and they are the only part of status that is
-    // persisted, so progress earned on the temporary object is lost here unless it is carried across.
-    // They are summed like the counter fields above. Everything else in status is session state - one
-    // of those keys is a login consent token whose second use deletes the player row - so it stays put.
+    // The record.* keys are the achievement counters and the only persisted part of status, so progress
+    // earned on the temporary object is lost unless it is carried across. Everything else in status is
+    // session state - one key is a login consent token whose second use deletes the player row.
     for ((key, value) in temporary.status) {
         if (!key.startsWith("record.")) continue
         // Not every record.* key is a running total. The .time keys hold a raw System.currentTimeMillis
@@ -758,12 +757,12 @@ fun swapTemporaryPlayerData(data: PlayerData, temporary: PlayerData) {
 }
 
 /**
- * The team that has won the round: the single one still holding a core, ignoring derelict.
- *
- * This is the engine's own test (Logic.checkGameState), and the plugin needs it because a team that
- * has lost every core stays in Vars.state.teams.getActive() on its remaining buildings, so "is still
- * present" and "is still alive" are not the same question. Null when the board does not name one
+ * The single team still holding a core, ignoring derelict. Null when the board does not name one
  * winner - zero teams alive, or more than one - because the round is then the engine's to end.
+ *
+ * This is the engine's own test (Logic.checkGameState). The plugin needs it because a team that has
+ * lost every core stays in Vars.state.teams.getActive() on its remaining buildings, so "is still
+ * present" and "is still alive" are not the same question.
  */
 private fun soleSurvivingTeam(): Team? {
     val alive = Vars.state.teams.getActive().filter { it.isAlive() && it.team != Team.derelict }
@@ -1083,7 +1082,7 @@ fun playerLeave(event: PlayerLeave) {
                 if (s.keys.size == 1) {
                     // Which teams still have players says who is left to play, not who won, and
                     // b.first() is not even the player from that team - a spectator parked on
-                    // Team.derelict sorts ahead of them. Ask the board who survived instead.
+                    // Team.derelict sorts ahead of them.
                     soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
                 }
             }
@@ -1413,12 +1412,10 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         val vanillaGroup = conf.feature.permission.vanillaAdminGroup
         playerData.permission = vanillaGroup
         scope.launch { playerData.update() }
-        // setGroup writes a permission_user.yaml entry, and that per-server file masks the shared
-        // database column, so every vanilla admin who joined minted a mask nobody asked for. The two
-        // lines above already carry the group. What is left of setGroup that belongs here is
-        // syncVanillaAdmin: on this branch the player is already a vanilla admin, so it is a no-op
-        // except in the one case that matters, an operator who configured vanillaAdminGroup to a group
-        // that is not an admin group and expects the vanilla flag to be taken away.
+        // Not setGroup: it writes a permission_user.yaml entry, and that per-server file masks the
+        // shared database column, so every vanilla admin who joined minted a mask nobody asked for.
+        // syncVanillaAdmin is a no-op on this branch except in the one case that matters, an operator
+        // who pointed vanillaAdminGroup at a group that is not an admin group.
         Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup)
     } else if (Permission.isAdminGroup(group)) {
         Permission.syncVanillaAdmin(playerData.uuid, group)

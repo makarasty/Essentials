@@ -149,11 +149,10 @@ object Permission {
     }
 
     fun apply() {
-        // This walks the shared players list and writes Mindustry player entities - admin() and name()
-        // - so it is only correct on the game thread, and one of its callers is not on one: /reload runs
-        // Permission.load() on Dispatchers.IO. The hop lives here rather than at that caller, so a caller
-        // added later cannot get it wrong, and it reads the map inside the work rather than capturing it,
-        // so a setperm that lands while the work is queued is not reverted by a stale copy.
+        // Writes Mindustry player entities - admin() and name() - so it is only correct on the game
+        // thread, and /reload calls Permission.load() on Dispatchers.IO. The hop is here rather than at
+        // that caller so a later caller cannot get it wrong, and `user` is read inside the work rather
+        // than captured, so a setperm landing while the work is queued is not reverted by a stale copy.
         val work = Runnable {
             val loaded = user
             if (loaded != null) {
@@ -181,7 +180,6 @@ object Permission {
                 }
             }
         }
-        // Callers already on the game thread run it now; only the ones that are not pay a frame.
         if (Core.app.isOnMainThread) work.run() else Core.app.post(work)
     }
 

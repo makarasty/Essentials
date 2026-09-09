@@ -23,7 +23,7 @@ fun fileWatchService() {
                 // Arc runs listeners inline, so firing here would run them on this watcher thread.
                 // Config reloads reach Mindustry entity writes (Permission.apply renames players and
                 // flips their admin flag) and replace the shared config object, both of which race the
-                // server's own per-tick work. Hand the event to the game thread instead.
+                // server's own per-tick work.
                 Core.app.post {
                     try {
                         Events.fire(CustomEvents.ConfigFileModified(kind, paths))
