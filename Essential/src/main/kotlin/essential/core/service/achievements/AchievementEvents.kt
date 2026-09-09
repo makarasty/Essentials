@@ -19,10 +19,14 @@ import essential.core.Main.Companion.scope
 import kotlinx.coroutines.launch
 import ksp.event.Event
 import mindustry.Vars.state
+import mindustry.content.Blocks
 import mindustry.content.Planets
+import mindustry.content.UnitTypes
 import mindustry.game.EventType.*
 import mindustry.game.Team
 import mindustry.gen.Groups
+import mindustry.gen.Unit
+import mindustry.world.blocks.defense.turrets.BaseTurret
 import mindustry.world.blocks.power.PowerGraph
 import java.util.*
 import kotlin.time.Clock
@@ -108,8 +112,11 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                 isLowPowerFailed = true
             }
 
-            // Check for turrets for NoTurretsClear achievement
-            if (!event.breaking && event.tile.block().name.contains("turret")) {
+            // Check for turrets for NoTurretsClear achievement. No real weapon turret's block name
+            // contains "turret" - repair-turret (a support block, not a weapon, extends Block directly)
+            // is the only block that ever matched, so this used to fail the achievement for building a
+            // repair point and never for an actual turret. Every weapon turret extends BaseTurret.
+            if (!event.breaking && event.tile.block() is BaseTurret) {
                 isNoTurretsFailed = true
             }
 
@@ -124,8 +131,10 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                 isNoPowerFailed = true
             }
 
-            // Check for duo turrets for DuoTurretSurvival achievement
-            if (!event.breaking && event.tile.block().name != "duo" && event.tile.block().name.contains("turret")) {
+            // Check for duo turrets for DuoTurretSurvival achievement. Same defect as NoTurretsClear
+            // above: only repair-turret ever matched the "turret" substring, so any real non-duo turret
+            // went undetected.
+            if (!event.breaking && event.tile.block() != Blocks.duo && event.tile.block() is BaseTurret) {
                 isDuoTurretFailed = true
             }
         }
@@ -275,8 +284,21 @@ fun gameover(event: GameOverEvent) {
         }
 
         if (isWin) {
+            // Asteroids/Transcendence identify their map by the MD5 of the loaded map file. That check
+            // used to live inside success() and wrote data.status as a side effect of merely being asked
+            // whether the achievement is hidden - see Achievement.kt. It now runs only here, on a real win.
+            if (Achievement.mapHash == "7b032cc7815022be644d00a877ae0388") {
+                data.status["record.map.clear.asteroids"] = "1"
+            }
             if (Achievement.Asteroids.success(data)) {
                 Achievement.Asteroids.set(data)
+            }
+
+            if (Achievement.mapHash == "f355b3d91d5d8215e557ff045b3864ef") {
+                data.status["record.map.clear.transcendence"] = "1"
+            }
+            if (Achievement.Transcendence.success(data)) {
+                Achievement.Transcendence.set(data)
             }
 
             // Check if all maps have been cleared
@@ -386,15 +408,14 @@ fun wave(event: WaveEvent) {
 
 @Event
 fun achievementClear(event: CustomEvents.AchievementClear) {
-    val bundle = Bundle(ResourceBundle.getBundle("bundles/achievements/bundle", Locale.forLanguageTag(event.playerData.player.locale().replace("_", "-"))))
+    val bundle = Bundle(Bundle.resolve("bundles/achievements/bundle", Locale.forLanguageTag(event.playerData.player.locale().replace("_", "-"))))
 
     event.playerData.send(bundle, "event.achievement.success", bundle["achievement." + event.achievement.toString().lowercase()])
     players.forEach { data ->
         val b = Bundle(
-            ResourceBundle.getBundle(
+            Bundle.resolve(
                 "bundles/achievements/bundle",
-                Locale.forLanguageTag(data.player.locale().replace("_", "-")),
-                AchievementService::class.java.getClassLoader()
+                Locale.forLanguageTag(data.player.locale().replace("_", "-"))
             )
         )
 
@@ -475,115 +496,199 @@ fun unitChange(event: UnitChangeEvent) {
     }
 }
 
+/**
+ * TurretMultiKill, QuillKiller, ZenithKiller, OmuraHorizonKiller and ExplosionKiller (task-101, and the
+ * attribution family task-102/083/092 belong to; the rule below is the one shared with
+ * CoreEvent.kt's half). All five used to live in a UnitDestroyEvent handler that looped every
+ * online player and credited whoever was on a different team than the kill, because UnitDestroyEvent
+ * carries no killer at all (EventType.java only gives it a `unit` field - verified via javap).
+ *
+ * UnitBulletDestroyEvent does carry a killer for the actual majority of unit deaths - anything killed by a
+ * weapon has a `Bullet`, and `Bullet.owner` names who fired it - so these five move here and credit only
+ * the bullet's controlling player. Same attribution ContributionEvents.kt:160 already established for a
+ * different counter family. A unit that dies to something other than a bullet (environmental damage,
+ * poison, etc.) credits nobody rather than everybody: a deliberate narrowing, not an invented heuristic.
+ */
 @Event
-fun unitDestroy(event: UnitDestroyEvent) {
-    // For each player, check if they might have destroyed the unit
-    for (player in Groups.player) {
-        val data: PlayerData? = findPlayerData(player.uuid())
+fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
+    // Neither field carries an arc.util.Nullable annotation, but the pre-fix unitDestroy defensively
+    // null-checked event.unit anyway despite the same lack of annotation on that event - matching that
+    // caution here rather than trusting an unannotated Java platform type.
+    val victim = event.unit ?: return
+    val bullet = event.bullet ?: return
+    val owner = bullet.owner as? Unit ?: return
+    val player = owner.player ?: return
+    if (victim.team() == player.team()) return
+    val data = findPlayerData(player.uuid()) ?: return
 
-        if (data != null && event.unit != null && event.unit.team() != player.team()) {
-            val playerUnit = player.unit() ?: continue
+    // Check for TurretMultiKill achievement: "destroy 5+ units simultaneously with a single bullet". No
+    // unit's type name has ever contained "turret" (turrets are blocks), so the old
+    // playerUnit.type.name.contains("turret") gate was always false and this could never fire; dropped
+    // rather than replaced, since the achievement's own text has nothing to do with turrets. "Simultaneously
+    // with a single bullet" means what it says: count by bullet id, resetting on a new bullet, rather than
+    // accumulating lifetime kills (a splash-damage bullet can hit several units in the one explosion).
+    //
+    // A second opus review caught a further bug, pre-existing before this fix and shared by
+    // OmuraHorizonKiller/ExplosionKiller/CrawlerBlockDestroyer below: Achievement.TurretMultiKill.current()
+    // reads record.turret.multikill, but the achievement code wrote a literal "1" into that key on
+    // completion rather than the real count - so current() >= value() (1 >= 5) was always false and
+    // success() could never return true through that path. record.turret.multikill.bullet also isn't
+    // excluded from PlayerData's merge-summing (only .time/.current/.duration suffixes are, generically,
+    // plus an explicit list neither PlayerData.kt nor this file's owner can casually extend) - named with a
+    // .current suffix instead so the existing generic exclusion covers it without touching that file.
+    val multiKillBulletId = bullet.id()
+    val lastMultiKillBulletId = data.status.getOrDefault("record.turret.multikill.bullet.current", "-1").toIntOrNull()
+    val multiKillCount = if (multiKillBulletId == lastMultiKillBulletId) {
+        data.status.getOrDefault("record.turret.multikill.current", "0").toInt() + 1
+    } else {
+        1
+    }
+    data.status["record.turret.multikill.bullet.current"] = multiKillBulletId.toString()
+    data.status["record.turret.multikill.current"] = multiKillCount.toString()
+    if (multiKillCount >= 5) {
+        data.status["record.turret.multikill"] = multiKillCount.toString()
+        if (Achievement.TurretMultiKill.success(data)) {
+            Achievement.TurretMultiKill.set(data)
+        }
+    }
 
-            // Check for CrawlerBlockDestroyer achievement
-            if (playerUnit.type.name.equals("crawler", true)) {
-                // Check if the destroyed unit is a wall, turret, or factory
-                if (event.unit.type.name.contains("wall") || event.unit.type.name.contains("turret") || event.unit.type.name.contains(
-                        "factory"
-                    )
-                ) {
-                    val count = data.status.getOrDefault("record.crawler.block.destroy", "0").toInt() + 1
-                    data.status["record.crawler.block.destroy"] = count.toString()
-                    if (Achievement.CrawlerBlockDestroyer.success(data)) {
-                        Achievement.CrawlerBlockDestroyer.set(data)
-                    }
-                }
+    // Check for QuillKiller achievement. Unreachable regardless of the dropped gate above:
+    // mindustry.content.UnitTypes carries no "quill" unit in this engine version (v159.7, checked against
+    // the full field list), so this can never match. Left as a name comparison rather than a type constant
+    // because there is no UnitTypes.quill to reference.
+    if (victim.type.name.equals("quill", true)) {
+        val currentTime = System.currentTimeMillis()
+        val lastKillTime = data.status.getOrDefault("record.turret.quill.kill.time", "0").toLong()
+        val killCount = if (currentTime - lastKillTime < 10000) {
+            data.status.getOrDefault("record.turret.quill.kill", "0").toInt() + 1
+        } else {
+            1
+        }
+
+        data.status["record.turret.quill.kill"] = killCount.toString()
+        data.status["record.turret.quill.kill.time"] = currentTime.toString()
+
+        if (killCount >= 5 && Achievement.QuillKiller.success(data)) {
+            Achievement.QuillKiller.set(data)
+        }
+    }
+
+    // Check for ZenithKiller achievement. UnitTypes.zenith is real, so this is matched by type rather than
+    // by name.
+    if (victim.type == UnitTypes.zenith) {
+        val currentTime = System.currentTimeMillis()
+        val lastKillTime = data.status.getOrDefault("record.turret.zenith.kill.time", "0").toLong()
+        val killCount = if (currentTime - lastKillTime < 10000) {
+            data.status.getOrDefault("record.turret.zenith.kill", "0").toInt() + 1
+        } else {
+            1
+        }
+
+        data.status["record.turret.zenith.kill"] = killCount.toString()
+        data.status["record.turret.zenith.kill.time"] = currentTime.toString()
+
+        if (killCount >= 30 && Achievement.ZenithKiller.success(data)) {
+            Achievement.ZenithKiller.set(data)
+        }
+    }
+
+    // Check for OmuraHorizonKiller achievement: "5+ horizon units simultaneously with a single bullet from
+    // an Omura". owner.type is the unit that actually fired the shot - what "your controlled unit" means -
+    // not whatever the player happens to be piloting when this listener runs. Same bullet-identity fix as
+    // TurretMultiKill above: "simultaneously with a single bullet" is counted by bullet id.
+    if (owner.type == UnitTypes.omura && victim.type.name.equals("horizon", true)) {
+        val comboBulletId = bullet.id()
+        val lastComboBulletId = data.status.getOrDefault("record.omura.horizon.kill.bullet.current", "-1").toIntOrNull()
+        val comboKillCount = if (comboBulletId == lastComboBulletId) {
+            data.status.getOrDefault("record.omura.horizon.kill.current", "0").toInt() + 1
+        } else {
+            1
+        }
+        data.status["record.omura.horizon.kill.bullet.current"] = comboBulletId.toString()
+        data.status["record.omura.horizon.kill.current"] = comboKillCount.toString()
+        if (comboKillCount >= 5) {
+            // Same current()-vs-threshold bug as TurretMultiKill above: the real count, not a "1" flag.
+            data.status["record.omura.horizon.kill"] = comboKillCount.toString()
+            if (Achievement.OmuraHorizonKiller.success(data)) {
+                Achievement.OmuraHorizonKiller.set(data)
             }
+        }
+    }
 
-            // Check for TurretMultiKill achievement
-            if (playerUnit.type.name.contains("turret")) {
-                val multiKillCount =
-                    data.status.getOrDefault("record.turret.multikill.current", "0").toInt() + 1
-                data.status["record.turret.multikill.current"] = multiKillCount.toString()
-
-                // If 5 or more units were destroyed simultaneously
-                if (multiKillCount >= 5) {
-                    data.status["record.turret.multikill"] = "1"
-                    if (Achievement.TurretMultiKill.success(data)) {
-                        Achievement.TurretMultiKill.set(data)
-                    }
-                    // Reset counter
-                    data.status["record.turret.multikill.current"] = "0"
-                }
+    // Check for ExplosionKiller achievement: "destroy 10+ units with explosion damage from your controlled
+    // unit". The pre-fix code checked whether the DESTROYED unit (event.unit) was a crawler - i.e. credited
+    // whoever's bullet happened to kill a crawler, which is unrelated to explosion damage and nothing to
+    // do with "your controlled unit". A crawler's only weapon is its shootOnDeath explosion (verified by
+    // decompiling mindustry.content.UnitTypes), so "explosion damage from your controlled unit" means the
+    // credited player is piloting the crawler that just exploded - checked via owner.type, matching the
+    // buildingBulletDestroy attribution below for the same unit.
+    if (owner.type == UnitTypes.crawler) {
+        val explosionKillCount = data.status.getOrDefault("record.explosion.kill.current", "0").toInt() + 1
+        data.status["record.explosion.kill.current"] = explosionKillCount.toString()
+        if (explosionKillCount >= 10) {
+            // Same current()-vs-threshold bug as TurretMultiKill above: the real count, not a "1" flag.
+            data.status["record.explosion.kill"] = explosionKillCount.toString()
+            if (Achievement.ExplosionKiller.success(data)) {
+                Achievement.ExplosionKiller.set(data)
             }
+            data.status["record.explosion.kill.current"] = "0"
+        }
+    }
+}
 
-            // Check for QuillKiller achievement
-            if (playerUnit.type.name.contains("turret") && event.unit.type.name.equals("quill", true)) {
-                val currentTime = System.currentTimeMillis()
-                val lastKillTime = data.status.getOrDefault("record.turret.quill.kill.time", "0").toLong()
-                val killCount = if (currentTime - lastKillTime < 10000) {
-                    data.status.getOrDefault("record.turret.quill.kill", "0").toInt() + 1
-                } else {
-                    1
-                }
+/**
+ * CrawlerBlockDestroyer: "destroy 5 blocks with a single crawler unit attack". The old implementation lived
+ * inside [unitDestroy] and checked `event.unit.type.name` - the DESTROYED UNIT's type - against
+ * "wall"/"turret"/"factory". A UnitDestroyEvent never carries a block: those substrings can only ever
+ * match a unit's own type name, which they never do, so the achievement could not fire.
+ *
+ * A crawler's death explosion is a real `Weapon` with `shootOnDeath = true` (verified against the
+ * decompiled `mindustry.content.UnitTypes` crawler definition, v159.7), so the block it destroys dies to a
+ * genuine `Bullet` whose `owner` is the crawler - unlike [UnitDestroyEvent], which the rest of this file
+ * already established carries no killer at all (task-102/083). `BuildingBulletDestroyEvent` is the correct
+ * hook: it hands us the block and the bullet that killed it, and the bullet's owner is real attribution
+ * the engine actually provides, not one this fix invents.
+ */
+@Event
+fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
+    // Neither field carries an arc.util.Nullable annotation, but matching unitBulletDestroy's caution
+    // against an unannotated Java platform type rather than trusting it.
+    val build = event.build ?: return
+    val bullet = event.bullet ?: return
+    val owner = bullet.owner as? Unit ?: return
+    if (owner.type != UnitTypes.crawler) return
+    val player = owner.player ?: return
+    // Without this, a player could farm the achievement by crawler-bombing their own team's or
+    // derelict's blocks - the old UnitDestroyEvent-based code required event.unit.team() != player.team()
+    // and that check was dropped along with the rest of that dead branch. Restored here.
+    if (build.team() == player.team()) return
+    val data = findPlayerData(player.uuid()) ?: return
 
-                data.status["record.turret.quill.kill"] = killCount.toString()
-                data.status["record.turret.quill.kill.time"] = currentTime.toString()
+    // "Destroy 5 blocks with a single crawler unit attack": a crawler has exactly one weapon (the
+    // shootOnDeath explosion, fired once), so each crawler death is one attack and every block it
+    // destroys in that blast shares the same Bullet instance. Counting by bullet id, not lifetime kills,
+    // is what "with a single ... attack" actually means - reset rather than accumulate across attacks.
+    // .bullet.current, not .bullet: only .time/.current/.duration-suffixed keys are excluded from
+    // PlayerData's merge-summing (see NON_TOTAL_RECORD_KEYS in common/database/data/PlayerData.kt, not
+    // mine to edit), so this borrows the existing generic .current exclusion rather than needing a change
+    // there for a key that was never meant to be summed across two accounts in the first place.
+    val bulletId = bullet.id()
+    val lastBulletId = data.status.getOrDefault("record.crawler.block.destroy.bullet.current", "-1").toIntOrNull()
+    val count = if (bulletId == lastBulletId) {
+        data.status.getOrDefault("record.crawler.block.destroy.current", "0").toInt() + 1
+    } else {
+        1
+    }
+    data.status["record.crawler.block.destroy.bullet.current"] = bulletId.toString()
+    data.status["record.crawler.block.destroy.current"] = count.toString()
 
-                if (killCount >= 5 && Achievement.QuillKiller.success(data)) {
-                    Achievement.QuillKiller.set(data)
-                }
-            }
-
-            // Check for ZenithKiller achievement
-            if (playerUnit.type.name.contains("turret") && event.unit.type.name.equals("zenith", true)) {
-                val currentTime = System.currentTimeMillis()
-                val lastKillTime = data.status.getOrDefault("record.turret.zenith.kill.time", "0").toLong()
-                val killCount = if (currentTime - lastKillTime < 10000) {
-                    data.status.getOrDefault("record.turret.zenith.kill", "0").toInt() + 1
-                } else {
-                    1
-                }
-
-                data.status["record.turret.zenith.kill"] = killCount.toString()
-                data.status["record.turret.zenith.kill.time"] = currentTime.toString()
-
-                if (killCount >= 30 && Achievement.ZenithKiller.success(data)) {
-                    Achievement.ZenithKiller.set(data)
-                }
-            }
-
-            // Check for OmuraHorizonKiller achievement
-            if (playerUnit.type.name.equals("omura", true) && event.unit.type.name.equals("horizon", true)) {
-                val multiKillCount =
-                    data.status.getOrDefault("record.omura.horizon.kill.current", "0").toInt() + 1
-                data.status["record.omura.horizon.kill.current"] = multiKillCount.toString()
-
-                // If 5 or more horizon units were destroyed simultaneously
-                if (multiKillCount >= 5) {
-                    data.status["record.omura.horizon.kill"] = "1"
-                    if (Achievement.OmuraHorizonKiller.success(data)) {
-                        Achievement.OmuraHorizonKiller.set(data)
-                    }
-                    // Reset counter
-                    data.status["record.omura.horizon.kill.current"] = "0"
-                }
-            }
-
-            // Check for ExplosionKiller achievement - when a unit explodes and kills other units
-            if (event.unit.type.name.equals("crawler", true)) {
-                val explosionKillCount =
-                    data.status.getOrDefault("record.explosion.kill.current", "0").toInt() + 1
-                data.status["record.explosion.kill.current"] = explosionKillCount.toString()
-
-                if (explosionKillCount >= 10) {
-                    data.status["record.explosion.kill"] = "1"
-                    if (Achievement.ExplosionKiller.success(data)) {
-                        Achievement.ExplosionKiller.set(data)
-                    }
-                    // Reset counter
-                    data.status["record.explosion.kill.current"] = "0"
-                }
-            }
+    if (count >= Achievement.CrawlerBlockDestroyer.value()) {
+        // Achievement.CrawlerBlockDestroyer.current() reads record.crawler.block.destroy and compares it
+        // against value() (5) - a literal "1" here (a second opus review's catch) made that comparison
+        // always false and the achievement permanently unearnable regardless of the rest of this fix.
+        data.status["record.crawler.block.destroy"] = count.toString()
+        if (Achievement.CrawlerBlockDestroyer.success(data)) {
+            Achievement.CrawlerBlockDestroyer.set(data)
         }
     }
 }

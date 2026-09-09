@@ -1,6 +1,7 @@
 package essential.core.service.achievements
 
 import arc.util.Strings
+import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
 import essential.common.util.PlayerLookup
@@ -16,15 +17,19 @@ class Commands {
     fun achievements(playerData: PlayerData, args: Array<String>) {
         val temp: MutableList<String?> = arrayListOf()
         val bundle = try {
-            ResourceBundle.getBundle("bundles/achievements/bundle", Locale.forLanguageTag(playerData.player.locale().replace("_", "-")))
+            Bundle.resolve("bundles/achievements/bundle", Locale.forLanguageTag(playerData.player.locale().replace("_", "-")))
         } catch (e: MissingResourceException) {
-            ResourceBundle.getBundle("bundles/achievements/bundle", Locale.ENGLISH)
+            Bundle.resolve("bundles/achievements/bundle", Locale.ENGLISH)
         }
 
+        // Each achievement's success() is computed once and reused: it used to be called twice for every
+        // hidden-and-passing achievement (once for visibility, once for the "cleared" marker), and
+        // Achievement.mapHash re-reads and MD5-hashes the whole map file on every call - see Achievement.kt.
         for (ach in Achievement.entries) {
-            if (!ach.isHidden || (ach.isHidden && ach.success(playerData))) {
+            val achieved = ach.success(playerData)
+            if (!ach.isHidden || achieved) {
                 val name: String = ach.toString().lowercase(Locale.getDefault())
-                val cleared = if (ach.success(playerData)) "[sky][" + bundle.getString("cleared") + "][] " else ""
+                val cleared = if (achieved) "[sky][" + bundle.getString("cleared") + "][] " else ""
                 temp.add(cleared + bundle.getString("achievement.$name") + "[orange] (" + ach.current(playerData) + " / " + ach.value() + ")[][]\n")
                 temp.add("[yellow]" + bundle.getString("description.$name") + "[]\n")
                 temp.add("\n")
@@ -97,12 +102,12 @@ class Commands {
     fun clientSetMapProvider(playerData: PlayerData, args: Array<String>) {
         // Check if the player has admin permission
         if (!Permission.check(playerData, "admin")) {
-            playerData.err("permission.denied")
+            playerData.err("command.permission.false")
             return
         }
 
         if (args.isEmpty()) {
-            playerData.err("Please specify a player name")
+            playerData.err("command.player.name.required")
             return
         }
 
@@ -112,9 +117,9 @@ class Commands {
         player.status["record.map.provider"] = "1"
         if (Achievement.MapProvider.success(player)) {
             Achievement.MapProvider.set(player)
-            playerData.send("MapProvider achievement set for player: ${player.name}")
+            playerData.send("command.setmapprovider.success", player.name)
         } else {
-            playerData.err("Failed to set MapProvider achievement for player: ${player.name}")
+            playerData.err("command.setmapprovider.failure", player.name)
         }
     }
 
@@ -122,12 +127,12 @@ class Commands {
     fun clientSetFeedbackProvider(playerData: PlayerData, args: Array<String>) {
         // Check if the player has admin permission
         if (!Permission.check(playerData, "admin")) {
-            playerData.err("permission.denied")
+            playerData.err("command.permission.false")
             return
         }
 
         if (args.isEmpty()) {
-            playerData.err("Please specify a player name")
+            playerData.err("command.player.name.required")
             return
         }
 
@@ -137,9 +142,9 @@ class Commands {
         player.status["record.feedback.provider"] = "1"
         if (Achievement.FeedbackProvider.success(player)) {
             Achievement.FeedbackProvider.set(player)
-            playerData.send("FeedbackProvider achievement set for player: ${player.name}")
+            playerData.send("command.setfeedbackprovider.success", player.name)
         } else {
-            playerData.err("Failed to set FeedbackProvider achievement for player: ${player.name}")
+            playerData.err("command.setfeedbackprovider.failure", player.name)
         }
     }
 }

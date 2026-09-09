@@ -377,6 +377,19 @@ enum class Achievement {
         override fun current(data: PlayerData): Int{
             return data.status.getOrDefault("record.time.sandbox", "0").toInt()
         }
+
+        // The base success() below refuses whenever infiniteResources is on, to stop other achievements
+        // being cheesed in sandbox mode. record.time.sandbox is only ever incremented in that same mode
+        // (AchievementEvents.achievementSweep's infiniteResources branch), so the base guard made Creator
+        // unreachable in the only mode that can earn it. Same check as the base, minus that one guard.
+        override fun success(data: PlayerData): Boolean {
+            val achievementName = this.toString().lowercase(Locale.getDefault())
+            if (data.achievementStatus.contains(achievementName)) {
+                return true
+            }
+
+            return current(data) >= value()
+        }
     },
     Eliminator {
         override fun value(): Int{
@@ -505,7 +518,11 @@ enum class Achievement {
         }
     },
 
-    // Specific map clear achievements
+    // Specific map clear achievements. The mapHash check that used to live in success() below has moved to
+    // AchievementEvents.gameover's win path: success() is a predicate every caller (including /ach's
+    // hidden-achievement visibility check) is entitled to call without side effects, and it used to write
+    // data.status["record.map.clear.asteroids"] = "1" just from being asked "is this hidden", awarding the
+    // map to anyone who typed /ach while standing on it, win or not.
     Asteroids {
         override fun value(): Int{
             return 1
@@ -515,16 +532,6 @@ enum class Achievement {
 
         override fun current(data: PlayerData): Int{
             return data.status.getOrDefault("record.map.clear.asteroids", "0").toInt()
-        }
-
-        override fun success(data: PlayerData): Boolean {
-            val mapHash = "7b032cc7815022be644d00a877ae0388"
-            if (Achievement.mapHash == mapHash) {
-                data.status["record.map.clear.asteroids"] = "1"
-                return true
-            } else {
-                return false
-            }
         }
     },
 
@@ -537,16 +544,6 @@ enum class Achievement {
 
         override fun current(data: PlayerData): Int{
             return data.status.getOrDefault("record.map.clear.transcendence", "0").toInt()
-        }
-
-        override fun success(data: PlayerData): Boolean {
-            val mapHash = "f355b3d91d5d8215e557ff045b3864ef"
-            if (Achievement.mapHash == mapHash) {
-                data.status["record.map.clear.transcendence"] = "1"
-                return true
-            } else {
-                return false
-            }
         }
     },
 
@@ -667,17 +664,38 @@ enum class Achievement {
     }
 
     companion object {
-        private val mapHash: String?
+        // Memoised per map file: this used to re-read and MD5 the whole map file on every access, and
+        // /ach called it up to twice per hidden achievement (see Commands.kt), so a large map stalled the
+        // game thread repeatedly at any rate a player chose to type the command. Recomputed only when the
+        // loaded map's file path changes, which a map load always does.
+        private var cachedMapPath: java.nio.file.Path? = null
+        private var cachedMapHash: String? = null
+
+        // internal: AchievementEvents.gameover reads this to award Asteroids/Transcendence on a real win.
+        internal val mapHash: String?
             get() {
-                try {
-                    val data = Files.readAllBytes(Vars.state.map.file.file().toPath())
-                    val hash = MessageDigest.getInstance("MD5").digest(data)
-                    return BigInteger(1, hash).toString(16)
-                } catch (e: NoSuchAlgorithmException) {
-                    return ""
-                } catch (e: IOException) {
+                val path = try {
+                    Vars.state.map.file.file().toPath()
+                } catch (e: Exception) {
                     return ""
                 }
+
+                if (path != cachedMapPath) {
+                    try {
+                        val data = Files.readAllBytes(path)
+                        val hash = MessageDigest.getInstance("MD5").digest(data)
+                        cachedMapHash = BigInteger(1, hash).toString(16)
+                        cachedMapPath = path
+                    } catch (e: NoSuchAlgorithmException) {
+                        // Leave cachedMapPath unset so a transient failure doesn't permanently cache ""
+                        // for this map - the next call retries instead of being stuck wrong all game.
+                        return ""
+                    } catch (e: IOException) {
+                        return ""
+                    }
+                }
+
+                return cachedMapHash
             }
     }
 }
