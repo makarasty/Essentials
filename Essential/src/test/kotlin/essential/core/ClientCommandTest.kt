@@ -7,6 +7,7 @@ import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.log
 import PluginTest.Companion.newPlayer
+import PluginTest.Companion.observeMessages
 import PluginTest.Companion.player
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.updateTick
@@ -120,9 +121,11 @@ class ClientCommandTest {
 
         // If target player not found
         clientCommand.handleMessage("/changename yammi eat", player)
+        val notFound = err("player.not.found")
+        val changenameSeen = observeMessages(playerData, 5000) { it == notFound }
         assertTrue(
-            waitUntil(5000) { playerData.lastReceivedMessage == err("player.not.found") },
-            "changename should report a missing player but was ${playerData.lastReceivedMessage}"
+            changenameSeen.any { it == notFound },
+            "changename should report a missing player, saw: $changenameSeen"
         )
     }
 
@@ -623,10 +626,9 @@ class ClientCommandTest {
 
         // Test info command with not exist player
         clientCommand.handleMessage("/info nonexistentplayer", player)
-        assertTrue(
-            waitUntil(2000) { playerData.lastReceivedMessage == err("player.not.found") },
-            "info should report a missing player but was ${playerData.lastReceivedMessage}"
-        )
+        val infoMissing = err("player.not.found")
+        val infoSeen = observeMessages(playerData, 2000) { it == infoMissing }
+        assertTrue(infoSeen.any { it == infoMissing }, "info should report a missing player, saw: $infoSeen")
     }
 
     @Test
@@ -900,12 +902,10 @@ class ClientCommandTest {
         run {
             val expected1 = err("command.ranking.wrong")
             val expected2 = err("player.not.found")
+            val rankingSeen = observeMessages(playerData, 2000) { it == expected1 || it == expected2 }
             assertTrue(
-                waitUntil(2000) {
-                    val msg = playerData.lastReceivedMessage
-                    msg == expected1 || msg == expected2
-                },
-                "ranking said: ${playerData.lastReceivedMessage}"
+                rankingSeen.any { it == expected1 || it == expected2 },
+                "ranking said: $rankingSeen"
             )
         }
 
@@ -940,11 +940,11 @@ class ClientCommandTest {
 
         // Test rollback command with valid player
         clientCommand.handleMessage("/rollback ${dummy.first.name}", player)
+        val rollbackDone = Bundle()["command.rollback.success", dummy.first.name, 1]
+        val rollbackSeen = observeMessages(playerData, 10000) { it == rollbackDone }
         assertTrue(
-            waitUntil(10000) {
-                playerData.lastReceivedMessage == Bundle()["command.rollback.success", dummy.first.name, 1]
-            },
-            "Rollback should report success but was ${playerData.lastReceivedMessage}"
+            rollbackSeen.any { it == rollbackDone },
+            "Rollback should report success, saw: $rollbackSeen"
         )
         updateTick(64)
         assertNotEquals(Blocks.thoriumWall, world.tile(10, 10).block())
@@ -1415,10 +1415,9 @@ class ClientCommandTest {
         clientCommand.handleMessage("/setperm $uuid admin", player)
         assertEquals(log("command.setPerm.queued", PlayerLookup.shortName(uuid)), playerData.lastReceivedMessage)
 
-        assertTrue(
-            waitUntil(10000) { playerData.lastReceivedMessage == log("command.setPerm.success", name, "admin") },
-            "the result should follow but was ${playerData.lastReceivedMessage}"
-        )
+        val setPermDone = log("command.setPerm.success", name, "admin")
+        val setPermSeen = observeMessages(playerData, 10000) { it == setPermDone }
+        assertTrue(setPermSeen.any { it == setPermDone }, "the result should follow, saw: $setPermSeen")
     }
 
     @Test
@@ -1433,9 +1432,11 @@ class ClientCommandTest {
         admins.banPlayerID(uuid)
 
         clientCommand.handleMessage("/unban ${name.dropLast(3)}", player)
+        val unbanMissing = err("player.not.found")
+        val unbanSeen = observeMessages(playerData, 5000) { it == unbanMissing }
         assertTrue(
-            waitUntil(5000) { playerData.lastReceivedMessage == err("player.not.found") },
-            "unban by substring should report a missing player but was ${playerData.lastReceivedMessage}"
+            unbanSeen.any { it == unbanMissing },
+            "unban by substring should report a missing player, saw: $unbanSeen"
         )
         assertTrue(admins.isIDBanned(uuid), "a substring must never unban a player")
 
@@ -1455,12 +1456,14 @@ class ClientCommandTest {
 
         playerData.lastReceivedMessage = "sentinel"
         clientCommand.handleMessage("/info $name", player)
-        waitUntil(3000) { playerData.lastReceivedMessage != "sentinel" }
-
+        // Anything the plugin broadcasts to every player - an achievement announcement, a join notice -
+        // also lands in this slot, so the assertion is that no error arrived rather than that nothing did.
+        val seen = observeMessages(playerData, 3000) { false }
+        val errors = seen.filter { it.startsWith("[scarlet]") }
         assertEquals(
-            "sentinel",
-            playerData.lastReceivedMessage,
-            "info on an offline target should open the menu instead of reporting an error"
+            emptyList(),
+            errors,
+            "info on an offline target should open the menu instead of reporting an error, saw: $seen"
         )
     }
 
@@ -1479,9 +1482,12 @@ class ClientCommandTest {
 
             playerData.lastReceivedMessage = "sentinel"
             clientCommand.handleMessage("/mute clxtemporary", player)
+            val notRegistered = err("player.not.registered")
+            val muteSeen = observeMessages(playerData, 5000) { it == notRegistered }
             assertTrue(
-                waitUntil(5000) { playerData.lastReceivedMessage == err("player.not.registered") },
-                "mute on temporary data should report a missing account but was ${playerData.lastReceivedMessage}"
+                muteSeen.any { it == notRegistered },
+                "mute on temporary data should report a missing account, saw: $muteSeen; " +
+                    "players=${players.map { it.name }}, online=${Groups.player.map { it.plainName() }}"
             )
         } finally {
             players.remove(data)

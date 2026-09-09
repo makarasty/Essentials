@@ -4,12 +4,16 @@ import arc.Events
 import arc.Settings
 import arc.backend.headless.HeadlessApplication
 import arc.files.Fi
+import arc.func.Cons
 import arc.graphics.Camera
 import arc.graphics.Color
+import arc.struct.ObjectMap
+import arc.struct.Seq
 import arc.util.CommandHandler
 import arc.util.Log
 import arc.util.TaskQueue
 import arc.util.Time
+import arc.util.Timer
 import essential.common.bundle
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
@@ -21,6 +25,7 @@ import essential.common.database.data.getPluginData
 import essential.common.database.databaseClose
 import essential.common.database.defaultDatabase
 import essential.common.database.worldHistoryDatabase
+import essential.common.offlinePlayers
 import essential.common.players
 import essential.common.rootPath
 import essential.core.CoreConfig
@@ -61,6 +66,42 @@ import kotlin.test.*
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
+/**
+ * The whole suite runs in one JVM on one engine, so the plugin's global state - the world, `Groups.player`,
+ * the plugin's own `players` and `offlinePlayers` lists, `pluginData`, permission state, the H2 file -
+ * is shared by every test class rather than rebuilt per class. The contract that makes that survivable
+ * has one hook, [loadGame], which every test class already calls from its `@BeforeTest`.
+ *
+ * **What a class may assume on entry.** The first [loadGame] call a class makes resets the shared state
+ * for it: every player left connected by the previous class is disconnected, both `players` and
+ * `offlinePlayers` are emptied, the world is [testMap] at [testMap]'s size with the game playing,
+ * `limitMapArea` is off and no team has build AI. So a class starts on the harness map with nobody
+ * online. It may assume nothing else - not the database contents, not `pluginData`, not `Main.conf`,
+ * not the engine's `Settings`, and not `state.rules` beyond the two fields named above - because those
+ * are not reset and other classes write them.
+ *
+ * **What a class must leave on exit.** Nothing. The reset is on entry on purpose: the class that has to
+ * be cleaned up after is exactly the one that died halfway through and never reached its own teardown.
+ * A class that restores what it changed still helps the run, but no other class depends on it doing so.
+ *
+ * **What that costs you.** Two things follow from the reset being per class rather than per test method.
+ * A class holding a player across its own test methods (the `private var done` idiom) keeps that player
+ * for the whole class, and interference between its own methods is its own to solve. And a class whose
+ * `@BeforeTest` calls [loadGame] on every method still resets once, on the first, because the reset is
+ * keyed to the calling class rather than to the call.
+ *
+ * **What [stopPlugin] undoes, and what it does not.** It closes the databases, deletes the H2 files and
+ * takes the plugin's arc event listeners back off, because `Main.init` registers them and a plugin that
+ * a real server loads once has no unload path - without that, every later [loadPlugin] stacked another
+ * whole set, one `Events.fire` ran the plugin's handler once per historical load, and the achievement
+ * sweep ran once a second per load. It does not stop the two threads `Main.init` starts or remove the
+ * `Administration.ActionFilter` it installs; those still accumulate across a run.
+ *
+ * **What is not the harness's job.** State the plugin leaks that a real server would leak too - a
+ * listener a running server never removes, a task it never cancels - is a production defect the suite
+ * would be hiding by cleaning up after it. Report those rather than adding them here. The listener
+ * teardown above is not one of those: it undoes a registration only a test can cause twice.
+ */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class PluginTest {
     companion object {
@@ -78,12 +119,88 @@ class PluginTest {
 
         var testMap: Map? = null
 
+        private var currentTestClass: String? = null
+
+        /**
+         * The test class that called into the harness, so [loadGame] can tell a new class apart from a
+         * second call by the class already running.
+         *
+         * PluginTest's own tests call [loadGame] too and their frames carry this class's name, so the
+         * walk steps over the harness's own frames and reads what is behind them. For PluginTest itself
+         * that is a JDK reflection frame whose identity varies with the JDK and with whether the
+         * accessor has been inflated yet, and treating two of those as two classes would fire a reset in
+         * the middle of a test, so anything that is not a project frame is reported as PluginTest.
+         */
+        private fun callerTestClass(): String {
+            val frames = Thread.currentThread().stackTrace
+            var i = frames.indexOfFirst { it.className.substringBefore('$') == "PluginTest" }
+            if (i < 0) return "PluginTest"
+            while (i < frames.size && frames[i].className.substringBefore('$') == "PluginTest") i++
+            val caller = frames.getOrNull(i) ?: return "PluginTest"
+            val name = caller.className.substringBefore('$')
+            val foreign = caller.fileName == null ||
+                listOf("java.", "jdk.", "sun.", "org.junit.", "kotlin.").any { name.startsWith(it) }
+            return if (foreign) "PluginTest" else name
+        }
+
+        /**
+         * Puts the engine back into the state [loadGame] leaves behind on a cold boot, so the class
+         * about to start does not inherit the last one's world or its players.
+         *
+         * Disconnecting a leftover player is best effort, because a class that died halfway is exactly
+         * the case this exists for and one unhappy player must not fail the class that is cleaning up
+         * after it. The world is not best effort: `world.loadMap` empties the world before it reads the
+         * map back, so a read that failed silently would hand every later class a 0x0 world.
+         */
+        private fun resetSharedState() {
+            val leftovers = Groups.player.toList()
+            if (leftovers.isNotEmpty()) {
+                leftovers.forEach { leaving ->
+                    runCatching {
+                        leaving.unit()?.takeIf { it.isValid }?.remove()
+                        NetServer.onDisconnect(leaving, "test class boundary")
+                        Events.fire(EventType.PlayerLeave(leaving))
+                    }
+                    runCatching { leaving.remove() }
+                }
+                runCatching { Groups.player.update() }
+                waitUntil(3000) { players.isEmpty() && Groups.player.size() == 0 }
+            }
+            // Outside that guard on purpose: a class that ran while the plugin was stopped still leaves
+            // rows in both lists, and the reload below runs Groups.clear(), which would otherwise leave
+            // the plugin holding players the engine no longer has.
+            players.clear()
+            offlinePlayers.clear()
+
+            // Reloaded only when the world is not already the one the cold boot leaves behind. loadMap
+            // fires WorldLoadEvent, which starts the plugin's async map work, and the three classes that
+            // repoint defaultDatabase straight after loadGame would take that work on the database they
+            // have just swapped in.
+            val map = testMap
+            if (map != null && (state.map !== map || world.width() != map.width || world.height() != map.height)) {
+                world.loadMap(map)
+                logic.play()
+                state.set(GameState.State.playing)
+            }
+            check(world.width() > 0 && world.height() > 0) {
+                "class-entry reset left an empty world: ${map?.name()} came back ${world.width()}x${world.height()}"
+            }
+            state.rules.limitMapArea = false
+            Team.all.forEach { t -> state.rules.teams.get(t).buildAi = false }
+        }
+
         @OptIn(ExperimentalPathApi::class)
         fun loadGame(loadPlugin: Boolean = false, deleteConfig: Boolean = true, logHandler: (String) -> Unit = {}, force: Boolean = false) {
             if (gameLoaded && !force) {
+                val caller = callerTestClass()
+                if (caller != currentTestClass) {
+                    currentTestClass = caller
+                    resetSharedState()
+                }
                 if (loadPlugin) loadPlugin()
                 return
             }
+            currentTestClass = callerTestClass()
             Core.settings = Settings()
             Core.settings.dataDirectory = Fi("")
             path = Core.settings.dataDirectory
@@ -233,8 +350,45 @@ class PluginTest {
             }
         }
 
+        /** arc keeps its listeners in one private static map, and nothing public can enumerate them. */
+        @Suppress("UNCHECKED_CAST")
+        private fun eventListenerTable(): ObjectMap<Any, Seq<Cons<*>>> {
+            val field = Events::class.java.getDeclaredField("events")
+            field.isAccessible = true
+            return field.get(null) as ObjectMap<Any, Seq<Cons<*>>>
+        }
+
+        /** Same story for arc's timer: the scheduled tasks are reachable only through this field. */
+        @Suppress("UNCHECKED_CAST")
+        private fun scheduledTasks(): List<Timer.Task> {
+            val field = Timer::class.java.getDeclaredField("tasks")
+            field.isAccessible = true
+            val timer = Timer.instance()
+            return synchronized(timer) { (field.get(timer) as Seq<Timer.Task>).toList() }
+        }
+
+        // Written from the application thread on the cold path, read from the JUnit thread.
+        @Volatile
+        private var listenerBaseline: kotlin.collections.Map<Any, Int>? = null
+
+        @Volatile
+        private var timerBaseline: kotlin.collections.Set<Timer.Task>? = null
+
         fun loadPlugin(force: Boolean = false) {
             if (pluginLoaded && !force) return
+
+            // Main.init() registers the plugin's listeners and schedules its repeating timer tasks, and
+            // has no unload path, because a real server loads a plugin once and then exits. stopPlugin()
+            // therefore has to take both off itself: without this every later load stacked another whole
+            // set, one Trigger.update or TapEvent ran the plugin's handler once per load, and the
+            // achievement sweep ran once a second per load instead of once a second.
+            // Recorded only when no generation is live: a forced reload over a running plugin would
+            // otherwise make that generation's registrations the baseline and leave them for good.
+            if (listenerBaseline == null) {
+                listenerBaseline = eventListenerTable().associate { it.key to it.value.size }
+                timerBaseline = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Timer.Task, Boolean>())
+                    .apply { addAll(scheduledTasks()) }
+            }
 
             Main.conf = Main.conf.copy(
                 module = Main.conf.module.copy(
@@ -260,6 +414,14 @@ class PluginTest {
 
         fun stopPlugin() {
             Log.logger = baseLogHandler
+            listenerBaseline?.let { baseline ->
+                eventListenerTable().forEach { entry -> entry.value.truncate(baseline[entry.key] ?: 0) }
+                listenerBaseline = null
+            }
+            timerBaseline?.let { baseline ->
+                scheduledTasks().forEach { task -> if (task !in baseline) runCatching { task.cancel() } }
+                timerBaseline = null
+            }
             runBlocking {
                 listOfNotNull(defaultDatabase, worldHistoryDatabase).forEach { db ->
                     try {
@@ -389,7 +551,10 @@ class PluginTest {
          * @param player 플레이어
          */
         fun leavePlayer(player: Playerc) {
-            player.unit().takeIf { it.isValid }?.remove()
+            // Player.unit() is nullable and PlayerComp.update() nulls it the moment the unit stops being
+            // valid, which any tick of the simulation can do. Dereferencing it made a dead unit a test
+            // failure in the teardown of a test that had already passed.
+            player.unit()?.takeIf { it.isValid }?.remove()
             NetServer.onDisconnect(player.self(), "Player leaved")
             Events.fire(EventType.PlayerLeave(player.self()))
             player.remove()
@@ -439,15 +604,49 @@ class PluginTest {
         /**
          * Runs everything queued with Core.app.post, since the headless main loop is stopped in tests.
          */
+        // Looked up once: observeMessages pumps in a tight loop, and a getDeclaredField per turn there
+        // is most of the loop's cost.
+        private val runnablesField = try {
+            HeadlessApplication::class.java.getDeclaredField("runnables").apply { isAccessible = true }
+        } catch (_: Exception) {
+            null
+        }
+
         fun pumpApp() {
             val queue = try {
-                val field = HeadlessApplication::class.java.getDeclaredField("runnables")
-                field.isAccessible = true
-                field.get(Core.app) as TaskQueue
+                runnablesField?.get(Core.app) as? TaskQueue ?: return
             } catch (_: Exception) {
                 return
             }
             queue.run()
+        }
+
+        /**
+         * Every distinct value [data]'s message slot took while this waited, oldest first, stopping as
+         * soon as one of them satisfies [until].
+         *
+         * PlayerData keeps only the newest message it was sent, so an assertion written as
+         * `waitUntil { lastReceivedMessage == expected }` loses to any broadcast that lands behind the
+         * reply it was waiting for - an achievement announcement, a join notice - and reads as if the
+         * reply never came. Polling without sleeping and keeping what was seen makes the assertion about
+         * what arrived, and makes the failure message say what arrived instead.
+         */
+        fun observeMessages(data: PlayerData, timeoutMs: Long = 5000, until: (String) -> Boolean): List<String> {
+            val seen = LinkedHashSet<String>()
+            var last = data.lastReceivedMessage
+            seen.add(last)
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (true) {
+                if (seen.any(until)) break
+                if (System.currentTimeMillis() >= deadline) break
+                pumpApp()
+                val now = data.lastReceivedMessage
+                if (now != last) {
+                    seen.add(now)
+                    last = now
+                }
+            }
+            return seen.toList()
         }
 
         /**
