@@ -170,7 +170,9 @@ class APMTracker {
             }
         }
 
-        // Track player actions
+        // apmTimestamps is a plain ArrayList. Every caller is on the game thread, the Timer
+        // sweep included, because arc posts task bodies to Core.app (Timer.update calls
+        // task.app.post). Do not call this from a coroutine.
         fun trackAction(data: PlayerData) {
             data.apmTimestamps.add(System.currentTimeMillis())
 
