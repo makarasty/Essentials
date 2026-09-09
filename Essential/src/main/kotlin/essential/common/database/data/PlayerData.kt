@@ -29,10 +29,9 @@ import kotlin.time.ExperimentalTime
 internal val statusJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
 /**
- * Keys under this prefix are achievement progress, and are the only part of `status` that is saved.
- *
- * The prefix is load-bearing: a counter named anything else is session state, and will not survive a
- * restart, a reconnect, or a move to another server on the same database.
+ * Keys under this prefix are achievement progress and the only part of `status` that is saved. A
+ * counter named anything else is session state, and will not survive a restart, a reconnect, or a move
+ * to another server on the same database.
  */
 internal const val RECORD_PREFIX = "record."
 
@@ -64,8 +63,6 @@ internal val NON_TOTAL_RECORD_KEYS = setOf(
 )
 
 /**
- * Whether a `record.*` key may be added to the same key on another account.
- *
  * Both merge paths must use this rather than each spelling out a rule: an account merge and a
  * temporary-data merge that disagree about one key is one of them handing out an achievement the
  * other refuses. The suffix test is a backstop, not the rule - a new window that nobody remembered to
@@ -127,11 +124,7 @@ data class PlayerData(
     var isBanned: Boolean = false,
     var banExpireDate: LocalDateTime? = null,
     var attendanceDays: Int = 0,
-    /**
-     * The `record.*` half of [status] as JSON; read on load, rewritten from the map on every [update].
-     *
-     * Null on a row written before the column existed.
-     */
+    /** The `record.*` half of [status] as JSON; read on load, rewritten from the map on every [update]. */
     var statusData: String? = null
 ) {
     // Exp
@@ -189,13 +182,10 @@ data class PlayerData(
     var player: Playerc = Player.create()
 
     /**
-     * Two kinds of key share this map.
-     *
-     * `record.*` are the achievement counters, and those are the ones [statusData] carries between
-     * sessions and between servers. Everything else - a half-finished hub block selection, the
-     * pendingLogin confirmation token, the chat page a player is on - belongs to the session that
-     * created it, and is deliberately not persisted: a confirmation that outlives the conversation
-     * it belongs to is a confirmation nobody gave.
+     * Only the `record.*` keys are persisted, through [statusData]. Everything else - a half-finished
+     * hub block selection, the pendingLogin confirmation token, the chat page a player is on - belongs
+     * to the session that created it: a confirmation that outlives the conversation it belongs to is a
+     * confirmation nobody gave.
      *
      * Concurrent because the achievement handlers write it from the game thread while [update] runs
      * from a coroutine.

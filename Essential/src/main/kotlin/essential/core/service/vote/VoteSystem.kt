@@ -48,10 +48,9 @@ private fun isNo(message: String) = message.trim().lowercase() in noWords
  *
  * Only the plugin's own backups are eligible. They are written by the map backup task, capped by
  * `command.rollback.limit` and deleted on every world load, so the newest one always belongs to the map
- * being played. The engine's `auto_*` autosaves are not: they survive a map change, the first one on a
- * new map is not written for `autosaveSpacing` seconds, and `SaveIO.load` performs no map check - so for
- * that window the newest autosave on disk is the previous map, and restoring it would swap the server
- * onto it.
+ * being played. The engine's `auto_*` autosaves survive a map change, the first one on a new map is not
+ * written for `autosaveSpacing` seconds, and `SaveIO.load` performs no map check - so for that window
+ * the newest autosave on disk is the previous map, and restoring it would swap the server onto it.
  *
  * The timestamps are compared as longs. Arc's `Seq.min` and `Seq.max` read them through a float, which
  * at the current epoch cannot separate two saves written within about two minutes of each other.
@@ -62,9 +61,8 @@ internal fun findVoteBackSave(): Fi? =
         .maxByOrNull { it.lastModified() }
 
 /**
- * The repeating decay the `vote random` fire outcome leaves behind: every ten seconds it takes nine
- * tenths of every unit's health and twenty nine thirtieths of every building's, [ticks] times, calling
- * [onSupply] at the half way mark. It stops when the world is replaced, and when the countdown runs out.
+ * The repeating decay the `vote random` fire outcome leaves behind. It stops when the world is
+ * replaced, and when the countdown runs out.
  *
  * The returned task is the one that was scheduled, so cancelling it stops the decay. Written as a
  * `java.util.TimerTask` this still compiled - that class is a [Runnable], so `Timer.schedule` bound its

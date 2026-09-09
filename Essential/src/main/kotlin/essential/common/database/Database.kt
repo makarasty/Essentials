@@ -131,12 +131,10 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     reshapeMapRatingIndex()
 
-    // Flyway keeps its own history table and knows nothing about plugin_data.database_version.
-    // With baselineVersion("5") its answer here is the constant 5 whether it migrated anything,
-    // baselined an untouched schema, or found a schema another server had already baselined, so
-    // feeding it into updatePluginVersion marked a legacy upgrade that had just aborted as done and
-    // every later start skipped the legacy path. plugin_data.database_version is now written only by
-    // the legacy upgrade, and only when it reaches its end.
+    // With baselineVersion("5") Flyway's answer here is the constant 5 whether it migrated anything,
+    // baselined an untouched schema, or found one another server had baselined, so feeding it into
+    // updatePluginVersion marked a legacy upgrade that had just aborted as done and every later start
+    // skipped the legacy path. plugin_data.database_version is now written only by the legacy upgrade.
     runFlywayMigration(databaseType, r2dbcUrl, user, pass)
 }
 
@@ -274,9 +272,8 @@ private suspend fun updatePluginVersion(version: UByte) {
  * The legacy upgrade scripts to try for one version step, most specific first.
  *
  * The generic `v<n>.sql` is the MySQL-flavoured script, so it is the correct fallback for MySQL and
- * MariaDB, which ship no suffixed file of their own. An `_h2` entry in the middle of this list used
- * to win instead, which fed H2-only syntax - `CURRENT_TIMESTAMP(9)`, `ADD COLUMN IF NOT EXISTS`,
- * `DROP CONSTRAINT IF EXISTS` - to every other engine and left `v<n>.sql` unreachable.
+ * MariaDB, which ship no suffixed file of their own. An `_h2` entry in the middle of this list used to
+ * win instead, feeding H2-only syntax to every other engine and leaving `v<n>.sql` unreachable.
  */
 internal fun legacySqlCandidates(version: UByte, dialect: DatabaseDialect?): List<String> {
     val suffix = when (dialect) {
@@ -331,10 +328,9 @@ private suspend fun upgradeLegacyDatabase() {
             return
         }
 
-        // Zero is not a legacy version: the only thing that ever wrote it is createPluginData(), on a
-        // database this build had just created at the current shape. The legacy scripts start at v4
-        // and rename tables that such a database does not have, so running them would fail on every
-        // start. Stamp the baseline instead.
+        // Zero is not a legacy version: only createPluginData() ever wrote it, on a database this build
+        // had just created at the current shape. The legacy scripts start at v4 and rename tables such
+        // a database does not have, so running them would fail on every start.
         if (currentVersion == 0u.toUByte()) {
             updatePluginVersion(LEGACY_BASELINE_VERSION)
             return
@@ -387,8 +383,8 @@ private suspend fun upgradeLegacyDatabase() {
             Log.info(bundle["database.upgrade.end"])
         }
     } catch (e: Exception) {
-        // The version column is deliberately left where it was: an upgrade that did not reach its end
-        // has to be retried on the next start, on this server and on every other one sharing the row.
+        // Deliberate: an upgrade that did not reach its end has to be retried on the next start, on
+        // this server and on every other one sharing the row.
         Log.warn("Legacy database upgrade did not finish, plugin_data.database_version was left unchanged: ${e.message}")
         e.printStackTrace()
     }

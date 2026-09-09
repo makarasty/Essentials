@@ -34,10 +34,7 @@ data class PluginData(
     /**
      * Six servers share this row, and each of them holds a copy taken at its own boot, so writing the
      * blob back whole erased everything the other five had written since. The stored row is re-read
-     * inside the write transaction and merged element by element against the copy this server read:
-     * what this server added is added, what it deleted is deleted, and everything else is taken from
-     * the stored row. A warp edit here no longer lifts a temp ban issued elsewhere, and two servers
-     * banning two different players no longer erase each other.
+     * inside the write transaction and merged element by element against the copy this server read.
      *
      * What is still lost: two servers changing the *same* element between one server's read and its
      * write - the same player's ban, the same warp - and, for map ratings, two servers rating the same
@@ -87,9 +84,9 @@ data class DisplayData(
 )
 
 /**
- * The stored collection, with what this server deleted taken out and what it added put back. Merging
- * per element rather than per collection is what keeps two servers banning two different players from
- * erasing each other.
+ * The stored collection, with what this server deleted taken out and what it added put back. Per
+ * element rather than per collection, so two servers banning two different players do not erase each
+ * other.
  */
 private fun <T> List<T>.mergedOnto(base: List<T>, stored: List<T>): ArrayList<T> {
     val deleted = base.filterNot { it in this }
@@ -106,8 +103,6 @@ private fun <K, V> Map<K, V>.mergedOnto(base: Map<K, V>, stored: Map<K, V>): Has
 }
 
 /**
- * Rebuilds the blob from the stored row plus this server's own changes.
- *
  * A new [DisplayData] is returned rather than the collections being cleared and refilled in place:
  * Trigger's ping loop takes `val data = pluginData.data` and then iterates `data.warpBlock` with
  * `iterator.remove()` and indexes `data.warpCount`, on its own thread, and its exception handler exits

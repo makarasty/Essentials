@@ -112,11 +112,9 @@ object WorldHistoryBuffer {
     }
 
     /**
-     * Writes everything queued so far, under the same lock the periodic flush takes.
-     *
-     * The lock is what makes this usable as "the table now holds everything recorded up to here": without
-     * it a batch the periodic flush had already drained could still be inside its transaction, and its
-     * rows would land after a caller had gone on to empty the table.
+     * Takes the periodic flush's own lock, which is what makes this usable as "the table now holds
+     * everything recorded up to here": without it a batch the periodic flush had already drained could
+     * still be inside its transaction, and its rows would land after a caller had emptied the table.
      */
     suspend fun flush() {
         flushMutex.withLock {
