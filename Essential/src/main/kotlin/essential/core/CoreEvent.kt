@@ -873,6 +873,16 @@ fun gameOver(event: GameOverEvent) {
         for (data in offlinePlayers) {
             earnEXP(event.winner, data.player, data, false)
         }
+        // An online player's exp mutation above rides along on whatever next persists that PlayerData -
+        // their own eventual leave, if nothing sooner. A player already offline has no such next write:
+        // this object is dropped for good below, so the EXP earnEXP just computed for them has to be
+        // persisted here or it never reaches the database at all.
+        if (offlinePlayers.isNotEmpty()) {
+            val toPersist = offlinePlayers.toList()
+            scope.launch {
+                for (data in toPersist) data.update()
+            }
+        }
     }
     offlinePlayers.clear()
 
