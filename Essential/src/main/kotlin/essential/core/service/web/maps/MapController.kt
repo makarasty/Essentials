@@ -430,7 +430,12 @@ class MapController {
         // Fetch and cache image if missing
         if (!withContext(Dispatchers.IO) { cacheFile.exists() }) {
             try {
-                val image = queueFetchMapImage(hash, msavBytes, map.file.name(), map.name(), width)
+                // A render job's own deadline is ten minutes, three attempts deep. Nothing waiting on an
+                // HTTP request should be held for that; the queue worker keeps rendering either way and
+                // writes the result to the cache, so a later request for the same image picks it up.
+                val image = withTimeoutOrNull(60.seconds) {
+                    queueFetchMapImage(hash, msavBytes, map.file.name(), map.name(), width)
+                }
                 if (image == null) {
                     call.respond(HttpStatusCode.BadGateway, "Failed to fetch map image")
                     return
@@ -585,7 +590,7 @@ class MapController {
         return null
     }
 
-    private fun fetchMapImageBatch(msavBytes: ByteArray, fileName: String, mapName: String, width: Int? = null): ByteArray? {
+    private suspend fun fetchMapImageBatch(msavBytes: ByteArray, fileName: String, mapName: String, width: Int? = null): ByteArray? {
         val baseUrl = conf.mapRenderServer.trim().trimEnd('/')
         val jobId = submitRenderJob(baseUrl, msavBytes, fileName, mapName, width)
             ?: return null
@@ -612,7 +617,8 @@ class MapController {
                     return null
                 }
                 "queued", "rendering" -> {
-                    Thread.sleep(pollIntervalMs)
+                    // delay releases the IO thread; Thread.sleep held one for the whole render.
+                    delay(pollIntervalMs)
                 }
                 else -> {
                     Log.err("Unknown job status '$status' for map '$mapName' (jobId=$jobId)")
