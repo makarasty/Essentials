@@ -424,7 +424,14 @@ class ServerCommandTest {
             waitUntil(10000) { runBlocking { getPlayerData(uuid)?.banExpireDate } == null },
             "unban should clear the ban expiry"
         )
-        assertFalse(Vars.netServer.admins.isIDBanned(uuid), "unban should lift the vanilla ban")
+        // /unban clears the row from its coroutine and then posts the two Administration writes to
+        // the game thread, because netServer.admins is engine state the main thread also reads. The
+        // row therefore goes null one queue drain before the vanilla ban lifts, so asserting on the
+        // engine the instant the row check passes is asserting before the work was allowed to run.
+        assertTrue(
+            waitUntil(10000) { !Vars.netServer.admins.isIDBanned(uuid) },
+            "unban should lift the vanilla ban"
+        )
     }
 
     @OptIn(ExperimentalTime::class)
