@@ -54,14 +54,24 @@ object ModuleRuntime {
         serviceDescriptors
             .filter { it.enabled() }
             .forEach { descriptor -> invokeCompanion(descriptor.implementationClass, "reloadConf") }
+        // ServerLoadEvent used to be the only caller of scheduleLevelEffects, so an operator who
+        // turned the feature on - or turned it off, letting the task cancel itself, and then on
+        // again - got nothing at all until the next restart.
+        if (Main.conf.feature.level.effect.enabled) scheduleLevelEffects()
     }
 
     fun processPlayerDataLoad(playerData: PlayerData) {
         invokeObject("essential.core.service.achievements.AchievementHooks", "processPlayerDataLoad", playerData)
     }
 
+    internal var levelEffects: Timer.Task? = null
+        private set
+
+    /** Idempotent, so a config reload can call it without stacking a second task on the timer. */
     fun scheduleLevelEffects() {
+        if (levelEffects?.isScheduled == true) return
         val task = instantiate("essential.core.service.effect.EffectSystem") as? Timer.Task ?: return
+        levelEffects = task
         Timer.schedule(task, 0f, 0.05f)
     }
 
