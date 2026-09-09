@@ -48,7 +48,9 @@ internal suspend fun indexesOn(table: String): List<String> = runCatching {
                 "FROM INFORMATION_SCHEMA.INDEXES i " +
                 "JOIN INFORMATION_SCHEMA.INDEX_COLUMNS c " +
                 "ON c.INDEX_NAME = i.INDEX_NAME AND c.TABLE_NAME = i.TABLE_NAME " +
-                "WHERE UPPER(i.TABLE_NAME) = UPPER('$table')"
+                "AND c.INDEX_SCHEMA = i.INDEX_SCHEMA AND c.TABLE_SCHEMA = i.TABLE_SCHEMA " +
+                "WHERE UPPER(i.TABLE_NAME) = UPPER('$table') " +
+                "ORDER BY i.INDEX_NAME, c.ORDINAL_POSITION"
     }
     suspendTransaction {
         exec(sql, explicitStatementType = StatementType.SELECT) { row ->

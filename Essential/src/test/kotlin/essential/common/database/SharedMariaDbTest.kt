@@ -34,6 +34,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -386,8 +387,10 @@ class SharedMariaDbTest {
                     "AND table_name = 'players' AND column_name = 'uuid' AND non_unique = 0"
             )
         }
-        assertEquals(
-            "1", uniqueOnUuid,
+        // Not "exactly one": a schema that enforces uuid twice - a named index beside a primary key on
+        // the same column - enforces what this test needs and must not be called a failure.
+        assertNotEquals(
+            "0", uniqueOnUuid,
             "players.uuid carries no unique index in `$database` on $host:$port, so nothing refuses a " +
                 "second insert and this test would prove nothing about what the loser of a race does. " +
                 "A schema built by resources/sql rather than by SchemaUtils looks exactly like this."

@@ -454,7 +454,15 @@ class PluginTest {
                             (name.startsWith("database") || name.startsWith("worldHistory")) &&
                             path != dataDir
                         }.sorted(Comparator.reverseOrder()).forEach { path ->
-                            path.toFile().delete()
+                            // Said out loud, because a delete that quietly did nothing is the defect
+                            // this loop was just repaired for: the next class boots on a database this
+                            // one meant to destroy, and the symptom surfaces as somebody else's
+                            // precondition failing three classes later. On Windows a file still held
+                            // open by a connection pool an earlier databaseInit replaced without
+                            // disposing is exactly how that happens.
+                            if (!path.toFile().delete() && Files.exists(path)) {
+                                Log.warn("[test] stopPlugin could not delete $path; the next class will boot on it")
+                            }
                         }
                     }
                 } catch (_: Throwable) {

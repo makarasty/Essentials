@@ -64,6 +64,15 @@ class ConcurrentInsertRaceTest {
     private companion object {
         const val ATTEMPTS = 25
 
+        /**
+         * The ceiling on the attempt loop. The invariant is asserted on every attempt; the extra ones
+         * exist only so the fire-rate gate is not a coin toss. Measured rates are 7 to 19 in 25, so
+         * [ATTEMPTS] alone would miss entirely about three times in ten thousand - small, but this
+         * class is the gate on a suite that must not gain a flake, and the rate is scheduler-dependent
+         * on a machine running several builds at once.
+         */
+        const val MAX_ATTEMPTS = 200
+
         /** What each function says when the engine refused its insert. Neither is a prefix of the other. */
         const val PLAYER_REFUSAL = "Insert refused for"
         const val ACHIEVEMENT_REFUSAL = "Achievement insert refused for"
@@ -100,7 +109,9 @@ class ConcurrentInsertRaceTest {
         assertPlayerUuidIsUnique()
 
         var raced = 0
-        repeat(ATTEMPTS) {
+        var attempts = 0
+        while (attempts < ATTEMPTS || (raced == 0 && attempts < MAX_ATTEMPTS)) {
+            attempts++
             val player = createPlayer()
             val before = playerRefusals.get()
             try {
@@ -126,12 +137,8 @@ class ConcurrentInsertRaceTest {
             }
         }
 
-        println("[race] createPlayerData met a refusal on $raced of $ATTEMPTS attempts, against ${reachedDatabase()}")
-        assertTrue(
-            raced > 0,
-            "on none of $ATTEMPTS attempts did a caller meet a refusal, so this test never reached the " +
-                "branch that tolerates one and would have passed whether that branch worked or not"
-        )
+        println("[race] createPlayerData met a refusal on $raced of $attempts attempts, against ${reachedDatabase()}")
+        assertTrue(raced > 0, neverRaced(attempts, "createPlayerData"))
     }
 
     @Test
@@ -142,8 +149,10 @@ class ConcurrentInsertRaceTest {
             assertAchievementPairIsUnique(data.id)
 
             var raced = 0
-            repeat(ATTEMPTS) { attempt ->
+            var attempt = 0
+            while (attempt < ATTEMPTS || (raced == 0 && attempt < MAX_ATTEMPTS)) {
                 val name = "race-achievement-$attempt"
+                attempt++
                 val before = achievementRefusals.get()
                 listOf(
                     async(Dispatchers.IO) { setAchievement(data, name) },
@@ -168,18 +177,20 @@ class ConcurrentInsertRaceTest {
                 if (achievementRefusals.get() > before) raced++
             }
 
-            println("[race] setAchievement met a refusal on $raced of $ATTEMPTS attempts, against ${reachedDatabase()}")
-            assertTrue(
-                raced > 0,
-                "on none of $ATTEMPTS attempts did a caller meet a refusal, so this test never reached " +
-                    "the branch that tolerates one and would have passed whether that branch worked or not"
-            )
+            println("[race] setAchievement met a refusal on $raced of $attempt attempts, against ${reachedDatabase()}")
+            assertTrue(raced > 0, neverRaced(attempt, "setAchievement"))
         } finally {
             suspendTransaction { AchievementTable.deleteWhere { playerId eq data.id } }
             suspendTransaction { PlayerTable.deleteWhere { uuid eq player.uuid() } }
             player.remove()
         }
     }
+
+    private fun neverRaced(attempts: Int, function: String) =
+        "the two callers were serialised on all $attempts attempts, so not one of them met a refusal " +
+            "and this test never reached the branch in $function that tolerates one. It is not a " +
+            "timeout: the invariant held every time, and the race simply never fired, so a pass here " +
+            "would have meant nothing. Against ${reachedDatabase()}."
 
     /**
      * The whole of `setAchievement`'s repair is the unique index refusing the second insert, so a run
@@ -213,7 +224,10 @@ class ConcurrentInsertRaceTest {
 
     /** The same precondition for `createPlayerData`, whose serialisation point is `players.uuid`. */
     private suspend fun assertPlayerUuidIsUnique() {
-        val uuid = "uuid-index-probe-${System.nanoTime()}".take(25)
+        // players.uuid is varchar(25), and the prefix is short on purpose: with a longer one the take()
+        // would keep only the high-order digits of nanoTime, which change every hundred seconds or so,
+        // and a probe left behind by a run that died would be refused here and read as a missing index.
+        val uuid = "uip-${System.nanoTime()}".take(25)
         // players.name carries its own unique index and is varchar(256), so the two probes differ by
         // name: only the uuid index can be what refuses the second one.
         suspend fun insert(name: String) = createPlayerData(name, uuid, name, name)
