@@ -1786,8 +1786,15 @@ class Commands {
     fun setItem(playerData: PlayerData, arg: Array<out String>) {
         fun set(item: Item) {
             fun s(team: Team) {
-                team.core().items[item] =
-                    if (team.core().storageCapacity < arg[1].toInt()) team.core().storageCapacity else arg[1].toInt()
+                // Team.core() returns null when the team has no core (wiped out, or never had one) -
+                // a plain Java platform type Kotlin will not stop you from dereferencing, and this was
+                // dereferencing it twice with no check at all: a deterministic NPE.
+                val core = team.core()
+                if (core == null) {
+                    playerData.err("command.setItem.no.core", team.name)
+                    return
+                }
+                core.items[item] = if (core.storageCapacity < arg[1].toInt()) core.storageCapacity else arg[1].toInt()
             }
 
             val amount = arg[1].toIntOrNull()

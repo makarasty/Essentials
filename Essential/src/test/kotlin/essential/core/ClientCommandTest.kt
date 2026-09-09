@@ -965,6 +965,16 @@ class ClientCommandTest {
         assertEquals(1000, Vars.state.teams.cores(Team.sharded).first().items.get(Items.copper))
     }
 
+    // task-129: Team.core() returns null for a team with no core, and this used to dereference it twice
+    // with no check - a deterministic NPE. blue never gets a core built in these tests, so it exercises
+    // the same "no core" path client_setitem's own comment says it is dodging for sharded.
+    @Test
+    fun client_setitem_teamWithNoCoreReportsAnErrorInsteadOfThrowing() {
+        setPermission("owner", true)
+        clientCommand.handleMessage("/setitem copper 1000 blue", player)
+        assertEquals(err("command.setItem.no.core", "blue"), playerData.lastReceivedMessage)
+    }
+
     @Test
     fun client_setperm() {
         setPermission("owner", true)
