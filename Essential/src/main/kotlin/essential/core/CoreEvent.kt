@@ -28,6 +28,8 @@ import essential.core.Main.Companion.scope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -1530,6 +1532,52 @@ fun selectAutoTeam(playerData: PlayerData, targetPlayers: List<PlayerData> = pla
     return bestTeam
 }
 
+@Serializable
+private data class ExpRecord(
+    val name: String,
+    val uuid: String,
+    val date: String,
+    val erekirAttack: Int,
+    val erekirPvP: Int,
+    val time: Int,
+    val enemyBuildingDestroyed: Int,
+    val buildingsDestroyed: Int,
+    val wave: Int,
+    val multiplier: Double,
+    val score: Int,
+    val totalScore: Double
+)
+
+private val expJson = Json {
+    prettyPrint = true
+    ignoreUnknownKeys = true
+    isLenient = true
+}
+
+// Guards the read-modify-write below: earnEXP now fires one of these per player from a tight
+// gameOver loop, and without serialising them two concurrent writes would each read the file
+// before the other's record landed and the loser's record would be overwritten, not merged.
+private val expJsonMutex = Mutex()
+
+private suspend fun recordExpJson(record: ExpRecord) = expJsonMutex.withLock {
+    val file = rootPath.child("data/exp.json")
+    if (!file.exists()) file.writeString("[]")
+
+    val jsonString = file.readString("UTF-8")
+    val existingRecords = if (jsonString.isBlank() || jsonString == "[]") {
+        listOf()
+    } else {
+        try {
+            expJson.decodeFromString<List<ExpRecord>>(jsonString)
+        } catch (e: Exception) {
+            Log.err("Error parsing exp.json, creating new file", e)
+            listOf()
+        }
+    }
+
+    file.writeString(expJson.encodeToString(existingRecords + record))
+}
+
 fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) {
     val oldLevel = target.level
     var result: Int = target.currentExp
@@ -1565,47 +1613,10 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
         Commands.Exp[target]
         target.currentExp = 0
 
-        if (!rootPath.child("data/exp.json").exists()) {
-            rootPath.child("data/exp.json").writeString("[]")
-        }
-
-        @Serializable
-        data class ExpRecord(
-            val name: String,
-            val uuid: String,
-            val date: String,
-            val erekirAttack: Int,
-            val erekirPvP: Int,
-            val time: Int,
-            val enemyBuildingDestroyed: Int,
-            val buildingsDestroyed: Int,
-            val wave: Int,
-            val multiplier: Double,
-            val score: Int,
-            val totalScore: Double
-        )
-
-        // Read existing JSON array
-        val json = Json {
-            prettyPrint = true
-            ignoreUnknownKeys = true
-            isLenient = true
-        }
-
-        val jsonString = rootPath.child("data/exp.json").readString("UTF-8")
-        val existingRecords = if (jsonString.isBlank() || jsonString == "[]") {
-            listOf()
-        } else {
-            try {
-                json.decodeFromString<List<ExpRecord>>(jsonString)
-            } catch (e: Exception) {
-                Log.err("Error parsing exp.json, creating new file", e)
-                listOf()
-            }
-        }
-
-        // Create new record
-        val newRecord = ExpRecord(
+        // Everything this record needs is read from target/Vars now, on the game thread, and carried
+        // as plain values into the coroutine - the counters below are reset by worldLoad on the next
+        // map, and by the time an off-thread write got around to reading them they might already be.
+        val record = ExpRecord(
             name = target.name,
             uuid = target.uuid,
             date = currentTime(),
@@ -1619,10 +1630,7 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
             score = score,
             totalScore = score * target.expMultiplier
         )
-
-        // Add new record to list and write back to file
-        val updatedRecords = existingRecords + newRecord
-        rootPath.child("data/exp.json").writeString(json.encodeToString(updatedRecords))
+        scope.launch { recordExpJson(record) }
     }
 
     if (isConnected && conf.feature.level.levelNotify) target.send(
