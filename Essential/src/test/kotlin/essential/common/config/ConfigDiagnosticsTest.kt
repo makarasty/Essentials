@@ -10,6 +10,7 @@ import java.io.FileOutputStream
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -67,6 +68,39 @@ class ConfigDiagnosticsTest {
         assertTrue(
             logged(bundle["config.parse.failed", FILE]),
             "a malformed config must leave something to search the log for, but the log held: $lines"
+        )
+    }
+
+    @Test
+    fun rewriteReportsTheCommentsItIsAboutToDrop() {
+        // beta is absent, so the migration re-save runs and writes the whole file from the parsed
+        // object. The comment line is not in the canonical output and does not survive that.
+        write("# operator note: alpha is deliberate\nalpha: \"x\"\n")
+
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        assertTrue(
+            logged(bundle["config.rewrite.comments", FILE, "1"]),
+            "the comment lost to the rewrite must be reported, but the log held: $lines"
+        )
+    }
+
+    @Test
+    fun aMistypedKeyIsReportedEvenWhenNothingIsRewritten() {
+        // Every canonical key is present, so no migration re-save is due. Without a warning here the
+        // operator never learns that betaa does nothing - the parser is not in strict mode, so it was
+        // dropped in silence and the file keeps it forever.
+        write("alpha: \"x\"\nbeta: 2\nbetaa: 7\n")
+
+        Config.load(NAME, SampleConfig.serializer(), null)
+
+        assertTrue(
+            logged(bundle["config.unknown.keys", FILE, "betaa"]),
+            "the unrecognised key must be named, but the log held: $lines"
+        )
+        assertFalse(
+            logged(bundle["config.saved", FILE]),
+            "a file with no missing keys must not be rewritten, but the log held: $lines"
         )
     }
 
