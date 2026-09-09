@@ -162,3 +162,7 @@ package-lock.json
 /Essential/config/
 /Essential/mods/
 /Essential/locales
+
+# fleet runs are scratch, not history
+.fleet/
+FLEET.md
