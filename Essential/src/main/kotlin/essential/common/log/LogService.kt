@@ -99,7 +99,10 @@ fun writeLog(type: LogType, text: String, vararg name: String) {
 
 private fun startWriter() {
     if (!running.compareAndSet(false, true)) return
-    writer = thread(name = "essential-log", isDaemon = true) {
+    // Published before it runs. Assigning after start left a window where a replacement was already
+    // draining the queue while `writer` still named the thread it replaced, so stopLogWriter would
+    // interrupt a corpse and then close the appenders out from under the live one.
+    val next = thread(name = "essential-log", isDaemon = true, start = false) {
         while (running.get()) {
             try {
                 val first = queue.poll(1, TimeUnit.SECONDS) ?: continue
@@ -108,10 +111,20 @@ private fun startWriter() {
                 queue.drainTo(batch)
                 writeBatch(batch)
             } catch (_: InterruptedException) {
+                // running is both this loop's condition and startWriter's guard, and only the orderly
+                // stop clears it. An interrupt from anywhere else left it set, so no later writeLog could
+                // ever start a replacement thread and every line after that one was queued into a buffer
+                // with no consumer until the queue filled and the log went silent for the process's life.
+                //
+                // compareAndSet rather than set: the orderly stop has already cleared it before
+                // interrupting, and this must not clobber a flag a later startWriter now owns.
+                running.compareAndSet(true, false)
                 break
             }
         }
     }
+    writer = next
+    next.start()
 }
 
 internal fun stopLogWriter() {
