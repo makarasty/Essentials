@@ -50,7 +50,24 @@ object TempBan {
 
     fun start() {
         // The ban list is game state, so it is read on the main thread and handed to the sweep.
-        Timer.schedule({ Core.app.post { scope.launch { tick(localBans()) } } }, INTERVAL, INTERVAL)
+        Timer.schedule({ Core.app.post { scheduleTick() } }, INTERVAL, INTERVAL)
+    }
+
+    /**
+     * The Core.app.post body [start] schedules, pulled out so a test can call it directly instead
+     * of waiting on a 30-second Timer. [readBanned] is [localBans] in production and a
+     * thread-recording probe in TempBanSweepThreadTest.
+     *
+     * [readBanned] has to be called here, synchronously, and only its result may cross into the
+     * `scope.launch` below. `scope.launch { tick(readBanned()) }` reads as "the read happens
+     * inside the block Core.app.post already put on the main thread" but does not do that:
+     * scope.launch dispatches its whole block onto Dispatchers.IO before evaluating any of it,
+     * argument expressions included, so the read would run on an IO thread despite this function
+     * itself running on whatever thread Core.app.post delivered to.
+     */
+    internal fun scheduleTick(readBanned: () -> Set<String> = ::localBans) {
+        val banned = readBanned()
+        scope.launch { tick(banned) }
     }
 
     private fun localBans(): Set<String> =
@@ -114,7 +131,15 @@ object TempBan {
             }
         }.onFailure { Log.err("Failed to store the temp ban expiry of $uuid in the database, keeping it in plugin data", it) }
             .getOrDefault(false)
-        if (stored) return
+        if (stored) {
+            // A write can succeed after an earlier call for the same uuid fell back to plugin
+            // data - a database outage, then a later setperm or extend once it recovers. Leaving
+            // that fallback entry in place gives the sweep two disagreeing expiries for the same
+            // player, and orphaned() has no way to tell which one is current, so the shorter of
+            // the two always wins and can lift a ban early.
+            if (pluginData.data.tempBans.remove(uuid) != null) pluginData.update()
+            return
+        }
         pluginData.data.tempBans[uuid] = expire.toString()
         pluginData.update()
     }
