@@ -297,6 +297,12 @@ class LiveDatabaseBootTest {
             5, bootLog.swallowed().size,
             "v5.sql skipped a different number of statements than the five map_ratings ones. $why"
         )
+        // The count and the table together are the deploy check: five, map_ratings, move on. Naming the
+        // tables is what makes that one line to read rather than five statements to compare by eye.
+        assertTrue(
+            bootLog.any { it.contains("(tables: map_ratings)") },
+            "the skipped-statement report did not name the table, so the deploy check is still manual. $why"
+        )
         assertTrue(
             bootLog.none { it.contains("DID NOT FINISH") },
             "an upgrade that reached the baseline was reported as an abort, which teaches an operator " +

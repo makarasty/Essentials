@@ -466,22 +466,44 @@ private suspend fun R2dbcTransaction.withSavepoint(name: String, body: suspend (
  * Savepoint names are per call, not per transaction, so two scripts applied in one transaction would
  * shadow each other's. Nothing does: [upgradeLegacyDatabase] opens one transaction per script.
  */
-internal suspend fun R2dbcTransaction.applyLegacyScript(script: String): Int {
-    var swallowed = 0
+internal suspend fun R2dbcTransaction.applyLegacyScript(script: String): List<String> {
+    val swallowed = mutableListOf<String>()
     script.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEachIndexed { index, statement ->
         val failure = withSavepoint("essential_upgrade_$index") { exec(statement) }
         if (failure != null) {
-            val isCritical = statement.contains("plugin_data", true) ||
-                statement.contains("players", true)
-            if (isCritical) {
-                throw IllegalStateException("Critical statement failed: $statement", failure)
+            // A substring test over SQL, so a statement merely mentioning either word - in a column
+            // name, a string literal, a REFERENCES clause - is classed critical too. The marker is
+            // named in the message because an operator reading a first boot has to be able to tell a
+            // migration that genuinely failed from the classifier firing on a word.
+            val marker = listOf("plugin_data", "players").firstOrNull { statement.contains(it, true) }
+            if (marker != null) {
+                throw IllegalStateException(
+                    "Critical statement failed: $statement (classed critical because its text " +
+                        "contains \"$marker\")",
+                    failure
+                )
             }
             Log.warn("Failed to execute statement: $statement. Reason: ${failure.message}")
-            swallowed++
+            swallowed += statement
         }
     }
     return swallowed
 }
+
+/**
+ * The table a legacy statement acts on, for reporting only.
+ *
+ * Deliberately not used to decide what counts as critical. That decision is a substring test today, and
+ * replacing it changes which failures abort an upgrade that is about to run on live data for the first
+ * time - a behaviour change, not a repair, and not one to make in the same run as the report that would
+ * let somebody judge it.
+ */
+private val LEGACY_STATEMENT_TABLE = Regex(
+    """(?i)\b(?:ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|DROP\s+TABLE|CREATE\s+TABLE)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?`?(\w+)`?"""
+)
+
+private fun tableNamedIn(statement: String): String? =
+    LEGACY_STATEMENT_TABLE.find(statement)?.groupValues?.getOrNull(1)
 
 /**
  * What the legacy upgrade did, in the two terms that decide whether a boot is trustworthy.
@@ -491,10 +513,15 @@ internal suspend fun R2dbcTransaction.applyLegacyScript(script: String): Int {
  * legacy-ban migrations and every `map_ratings` statement in v5. Any of those failing leaves the
  * version stamped as done over a schema that is missing whatever they were carrying.
  */
-private class LegacyUpgradeOutcome(val failure: Throwable?, val swallowed: Int)
+private class LegacyUpgradeOutcome(val failure: Throwable?, val swallowed: List<String>) {
+    /** Named so the deploy check is one line to read rather than five statements to compare by eye. */
+    val skippedTables: String
+        get() = swallowed.mapNotNull(::tableNamedIn).distinct().sorted()
+            .joinToString().ifEmpty { "unrecognised" }
+}
 
 private suspend fun upgradeLegacyDatabase(): LegacyUpgradeOutcome {
-    var swallowed = 0
+    val swallowed = mutableListOf<String>()
     try {
         var currentVersion: UByte?
 
@@ -646,13 +673,14 @@ private suspend fun reportLegacyUpgradeOutcome(outcome: LegacyUpgradeOutcome) {
         // statements on every run, because that table is created by SchemaUtils after this point and
         // never by the scripts. Reporting that as an abort would teach an operator to ignore the line
         // that matters.
-        if (outcome.swallowed == 0) {
+        if (outcome.swallowed.isEmpty()) {
             Log.info("[Database/upgrade] schema version is $version, no legacy upgrade is outstanding")
         } else {
             Log.warn(
-                "[Database/upgrade] schema version is $version, but ${outcome.swallowed} statement(s) " +
-                    "failed and were skipped as non-critical - the \"Failed to execute statement\" " +
-                    "lines above name them, and whatever they were carrying is not in this schema"
+                "[Database/upgrade] schema version is $version, but ${outcome.swallowed.size} " +
+                    "statement(s) failed and were skipped as non-critical (tables: " +
+                    "${outcome.skippedTables}) - the \"Failed to execute statement\" lines above name " +
+                    "them, and whatever they were carrying is not in this schema"
             )
         }
         return
@@ -667,8 +695,11 @@ private suspend fun reportLegacyUpgradeOutcome(outcome: LegacyUpgradeOutcome) {
     Log.err("[Database/upgrade] on a schema part way between two versions.")
     Log.err("[Database/upgrade]   plugin_data.database_version still reads $version, target is $LEGACY_BASELINE_VERSION")
     Log.err("[Database/upgrade]   $reason")
-    if (outcome.swallowed > 0) {
-        Log.err("[Database/upgrade]   ${outcome.swallowed} further statement(s) were skipped as non-critical")
+    if (outcome.swallowed.isNotEmpty()) {
+        Log.err(
+            "[Database/upgrade]   ${outcome.swallowed.size} further statement(s) were skipped as " +
+                "non-critical (tables: ${outcome.skippedTables})"
+        )
     }
     Log.err("[Database/upgrade] Whatever is missing is missing on every server sharing this database,")
     Log.err("[Database/upgrade] and the upgrade is retried on the next start - so it will stop in the")
