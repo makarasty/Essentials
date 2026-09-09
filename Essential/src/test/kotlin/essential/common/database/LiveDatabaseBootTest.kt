@@ -5,6 +5,7 @@ import PluginTest.Companion.stopPlugin
 import arc.util.Log
 import essential.common.bundle
 import essential.common.database.data.getPluginData
+import essential.common.database.data.mergePlayerAccounts
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.vendors.MariaDBDialect
 import org.jetbrains.exposed.v1.core.vendors.MysqlDialect
@@ -488,6 +489,49 @@ class LiveDatabaseBootTest {
             bootLog.any { it.contains(bundle["database.upgrade.execute", "v4.sql"]) },
             "a v3 database did not reach v4.sql. ${diagnosis(engine, failure)}"
         )
+    }
+
+    /**
+     * The account merge locks both player rows for the length of its transaction.
+     *
+     * Every value it writes is an absolute one computed in Kotlin from a snapshot, so without the lock
+     * a counter another of the six servers committed between the read and the write was overwritten by
+     * a sum from before it existed. `SELECT ... FOR UPDATE` is the part of that fix an H2-backed suite
+     * cannot vouch for, so it is exercised here against the engine the servers actually run.
+     */
+    @Test
+    fun anAccountMergeLocksBothRowsAndStillCompletes() = onEachEngine { engine ->
+        engine.reset(testDb)
+        engine.boot(testDb)
+
+        val from = "MERGEFROMAAAAAAAAAAAAA=="
+        val to = "MERGETOAAAAAAAAAAAAAAA=="
+        engine.open(testDb).use {
+            it.exec("INSERT INTO `players` (`name`, `uuid`, `exp`) VALUES ('merge-from', '$from', 30)")
+            it.exec("INSERT INTO `players` (`name`, `uuid`, `exp`) VALUES ('merge-to', '$to', 12)")
+        }
+
+        // Exposed drops the FOR UPDATE clause silently when the dialect reports it unsupported, so
+        // the merge would go on passing every assertion below with no lock at all. This is the flag it
+        // consults, and it is the only thing standing between this fix and a quiet no-op.
+        assertTrue(
+            defaultDatabase!!.supportsSelectForUpdate,
+            "$engine reports no SELECT ... FOR UPDATE, so the account merge runs unlocked"
+        )
+
+        val result = runBlocking { mergePlayerAccounts(from, to) }
+        assertTrue(result.startsWith("Merged"), "the merge did not run on $engine: $result")
+
+        engine.open(testDb).use { connection ->
+            assertEquals(
+                "42", connection.scalar("SELECT exp FROM players WHERE uuid = '$to'"),
+                "the merge did not carry the source's exp across on $engine"
+            )
+            assertNull(
+                connection.scalar("SELECT uuid FROM players WHERE uuid = '$from'"),
+                "the source row survived the merge on $engine"
+            )
+        }
     }
 
     private companion object {

@@ -10,7 +10,9 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.notInList
+import org.jetbrains.exposed.v1.core.vendors.ForUpdateOption
 import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
@@ -58,14 +60,45 @@ suspend fun mergePlayerAccounts(fromUuid: String, toUuid: String): String = susp
         return@suspendTransaction "Source and target UUID must be different."
     }
 
-    val fromRow = PlayerTable.selectAll().where { PlayerTable.uuid eq fromUuid }.mapToPlayerDataList()
-    val toRow = PlayerTable.selectAll().where { PlayerTable.uuid eq toUuid }.mapToPlayerDataList()
+    // Two reads: an ordinary one to find the ids, then one locking read by primary key.
+    //
+    // Every value written below is derived in Kotlin from what these two rows held when they were read,
+    // and the write is an absolute value rather than a delta, so an exp gain another of the six servers
+    // committed in between used to be overwritten by a sum computed before it existed. Summed columns
+    // could have been written as SQL expressions instead, but the merged status_data is a JSON blob
+    // built in Kotlin - the achievement counters this function exists to carry - and no column
+    // expression can rebuild that. A locking read closes the window for every column at once.
+    //
+    // It has to lock by id rather than by uuid. players.id is the primary key on both the schema
+    // SchemaUtils builds and the one v4.sql leaves behind, so this is an index lookup everywhere;
+    // uuid's unique index exists only on the former, and a locking read that cannot use an index takes
+    // an exclusive lock on every row it scans - one console mergeplayer would then block every join and
+    // every stat write on all six servers for the length of the merge.
+    //
+    // Locking both ids in one statement means two merges running at once cannot take the same pair of
+    // rows in opposite orders; the engine picks the order within the statement. That is a statement
+    // property and not a claim about this function, which goes on to touch player_achievements and
+    // player_contributions afterwards and can still deadlock against a concurrent setAchievement. The
+    // header already says to run this with both accounts offline; that is why.
+    val found = PlayerTable.select(PlayerTable.id, PlayerTable.uuid)
+        .where { PlayerTable.uuid inList listOf(fromUuid, toUuid) }
+        .map { it[PlayerTable.id] to it[PlayerTable.uuid] }
+        .toList()
 
-    if (fromRow.isEmpty()) return@suspendTransaction "Source player not found: $fromUuid"
-    if (toRow.isEmpty()) return@suspendTransaction "Target player not found: $toUuid"
+    val fromId = found.firstOrNull { it.second.equals(fromUuid, ignoreCase = true) }?.first
+        ?: return@suspendTransaction "Source player not found: $fromUuid"
+    val toId = found.firstOrNull { it.second.equals(toUuid, ignoreCase = true) }?.first
+        ?: return@suspendTransaction "Target player not found: $toUuid"
 
-    val from = fromRow.first()
-    val to = toRow.first()
+    val locked = PlayerTable.selectAll()
+        .where { PlayerTable.id inList listOf(fromId, toId) }
+        .forUpdate(ForUpdateOption.ForUpdate)
+        .mapToPlayerDataList()
+
+    val from = locked.firstOrNull { it.id == fromId }
+        ?: return@suspendTransaction "Source player not found: $fromUuid"
+    val to = locked.firstOrNull { it.id == toId }
+        ?: return@suspendTransaction "Target player not found: $toUuid"
 
     // Calculate merged values
     fun sumShort(a: Short, b: Short): Short = (a.toInt() + b.toInt()).coerceIn(0, Short.MAX_VALUE.toInt()).toShort()
