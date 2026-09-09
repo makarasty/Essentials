@@ -1,6 +1,7 @@
 package essential.core
 
 import PluginTest.Companion.clientCommand
+import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
@@ -41,41 +42,48 @@ class NextMapVoteTest {
     @Test
     fun anAdminsExplicitNextMapChoiceIsNotOverwrittenByTheVoteTally() {
         val firstVoter = newPlayer()
-        clientCommand.handleMessage("/nextmap Glacier", firstVoter.first)
-
         val secondVoter = newPlayer()
-        clientCommand.handleMessage("/nextmap Glacier", secondVoter.first)
-
-        // Glacier now leads 2-0. An admin then casts the deciding vote for a different map, expecting
-        // their nextmap.admin override to be the final word.
         val admin = newPlayer()
-        setPermission(admin.first, "admin", true)
-        clientCommand.handleMessage("/nextmap Fork", admin.first)
+        try {
+            clientCommand.handleMessage("/nextmap Glacier", firstVoter.first)
+            clientCommand.handleMessage("/nextmap Glacier", secondVoter.first)
 
-        assertEquals(
-            "Fork",
-            currentOverride()?.plainName(),
-            "the admin's explicit override must stand, not the map with the most votes"
-        )
+            // Glacier now leads 2-0. An admin then casts the deciding vote for a different map, expecting
+            // their nextmap.admin override to be the final word.
+            setPermission(admin.first, "admin", true)
+            clientCommand.handleMessage("/nextmap Fork", admin.first)
+
+            assertEquals(
+                "Fork",
+                currentOverride()?.plainName(),
+                "the admin's explicit override must stand, not the map with the most votes"
+            )
+        } finally {
+            listOf(firstVoter, secondVoter, admin).forEach { leavePlayer(it.first) }
+        }
     }
 
     @Test
     fun aLaterNonAdminVoteDoesNotClobberTheStandingAdminOverride() {
         val admin = newPlayer()
-        setPermission(admin.first, "admin", true)
-        clientCommand.handleMessage("/nextmap Fork", admin.first)
-
-        // Two more players vote for a different map after the admin's override is already in place -
-        // the popularity tally these votes trigger must keep re-affirming Fork, not recompute over it.
         val firstVoter = newPlayer()
-        clientCommand.handleMessage("/nextmap Glacier", firstVoter.first)
         val secondVoter = newPlayer()
-        clientCommand.handleMessage("/nextmap Glacier", secondVoter.first)
+        try {
+            setPermission(admin.first, "admin", true)
+            clientCommand.handleMessage("/nextmap Fork", admin.first)
 
-        assertEquals(
-            "Fork",
-            currentOverride()?.plainName(),
-            "votes cast after the admin's override must not silently replace it"
-        )
+            // Two more players vote for a different map after the admin's override is already in place -
+            // the popularity tally these votes trigger must keep re-affirming Fork, not recompute over it.
+            clientCommand.handleMessage("/nextmap Glacier", firstVoter.first)
+            clientCommand.handleMessage("/nextmap Glacier", secondVoter.first)
+
+            assertEquals(
+                "Fork",
+                currentOverride()?.plainName(),
+                "votes cast after the admin's override must not silently replace it"
+            )
+        } finally {
+            listOf(admin, firstVoter, secondVoter).forEach { leavePlayer(it.first) }
+        }
     }
 }
