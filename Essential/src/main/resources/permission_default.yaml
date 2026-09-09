@@ -6,6 +6,7 @@ admin:
   admin: true
   inheritance: user
   permission:
+    - admin
     - afk.admin
     - changemap
     - chars
@@ -26,6 +27,8 @@ admin:
     - pm.other
     - pvp.spector
     - rollback
+    - setfeedbackprovider
+    - setmapprovider
     - skip
     - spawn
     - strict

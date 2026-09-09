@@ -59,10 +59,9 @@ class PermissionNodeInventoryTest {
          * this test rather than shipping quietly.
          */
         private val ONLY_OWNER = setOf(
-            "admin", "broadcast", "changename", "exp", "fuck", "hub", "hub.build", "js", "kickall",
-            "killall", "killunit", "log", "nextmap", "nextmap.admin", "setfeedbackprovider",
-            "setitem", "setmapprovider", "setperm", "t", "unban", "vote.admin",
-            "vote.random.bypass", "votekick", "ws",
+            "broadcast", "changename", "exp", "fuck", "hub", "hub.build", "js", "kickall",
+            "killall", "killunit", "log", "nextmap", "nextmap.admin", "setitem", "setperm", "t",
+            "unban", "vote.admin", "vote.random.bypass", "votekick", "ws",
         )
 
         private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
