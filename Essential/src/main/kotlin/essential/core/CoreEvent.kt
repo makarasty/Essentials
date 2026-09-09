@@ -18,7 +18,6 @@ import essential.common.database.table.PlayerTable
 import essential.common.event.CustomEvents
 import essential.common.log.LogType
 import essential.common.log.writeLog
-import essential.common.command.CommandRegistry
 import essential.common.permission.Permission
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
@@ -530,16 +529,6 @@ fun wave(event: WaveEvent) {
 
 @Event
 fun serverLoad(event: ServerLoadEvent) {
-    // Sub-nodes that no command carries: they are asked for directly in the code.
-    val known = hashSetOf(
-        "admin", "afk.admin", "chat.admin", "hub.build", "info.other", "kick.admin",
-        "kill.other", "nextmap.admin", "pm.other", "pvp.spector", "team.other",
-        "vote.admin", "vote.back", "vote.draw", "vote.gg", "vote.kick", "vote.pass",
-        "vote.map", "vote.random", "vote.random.bypass", "vote.reset", "vote.skip",
-    )
-    Vars.netServer.clientCommands.commandList.each { known.add(CommandRegistry.canonical(it.text)) }
-    Permission.validate(known)
-
     if (conf.command.layoutFix) KeyboardLayout.install()
     ServerDescription.start()
     TempBan.start()
@@ -1492,6 +1481,9 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
                     // explicitly - swapping the reference alone leaves every already-registered
                     // listener and timer running against whichever conf it captured at registration.
                     syncProtectFallbackJoinListener()
+                    // TODO(task-171 family): Main.syncClientCommands(Vars.netServer.clientCommands)
+                    // belongs here too, once it is on main - it is on another branch, not yet
+                    // merged, and Unresolved reference confirms it from this worktree. ask/10-4.md.
                     // The description timer is built from the config; rebuild it with the new one.
                     // Config events already arrive on the game thread, so this only defers start()
                     // to the next frame rather than rendering inside the reload.
