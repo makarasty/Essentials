@@ -17,7 +17,12 @@ import essential.common.database.table.PlayerTable
 import essential.common.players
 import essential.common.rootPath
 import essential.core.Main.Companion.scope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -48,6 +53,10 @@ object Permission {
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
     private val userBackupFile: Fi = rootPath.child("permission_user.yaml.bak")
+
+    // The connection pool is five (Database.kt), and the game thread wants one of them for
+    // whatever a player is doing while this runs.
+    private const val OFFLINE_WRITE_LIMIT = 4
 
     private val bundle = Bundle(Locale.getDefault().toLanguageTag())
     private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
@@ -182,13 +191,52 @@ object Permission {
         // that caller so a later caller cannot get it wrong, and `user` is read inside the work rather
         // than captured, so a setperm landing while the work is queued is not reverted by a stale copy.
         val work = Runnable {
-            val loaded = user
-            if (loaded != null) {
-                for ((uuid, permissionData) in loaded) {
-                    val player = players.find { e -> e.uuid == uuid }
-                    if (player == null) {
-                        scope.launch {
-                            suspendTransaction {
+            val loaded = user ?: return@Runnable
+            val online = players.associateBy { it.uuid }
+            val offline = LinkedHashMap<String, PermissionData>()
+            for ((uuid, permissionData) in loaded) {
+                val player = online[uuid]
+                if (player == null) {
+                    offline[uuid] = permissionData
+                } else {
+                    player.permission = permissionData.group
+                    player.player.admin(isAdmin(uuid, permissionData.group))
+                    if (permissionData.name.isNotEmpty()) {
+                        player.name = permissionData.name
+                        player.player.name(permissionData.name)
+                    }
+                }
+            }
+            if (offline.isNotEmpty()) applyOffline(offline)
+        }
+        if (Core.app.isOnMainThread) work.run() else Core.app.post(work)
+    }
+
+    /**
+     * Write the file's groups onto the rows of the players it names that are not online.
+     *
+     * Bounded rather than unbounded: every boot calls [load], six servers share one database, and
+     * this used to open one coroutine and one transaction per entry, so a permission_user.yaml with a
+     * few thousand entries queued a few thousand connection acquisitions against a pool of five.
+     * Most of them timed out and threw, which is how entries went missing silently.
+     *
+     * Still one transaction per entry, deliberately. One transaction for the whole file would make a
+     * single bad row - a `name:` colliding with another row's, the unique index on PlayerTable.name -
+     * roll back every other entry with it, and would hold each row lock for as long as the whole file
+     * takes.
+     *
+     * Exposed reports how many rows each update changed. Zero means the database has no row for that
+     * uuid yet, so nothing was persisted for them - the entry still applies the moment they join,
+     * because [get] answers from the file rather than from the row.
+     */
+    private fun applyOffline(entries: Map<String, PermissionData>) {
+        scope.launch {
+            val gate = Semaphore(OFFLINE_WRITE_LIMIT)
+            val unpersisted = entries.map { (uuid, permissionData) ->
+                async {
+                    gate.withPermit {
+                        try {
+                            val changed = suspendTransaction {
                                 PlayerTable.update({ PlayerTable.uuid eq uuid }) {
                                     it[PlayerTable.permission] = permissionData.group
                                     if (permissionData.name.isNotEmpty()) {
@@ -196,19 +244,27 @@ object Permission {
                                     }
                                 }
                             }
-                        }
-                    } else {
-                        player.permission = permissionData.group
-                        player.player.admin(isAdmin(uuid, permissionData.group))
-                        if (permissionData.name.isNotEmpty()) {
-                            player.name = permissionData.name
-                            player.player.name(permissionData.name)
+                            uuid.takeIf { changed == 0 }
+                        } catch (e: CancellationException) {
+                            // The scope is cancelled on plugin dispose. Catching this alongside the
+                            // rest would log four invented write failures on every shutdown.
+                            throw e
+                        } catch (e: Exception) {
+                            Log.err("[Permission] permission_user.yaml entry for $uuid could not be written", e)
+                            null
                         }
                     }
                 }
+            }.awaitAll().filterNotNull()
+
+            if (unpersisted.isNotEmpty()) {
+                Log.info(
+                    "[Permission] permission_user.yaml names ${unpersisted.size} uuid with no player row yet, " +
+                        "so their group is not stored in the database; it applies when they join: " +
+                        unpersisted.take(10).joinToString(", ")
+                )
             }
         }
-        if (Core.app.isOnMainThread) work.run() else Core.app.post(work)
     }
 
     operator fun get(data: PlayerData): PermissionData {
