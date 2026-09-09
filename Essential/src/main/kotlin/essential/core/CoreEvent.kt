@@ -435,7 +435,7 @@ fun tap(event: TapEvent) {
                 }
                 pluginData.data.warpZone.add(
                     WarpZone(
-                        Vars.state.map.plainName(),
+                        Vars.state.map.name(),
                         Vars.world.tile(x, y).pos(),
                         event.tile.pos(),
                         touch,
