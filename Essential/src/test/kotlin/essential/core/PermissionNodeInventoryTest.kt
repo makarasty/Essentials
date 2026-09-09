@@ -55,13 +55,26 @@ class PermissionNodeInventoryTest {
         /**
          * Nodes no group in the shipped file holds, so today only a group granting `all` can use them.
          *
+         * Each is deliberate, and the reason is next to it:
+         *
+         * - `js` runs arbitrary code and `setperm` hands out permission groups. Owner work.
+         * - `exp`, `setitem`, `killunit`, `killall`, `kickall`, `changename`, `broadcast`, `log`,
+         *   `unban` and `fuck` reach across the server at an operator's discretion rather than an
+         *   admin's.
+         * - `hub.build` gates building on a hub map. A hub is a lobby that exists to route players
+         *   elsewhere, so "nobody but the owner builds here" is the intent, not a defect. An operator
+         *   whose admins maintain the hub adds it to `admin` in their own file.
+         * - `votekick` adds a second route to something `user` already has through `vote.kick`, so
+         *   granting it doubles the surface for no new capability. See also task-172: vanilla's own
+         *   `/votekick` survives because `CommandRegistry.registered("votekick")` resolves to the
+         *   prefixed name.
+         *
          * A command added without a grant, or a grant added without removing its entry here, fails
          * this test rather than shipping quietly.
          */
         private val ONLY_OWNER = setOf(
             "broadcast", "changename", "exp", "fuck", "hub.build", "js", "kickall", "killall",
-            "killunit", "log", "setitem", "setperm", "unban", "vote.admin", "vote.random.bypass",
-            "votekick", "ws",
+            "killunit", "log", "setitem", "setperm", "unban", "votekick", "ws",
         )
 
         private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))

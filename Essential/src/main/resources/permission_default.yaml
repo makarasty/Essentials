@@ -38,7 +38,9 @@ admin:
     - team.other
     - undo
     - unmute
+    - vote.admin
     - vote.pass
+    - vote.random.bypass
     - vote.reset
     - weather
 user:
