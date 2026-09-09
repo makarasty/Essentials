@@ -52,7 +52,9 @@ import kotlin.test.fail
  * handing this class a legacy-shaped database, [twoServersCreatingOnePlayerBothGetTheRow] passed on
  * zero refusals in twenty-five attempts against a `players` table with no unique index on `uuid` at
  * all. The counts come from the two functions' own log lines and nothing else in this class emits
- * either, so they cannot be inflated.
+ * either. `Log.logger` is a JVM global and the loaded plugin writes through the same handler, so the
+ * counts are not sealed off absolutely - but nothing in this process reaches those branches without a
+ * genuine refusal, and an inflated count could only ever weaken the gate towards a pass.
  *
  * An earlier counter inferred the number of inserts that reached the engine from the gap in the
  * auto-increment column, since a refused insert has already taken its id. It reported 38 and 56 races
@@ -207,7 +209,17 @@ class ConcurrentInsertRaceTest {
             }
         }
         try {
-            insert()
+            // Guarded, because the diagnostic below is the whole point of this function and a raw stack
+            // trace out of the first insert - a probe row a dead run left behind, a connection blip -
+            // would replace it with nothing anybody can act on.
+            runCatching { insert() }.onFailure {
+                fail(
+                    "the first achievement probe insert was itself refused in ${reachedDatabase()}: " +
+                        "${it.message}. That is not the missing index this checks for; something else " +
+                        "is wrong with player_achievements, whose indexes are " +
+                        "${indexesOn("player_achievements")}."
+                )
+            }
             if (runCatching { insert() }.isSuccess) {
                 fail(
                     "player_achievements has no enforced unique index on (player_id, achievement_name) " +
@@ -232,7 +244,13 @@ class ConcurrentInsertRaceTest {
         // name: only the uuid index can be what refuses the second one.
         suspend fun insert(name: String) = createPlayerData(name, uuid, name, name)
         try {
-            insert("$uuid-a")
+            runCatching { insert("$uuid-a") }.onFailure {
+                fail(
+                    "the first uuid probe insert was itself refused in ${reachedDatabase()}: " +
+                        "${it.message}. That is not the missing index this checks for; something else " +
+                        "is wrong with players, whose indexes are ${indexesOn("players")}."
+                )
+            }
             if (runCatching { insert("$uuid-b") }.isSuccess) {
                 fail(
                     "players has no enforced unique index on uuid in the database this test reached - " +

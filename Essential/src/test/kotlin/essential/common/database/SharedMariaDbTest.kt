@@ -383,8 +383,11 @@ class SharedMariaDbTest {
         // according to whatever shape `$database` happens to have been left in.
         val uniqueOnUuid = open(database).use {
             it.scalar(
+                // seq_in_index = 1 because a composite UNIQUE(name, uuid) would match on the column
+                // alone while enforcing nothing whatever about uuid by itself.
                 "SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = '$database' " +
-                    "AND table_name = 'players' AND column_name = 'uuid' AND non_unique = 0"
+                    "AND table_name = 'players' AND column_name = 'uuid' AND non_unique = 0 " +
+                    "AND seq_in_index = 1"
             )
         }
         // Not "exactly one": a schema that enforces uuid twice - a named index beside a primary key on

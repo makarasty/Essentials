@@ -460,6 +460,12 @@ class PluginTest {
                             // precondition failing three classes later. On Windows a file still held
                             // open by a connection pool an earlier databaseInit replaced without
                             // disposing is exactly how that happens.
+                            //
+                            // Windows-shaped, and knowingly so: a POSIX filesystem unlinks a file H2
+                            // still holds open, so there the delete succeeds, this stays quiet, and an
+                            // H2 kept alive by DB_CLOSE_DELAY=-1 goes on writing to an inode with no
+                            // name. That is a different hazard and not one this line can see. It has
+                            // never fired on this machine - zero across all 64 classes.
                             if (!path.toFile().delete() && Files.exists(path)) {
                                 Log.warn("[test] stopPlugin could not delete $path; the next class will boot on it")
                             }
