@@ -122,8 +122,10 @@ object Config {
             }
             config
         } catch (e: IOException) {
+            Log.err(bundle["config.load.failed", name], e)
             null
         } catch (e: SerializationException) {
+            Log.err(bundle["config.parse.failed", name], e)
             null
         }
     }

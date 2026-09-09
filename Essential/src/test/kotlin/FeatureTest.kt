@@ -1360,7 +1360,7 @@ class FeatureTest {
     }
 
     /**
-     * The record.* status keys are the achievement counters chip 07 persists. Progress earned on a
+     * The record.* status keys are the counters the achievements module persists. Earned on a
      * temporary player object was dropped when that object was merged into the real one.
      */
     @Test
