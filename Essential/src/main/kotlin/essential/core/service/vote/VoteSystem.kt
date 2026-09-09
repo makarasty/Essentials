@@ -34,7 +34,6 @@ import mindustry.io.SaveIO
 import mindustry.net.Administration
 import mindustry.net.Packets
 import mindustry.net.WorldReloader
-import java.util.*
 import kotlin.time.Duration.Companion.minutes
 
 
@@ -43,6 +42,74 @@ private val noWords = setOf("n", "no", "ні", "-")
 
 private fun isYes(message: String) = message.trim().lowercase() in yesWords
 private fun isNo(message: String) = message.trim().lowercase() in noWords
+
+/**
+ * The save a passed `vote back` restores: the newest `rollback_*.msav` on disk.
+ *
+ * Only the plugin's own backups are eligible. They are written by the map backup task, capped by
+ * `command.rollback.limit` and deleted on every world load, so the newest one always belongs to the map
+ * being played. The engine's `auto_*` autosaves are not: they survive a map change, the first one on a
+ * new map is not written for `autosaveSpacing` seconds, and `SaveIO.load` performs no map check - so for
+ * that window the newest autosave on disk is the previous map, and restoring it would swap the server
+ * onto it.
+ *
+ * The timestamps are compared as longs. Arc's `Seq.min` and `Seq.max` read them through a float, which
+ * at the current epoch cannot separate two saves written within about two minutes of each other.
+ */
+internal fun findVoteBackSave(): Fi? =
+    Vars.saveDirectory
+        .findAll { f: Fi -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
+        .maxByOrNull { it.lastModified() }
+
+/**
+ * The repeating decay the `vote random` fire outcome leaves behind: every ten seconds it takes nine
+ * tenths of every unit's health and twenty nine thirtieths of every building's, [ticks] times, calling
+ * [onSupply] at the half way mark. It stops when the world is replaced, and when the countdown runs out.
+ *
+ * The returned task is the one that was scheduled, so cancelling it stops the decay. Written as a
+ * `java.util.TimerTask` this still compiled - that class is a [Runnable], so `Timer.schedule` bound its
+ * `Runnable` overload, wrapped the object in an arc task of its own and returned that instead - but the
+ * wrapper was discarded and the object's own `cancel()` then cancelled a `java.util.Timer` scheduling
+ * that had never happened. Nothing could stop the decay, on this map or any map loaded after it.
+ */
+internal fun scheduleFireDecay(ticks: Int = 600, onSupply: () -> Unit): Timer.Task {
+    val task = object : Timer.Task() {
+        var tick = ticks
+        val listener: Cons<WorldLoadEvent>
+
+        init {
+            listener = Cons<WorldLoadEvent> {
+                this.cancel()
+            }
+
+            Events.on(WorldLoadEvent::class.java, listener)
+        }
+
+        override fun cancel() {
+            Events.remove(WorldLoadEvent::class.java, listener)
+            super.cancel()
+        }
+
+        override fun run() {
+            tick--
+            Groups.unit.each {
+                it.health(it.health() / 10)
+            }
+            Groups.build.each {
+                it.health(it.health() / 30)
+            }
+            if (tick == ticks / 2) {
+                onSupply()
+            }
+            if (tick <= 0) {
+                cancel()
+            }
+        }
+    }
+
+    Timer.schedule(task, 0f, 10f)
+    return task
+}
 
 class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var count = 60
@@ -307,15 +374,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
                         VoteType.Back -> {
                             isSurrender = true
-                            val savePath: Fi? = if (Core.settings.getBool("autosave")) {
-                                Vars.saveDirectory.findAll { f: Fi ->
-                                    f.name().startsWith("auto_")
-                                }.min { obj: Fi -> obj.lastModified().toFloat() }
-                            } else {
-                                Vars.saveDirectory.findAll { f ->
-                                    f.name().startsWith("rollback_") && f.name().endsWith(".msav")
-                                }.maxByOrNull { it.lastModified() }
-                            }
+                            val savePath: Fi? = findVoteBackSave()
 
                             if (savePath != null && savePath.exists()) {
                                 try {
@@ -406,44 +465,16 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                                     }
                                                 }
 
-                                                Timer.schedule(object : TimerTask() {
-                                                    var tick = 600
-                                                    val listener: Cons<WorldLoadEvent>
-
-                                                    init {
-                                                        listener = Cons<WorldLoadEvent> {
-                                                            this.cancel()
-                                                        }
-
-                                                        Events.on(WorldLoadEvent::class.java, listener)
+                                                scheduleFireDecay {
+                                                    send("command.vote.random.supply")
+                                                    repeat(2) {
+                                                        UnitTypes.oct.spawn(
+                                                            voteData.starter.player.team(),
+                                                            voteData.starter.player.x,
+                                                            voteData.starter.player.y
+                                                        )
                                                     }
-
-                                                    override fun cancel(): Boolean {
-                                                        Events.remove(WorldLoadEvent::class.java, listener)
-                                                        return super.cancel()
-                                                    }
-
-                                                    override fun run() {
-                                                        tick--
-                                                        Groups.unit.each {
-                                                            it.health(it.health() / 10)
-                                                        }
-                                                        Groups.build.each {
-                                                            it.health(it.health() / 30)
-                                                        }
-                                                        if (tick == 300) {
-                                                            send("command.vote.random.supply")
-                                                            repeat(2) {
-                                                                UnitTypes.oct.spawn(
-                                                                    voteData.starter.player.team(),
-                                                                    voteData.starter.player.x,
-                                                                    voteData.starter.player.y
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-
-                                                }, 0f, 10f)
+                                                }
 
                                             }
 
