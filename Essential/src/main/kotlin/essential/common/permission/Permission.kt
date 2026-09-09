@@ -29,17 +29,21 @@ import org.jetbrains.exposed.v1.r2dbc.update
 import java.util.*
 
 object Permission {
-    private var main: Map<String, RoleConfig> = mapOf()
-    private var user: Map<String, PermissionData>? = mapOf()
-    private var userRaw: Map<String, YamlNode> = mapOf()
-    private var userFileValid = true
-    private var userFileError: String? = null
+    // /reload runs load() on Dispatchers.IO while the game thread reads these on every command and
+    // every build action, so each one is published rather than left to chance. Main.conf is @Volatile
+    // for the same reason. Publication only: the read-modify-writes in setGroup, removeUserEntry and
+    // writeUser are still unguarded, and the annotation does not make a third one safe.
+    @Volatile private var main: Map<String, RoleConfig> = mapOf()
+    @Volatile private var user: Map<String, PermissionData>? = mapOf()
+    @Volatile private var userRaw: Map<String, YamlNode> = mapOf()
+    @Volatile private var userFileValid = true
+    @Volatile private var userFileError: String? = null
     // permission.yaml owns fileDefault and the permission_user.yaml decode reads it through
     // PermissionData.group; the account service owns authDefault and answers for a player whose data
     // could not be loaded. One field carried both, so every reload answered the second question with
     // the first answer: load() runs again on reload and the service inits only once, at boot.
-    private var fileDefault = "user"
-    private var authDefault: String? = null
+    @Volatile private var fileDefault = "user"
+    @Volatile private var authDefault: String? = null
     val default: String get() = authDefault ?: fileDefault
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
@@ -86,23 +90,36 @@ object Permission {
     }
 
     fun load() {
-        fileDefault = "user"
-        // permission.yaml first: PermissionData.group falls back to `fileDefault` at the moment
-        // kotlinx.serialization builds each entry, so the user file can only be decoded once
-        // the role marked `default: true` has been read out of permission.yaml.
-        try {
-            main = if (mainFile.exists()) {
+        // permission.yaml first: PermissionData.group falls back to the file default at the moment
+        // kotlinx.serialization builds each entry, so the user file can only be decoded once the role
+        // marked `default: true` has been read out of permission.yaml.
+        //
+        // Both are built as locals and published at the end. `main` is @Volatile and the inheritance
+        // walk below adds to the RoleConfig lists inside it, so assigning it before the walk would
+        // reliably hand the game thread a role whose inherited nodes are not in it yet - the reload
+        // window is exactly when commands are flying. A parse failure keeps the map that was already
+        // loaded, as it always did, and on that path the walk really does run over the live map.
+        var nextDefault = "user"
+        val parsed = try {
+            if (mainFile.exists()) {
                 yaml.decodeFromString(MapSerializer(String.serializer(), RoleConfig.serializer()), mainFile.readString())
             } else {
                 mapOf()
             }
         } catch (e: Exception) {
             Log.warn("Failed to parse permission.yaml: ${e.message}")
+            null
         }
+        // On the failure path this is the live, already-published map, and the walk below must stay
+        // idempotent for that to be safe: every mutation in it is guarded by
+        // `!roleConfig.permission.contains(permission)`, so re-walking an expanded map writes nothing
+        // at all. An unguarded mutation added there would start editing a map the game thread is
+        // reading, from Dispatchers.IO.
+        val roles = parsed ?: main
 
-        for ((name, roleConfig) in main) {
-            if (fileDefault == "user" && roleConfig.default == true) {
-                fileDefault = name
+        for ((name, roleConfig) in roles) {
+            if (nextDefault == "user" && roleConfig.default == true) {
+                nextDefault = name
             }
 
             var inheritance: String? = roleConfig.inheritance
@@ -113,7 +130,7 @@ object Permission {
                     Log.warn("[Permission] role '$name' inherits in a circle through '$next'. The chain is cut there; fix the 'inheritance:' lines in permission.yaml.")
                     break
                 }
-                val inheritedRole = main[next] ?: break
+                val inheritedRole = roles[next] ?: break
                 for (permission in inheritedRole.permission) {
                     // equals, not contains: a substring test also excludes killall, kickall and any
                     // later node with those three letters in it, and does it silently.
@@ -124,6 +141,9 @@ object Permission {
                 inheritance = inheritedRole.inheritance
             }
         }
+
+        main = roles
+        fileDefault = nextDefault
 
         try {
             if (userFile.exists()) {
