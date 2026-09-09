@@ -167,4 +167,30 @@ class PermissionLoadTest {
         }
     }
 
+
+    @Test
+    fun permission_aUserFileEditThatChangesNothingKeepsTheFileAndItsBackup() {
+        val userFile = rootPath.child("permission_user.yaml")
+        val backupFile = rootPath.child("permission_user.yaml.bak")
+        val goodUser = userFile.readString()
+        val uuid = "uuid-with-no-entry"
+
+        try {
+            userFile.writeString("# an operator comment, and an entry for nobody\n---\n", false)
+            Permission.load()
+            if (backupFile.exists()) backupFile.delete()
+            val before = userFile.readString()
+
+            // What /setperm does for a player the file carries no entry for: it wants the live effect
+            // and nothing else, and there is no other way to ask for it.
+            Permission.removeUserEntry(uuid, "visitor")
+
+            assertFalse(backupFile.exists(), "an edit that removes nothing must not overwrite the backup")
+            assertEquals(before, userFile.readString(), "and must leave the operator's own comments alone")
+        } finally {
+            if (backupFile.exists()) backupFile.delete()
+            userFile.writeString(goodUser, false)
+            Permission.load()
+        }
+    }
 }

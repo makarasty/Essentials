@@ -304,6 +304,14 @@ object Permission {
         val next = userRaw.toMutableMap()
         edit(next)
 
+        // An edit that changes nothing still cost the operator their backup and every comment and blank
+        // line in the file, because the write re-serialises from the parsed form. Node equality carries
+        // the YamlPath, and patchGroup builds its nodes at the root, so the comparison has to be
+        // equivalentContentTo rather than ==.
+        if (next.keys == userRaw.keys && next.all { (uuid, node) -> userRaw.getValue(uuid).equivalentContentTo(node) }) {
+            return true
+        }
+
         if (userFile.exists()) userFile.copyTo(userBackupFile)
         userFile.writeString(comment + "\n" + yaml.encodeToString(rawSerializer, next), false)
         userRaw = next
