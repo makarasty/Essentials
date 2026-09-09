@@ -108,6 +108,14 @@ data class PlayerData(
 
     var temporary = false
 
+    /**
+     * The row as this server last read or wrote it. [update] sends only the columns that differ from
+     * it, so saving for an unrelated reason no longer reverts a ban, a mute, a group or a password
+     * another server wrote to the same row in the meantime. Null on a row this process built itself,
+     * which is still written whole.
+     */
+    var dbSnapshot: PlayerData? = null
+
     suspend fun update(): Boolean {
         if (temporary) {
             Log.warn("Player data of $name ($uuid) is temporary, the changes are kept in memory only.")

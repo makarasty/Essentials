@@ -16,6 +16,8 @@ import essential.common.database.data.PlayerData
 import essential.common.database.data.checkPlayerBanned
 import essential.common.database.data.createPlayerData
 import essential.common.database.data.getPlayerData
+import essential.common.database.LEGACY_BASELINE_VERSION
+import essential.common.database.data.getPluginData
 import essential.common.database.databaseClose
 import essential.common.database.defaultDatabase
 import essential.common.database.worldHistoryDatabase
@@ -489,6 +491,41 @@ class PluginTest {
     @AfterTest
     fun resetEnv() {
         System.clearProperty("test")
+    }
+
+    @Test
+    fun dbFreshVersionTest_19() {
+        // stopPlugin() deletes the H2 files, so the next boot creates the database from scratch and
+        // plugin_data is inserted by createPluginData(). That row used to start at version 0, which
+        // sent the following start into the legacy upgrade path - scripts that rename tables this
+        // database never had. A database this build just created is at the current baseline.
+        if (Core.app != null) stopPlugin()
+        loadGame(deleteConfig = false)
+        Main.conf = CoreConfig()
+
+        // stopPlugin() only deletes the files when a plugin was running, and a filtered run may start
+        // here with a database left behind by an earlier run. Delete them outright, as dbUpgradeTest_20
+        // does, so the next boot really does create the database.
+        val dataDir = Paths.get("config", "mods", "Essentials", "data")
+        dataDir.toFile().mkdirs()
+        Files.walk(dataDir).use { stream ->
+            stream.filter { path ->
+                path.fileName.toString().startsWith("database") ||
+                path.fileName.toString().startsWith("worldHistory")
+            }.sorted(Comparator.reverseOrder()).forEach { path ->
+                path.toFile().delete()
+            }
+        }
+
+        loadPlugin(force = true)
+
+        runBlocking {
+            val data = getPluginData()
+            assertNotNull(data, "plugin_data row should exist after a fresh start")
+            assertEquals(LEGACY_BASELINE_VERSION, data.databaseVersion)
+        }
+
+        stopPlugin()
     }
 
     @Test

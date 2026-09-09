@@ -131,10 +131,13 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     reshapeMapRatingIndex()
 
-    val currentDbVersion = runFlywayMigration(databaseType, r2dbcUrl, user, pass)
-    if (currentDbVersion != null) {
-        currentDbVersion.toUByteOrNull()?.let { updatePluginVersion(it) }
-    }
+    // Flyway keeps its own history table and knows nothing about plugin_data.database_version.
+    // With baselineVersion("5") its answer here is the constant 5 whether it migrated anything,
+    // baselined an untouched schema, or found a schema another server had already baselined, so
+    // feeding it into updatePluginVersion marked a legacy upgrade that had just aborted as done and
+    // every later start skipped the legacy path. plugin_data.database_version is now written only by
+    // the legacy upgrade, and only when it reaches its end.
+    runFlywayMigration(databaseType, r2dbcUrl, user, pass)
 }
 
 /**
@@ -267,7 +270,27 @@ private suspend fun updatePluginVersion(version: UByte) {
     }
 }
 
-private const val LEGACY_BASELINE_VERSION: UByte = 5u
+/**
+ * The legacy upgrade scripts to try for one version step, most specific first.
+ *
+ * The generic `v<n>.sql` is the MySQL-flavoured script, so it is the correct fallback for MySQL and
+ * MariaDB, which ship no suffixed file of their own. An `_h2` entry in the middle of this list used
+ * to win instead, which fed H2-only syntax - `CURRENT_TIMESTAMP(9)`, `ADD COLUMN IF NOT EXISTS`,
+ * `DROP CONSTRAINT IF EXISTS` - to every other engine and left `v<n>.sql` unreachable.
+ */
+internal fun legacySqlCandidates(version: UByte, dialect: DatabaseDialect?): List<String> {
+    val suffix = when (dialect) {
+        is H2Dialect -> "_h2"
+        is PostgreSQLDialect -> "_postgres"
+        // MariaDBDialect is a MysqlDialect, so it has to be matched first.
+        is MariaDBDialect -> "_mariadb"
+        is MysqlDialect -> "_mysql"
+        else -> ""
+    }
+    return listOf("v$version$suffix.sql", "v$version.sql").distinct()
+}
+
+internal const val LEGACY_BASELINE_VERSION: UByte = 5u
 
 private suspend fun upgradeLegacyDatabase() {
     try {
@@ -308,19 +331,21 @@ private suspend fun upgradeLegacyDatabase() {
             return
         }
 
+        // Zero is not a legacy version: the only thing that ever wrote it is createPluginData(), on a
+        // database this build had just created at the current shape. The legacy scripts start at v4
+        // and rename tables that such a database does not have, so running them would fail on every
+        // start. Stamp the baseline instead.
+        if (currentVersion == 0u.toUByte()) {
+            updatePluginVersion(LEGACY_BASELINE_VERSION)
+            return
+        }
+
         if (currentVersion < LEGACY_BASELINE_VERSION) {
             Log.info(bundle["database.upgrade.start", currentVersion, LEGACY_BASELINE_VERSION])
 
             for (v in (currentVersion.toUInt() + 1u)..LEGACY_BASELINE_VERSION.toUInt()) {
                 val version = v.toUByte()
-                val dialectSuffix = when (defaultDatabase!!.config.explicitDialect) {
-                    is H2Dialect -> "_h2"
-                    is PostgreSQLDialect -> "_postgres"
-                    is MariaDBDialect -> "_mariadb"
-                    is MysqlDialect -> "_mysql"
-                    else -> ""
-                }
-                val sqlFiles = listOf("v${version}${dialectSuffix}.sql", "v${version}_h2.sql", "v${version}.sql")
+                val sqlFiles = legacySqlCandidates(version, defaultDatabase!!.config.explicitDialect)
 
                 for (sqlFile in sqlFiles) {
                     val inputStream = Main::class.java.classLoader.getResourceAsStream("sql/$sqlFile")
@@ -362,6 +387,9 @@ private suspend fun upgradeLegacyDatabase() {
             Log.info(bundle["database.upgrade.end"])
         }
     } catch (e: Exception) {
+        // The version column is deliberately left where it was: an upgrade that did not reach its end
+        // has to be retried on the next start, on this server and on every other one sharing the row.
+        Log.warn("Legacy database upgrade did not finish, plugin_data.database_version was left unchanged: ${e.message}")
         e.printStackTrace()
     }
 }

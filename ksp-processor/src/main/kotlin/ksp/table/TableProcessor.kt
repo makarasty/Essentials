@@ -120,6 +120,46 @@ class TableProcessor(
             }
         }
 
+        fun needsJson(property: KSPropertyDeclaration): Boolean {
+            val typeDecl = property.type.resolve().declaration as? KSClassDeclaration
+            return !isSimpleType(typeDecl) && isSerializableType(typeDecl)
+        }
+
+        val columns = properties.filter { it.simpleName.asString() != "id" }
+        // A class whose columns are all `val` can never differ from the row it was read from, so
+        // there is nothing to narrow and it keeps the plain full-row update.
+        val tracked = columns.any { it.isMutable }
+        val hasJsonColumn = columns.any { needsJson(it) }
+
+        fun constructorCall(deepCopyJson: Boolean): String {
+            val body = StringBuilder("$className(\n")
+            properties.forEachIndexed { index, property ->
+                val name = property.simpleName.asString()
+                val value = if (deepCopyJson && needsJson(property)) {
+                    val typeName = (property.type.resolve().declaration as KSClassDeclaration).simpleName.asString()
+                    "generatedJson.decodeFromString<$typeName>(Json.encodeToString(this.$name))"
+                } else {
+                    "this.$name"
+                }
+                body.append("    $name = $value")
+                if (index < properties.size - 1) body.append(",")
+                body.append("\n")
+            }
+            body.append(")")
+            return body.toString()
+        }
+
+        if (tracked) {
+            sb.append("/**\n")
+            sb.append(" * The row as it was last read from or written to the database. A serialised column is\n")
+            sb.append(" * copied rather than shared, so mutating one in place still counts as a change.\n")
+            sb.append(" */\n")
+            sb.append("@OptIn(ExperimentalTime::class)\n")
+            sb.append("private fun $className.snapshotOfRow(): $className = ")
+            sb.append(constructorCall(deepCopyJson = true))
+            sb.append("\n\n")
+        }
+
         // toData extension for Table
         sb.append("/**\n")
         sb.append(" * Converts a ResultRow to a $className instance.\n")
@@ -151,7 +191,8 @@ class TableProcessor(
             sb.append("\n")
         }
 
-        sb.append("    )\n")
+        sb.append("    )")
+        sb.append(if (tracked) ".also { it.dbSnapshot = it.snapshotOfRow() }\n" else "\n")
         sb.append("}\n\n")
 
         // mapToClassNameList
@@ -172,26 +213,55 @@ class TableProcessor(
         sb.append("@OptIn(ExperimentalTime::class)")
         sb.append("suspend fun $className.update(): Boolean {\n")
         sb.append("    val data = this\n")
+        if (tracked) {
+            sb.append("    // Only the columns this server actually changed are written. These rows are shared by\n")
+            sb.append("    // several servers, and a full-row write from a copy loaded at join time silently reverted\n")
+            sb.append("    // whatever another server had written to the other columns in the meantime. A row this\n")
+            sb.append("    // process built itself carries no snapshot and is still written whole.\n")
+            sb.append("    val base = data.dbSnapshot\n")
+            if (!hasJsonColumn) {
+                sb.append("    if (base != null && base == data) return true\n")
+            }
+            sb.append("    // The values actually sent, taken before the round trip: this object goes on being\n")
+            sb.append("    // mutated from other threads while the write is in flight, and recording the state it\n")
+            sb.append("    // reached afterwards as persisted would drop whatever changed in between.\n")
+            sb.append("    val written = data.snapshotOfRow()\n")
+        }
+        // Untracked classes have no snapshot, so they write straight from the live object as before.
+        val source = if (tracked) "written" else "data"
         if (db.isNotEmpty()) {
-            sb.append("    return suspendTransaction(db = $db) {\n")
+            sb.append("    val rows = suspendTransaction(db = $db) {\n")
         } else {
-            sb.append("    return suspendTransaction {\n")
+            sb.append("    val rows = suspendTransaction {\n")
         }
         sb.append("        $tableClassName.update({ $tableClassName.id eq data.id }) {\n")
 
-        properties.filter { it.simpleName.asString() != "id" }.forEach { property ->
+        columns.forEach { property ->
             val propertyName = property.simpleName.asString()
-            val typeDecl = property.type.resolve().declaration as? KSClassDeclaration
-            val needsJson = !isSimpleType(typeDecl) && isSerializableType(typeDecl)
-            if (needsJson) {
-                sb.append("            it[$tableClassName.$propertyName] = Json.encodeToString(data.$propertyName)\n")
+            val assignment = if (needsJson(property)) {
+                "it[$tableClassName.$propertyName] = Json.encodeToString($source.$propertyName)"
             } else {
-                sb.append("            it[$tableClassName.$propertyName] = data.$propertyName\n")
+                "it[$tableClassName.$propertyName] = $source.$propertyName"
+            }
+            // A serialised column is mutated in place by whoever holds it, so the snapshot cannot see
+            // that its contents moved and it is always rewritten.
+            if (tracked && !needsJson(property)) {
+                sb.append("            if (base == null || base.$propertyName != written.$propertyName) $assignment\n")
+            } else {
+                sb.append("            $assignment\n")
             }
         }
 
-        sb.append("        } > 0\n")
+        sb.append("        }\n")
         sb.append("    }\n")
+        if (tracked) {
+            sb.append("    // The statement committed, so these values are what the row holds now whether or not the\n")
+            sb.append("    // server counted a change: MySQL reports rows changed rather than rows matched, so a\n")
+            sb.append("    // sibling that had already written the same value would otherwise leave this baseline\n")
+            sb.append("    // stale for good.\n")
+            sb.append("    data.dbSnapshot = written\n")
+        }
+        sb.append("    return rows > 0\n")
         sb.append("}\n")
 
         return sb.toString()
