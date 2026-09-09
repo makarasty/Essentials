@@ -47,7 +47,7 @@ data class ProtectConfig(
     data class Account(
         @YamlComment("Enable account authentication system")
         var enabled: Boolean = false,
-        @YamlComment("Authentication method: None, Password, or Discord")
+        @YamlComment("Authentication method: None, Password, or Discord (Discord needs the separate essential-discord mod; without it there is no login prompt, only the action filter)")
         private val authType: String = AuthType.None.name,
         @YamlComment("Discord OAuth URL for Discord-based authentication")
         var discordURL: String = ""

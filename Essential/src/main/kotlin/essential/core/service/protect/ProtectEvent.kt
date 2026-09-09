@@ -222,8 +222,13 @@ fun playerJoin(e: EventType.PlayerJoin) {
                 }
 
                 if (!exists) {
-                    //data.send("event.discord.not.registered")
-                    // TODO discord 로그인 추가
+                    // There is no Discord login on this path - the action filter is the only gate,
+                    // and it denies silently. Say so rather than leaving the player in a server
+                    // where nothing they do works.
+                    arc.Core.app.post {
+                        Groups.player.find { p -> p.uuid() == uuid }
+                            ?.sendMessage(Bundle(locale)["event.discord.not.registered"])
+                    }
                 } else {
                     val reason = Bundle(locale)["event.player.name.duplicate"]
                     arc.Core.app.post {
