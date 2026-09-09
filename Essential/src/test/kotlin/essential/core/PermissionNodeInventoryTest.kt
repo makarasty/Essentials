@@ -60,8 +60,8 @@ class PermissionNodeInventoryTest {
          */
         private val ONLY_OWNER = setOf(
             "broadcast", "changename", "exp", "fuck", "hub.build", "js", "kickall", "killall",
-            "killunit", "log", "setitem", "setperm", "t", "unban", "vote.admin",
-            "vote.random.bypass", "votekick", "ws",
+            "killunit", "log", "setitem", "setperm", "unban", "vote.admin", "vote.random.bypass",
+            "votekick", "ws",
         )
 
         private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
