@@ -1130,6 +1130,8 @@ fun worldLoad(event: WorldLoadEvent) {
     Rtv.reset()
     isCheated = false
     mapRatings.clear()
+    // The coordinates in here are tile positions on the map that is being replaced.
+    worldEditSelection.clear()
 
     // Every world replacement routes through WorldLoadEvent - loadMap, save loading, the console's own
     // host and load, and /vote back - so this is the one place that catches all of them. Clearing only at
