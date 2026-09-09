@@ -24,6 +24,7 @@ admin:
     - kill.other
     - meme
     - mute
+    - nextmap.admin
     - pause
     - pm.other
     - pvp.spector
@@ -52,6 +53,7 @@ user:
     - maps
     - me
     - motd
+    - nextmap
     - players
     - pm
     - ranking
