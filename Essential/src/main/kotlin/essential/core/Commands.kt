@@ -3202,6 +3202,11 @@ class Commands {
                     Log.info(Bundle()["config.permission.updated"])
                     Main.conf = Main.reloadConf()
                     ModuleRuntime.reloadEnabledConfigurations()
+                    // feature.vote.enabled, enableVotekick and bannedCommands are read once at boot, so
+                    // reloading conf alone leaves the handler holding what it was given then. Idempotent:
+                    // CommandHandler.register replaces by name and removeCommand is a no-op on an absent
+                    // name, so this lands on the same end state whatever the handler started from.
+                    Main.syncClientCommands(Vars.netServer.clientCommands)
                     Log.info(Bundle()["config.reloaded"])
                 } catch (e: Exception) {
                     Log.err("Failed to reload the plugin configuration, keeping the previous one.", e)

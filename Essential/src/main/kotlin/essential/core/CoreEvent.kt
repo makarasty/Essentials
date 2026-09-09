@@ -1481,9 +1481,12 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
                     // explicitly - swapping the reference alone leaves every already-registered
                     // listener and timer running against whichever conf it captured at registration.
                     syncProtectFallbackJoinListener()
-                    // TODO(task-171 family): Main.syncClientCommands(Vars.netServer.clientCommands)
-                    // belongs here too, once it is on main - it is on another branch, not yet
-                    // merged, and Unresolved reference confirms it from this worktree. ask/10-4.md.
+                    // Same reason, for the client command set: feature.vote.enabled, enableVotekick and
+                    // bannedCommands are read once at boot, so a conf swap alone leaves the handler
+                    // holding whatever it was given then. Idempotent - CommandHandler.register replaces
+                    // by name and removeCommand is a no-op on an absent name - so re-running it lands on
+                    // the same end state whatever the handler started from.
+                    Main.syncClientCommands(Vars.netServer.clientCommands)
                     // The description timer is built from the config; rebuild it with the new one.
                     // Config events already arrive on the game thread, so this only defers start()
                     // to the next frame rather than rendering inside the reload.
