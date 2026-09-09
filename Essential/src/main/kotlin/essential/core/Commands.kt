@@ -107,30 +107,15 @@ class Commands {
         }
 
         /**
-         * `Menus.registerMenu` appends to a process-wide Seq with no way to remove an entry - the engine
-         * exposes no unregister call at all. Registering a fresh one per menu opened (this command runs
-         * on every /info, /players, /maps, ... call) grew that Seq and the PlayerData each closure
-         * captured without bound for the life of the server. One id is registered once and reused; each
-         * call here only replaces this uuid's current listener, so the old closure - and whatever it
-         * captured - is eligible for collection instead of retained forever. Same shape as
-         * Undo.menuId/Undo.kt, which already does this for its own menu.
-         *
          * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
          * may call with any id, so the engine hands every id it receives straight to the listener
          * registered under it. A menu that acts on behalf of the player it was opened for therefore
          * has to check the responder itself; nothing below this call does it.
          */
-        private val ownedMenuListeners = ConcurrentHashMap<String, (Player, Int) -> kotlin.Unit>()
-        private val ownedMenuId: Int by lazy {
-            Menus.registerMenu { player, option -> ownedMenuListeners[player.uuid()]?.invoke(player, option) }
-        }
-
-        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int {
-            ownedMenuListeners[owner.uuid] = { player, option ->
+        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int =
+            Menus.registerMenu { player, option ->
                 if (player.uuid() == owner.uuid) listener(player, option)
             }
-            return ownedMenuId
-        }
 
         /**
          * Calculate the Levenshtein distance between two strings
