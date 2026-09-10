@@ -401,7 +401,11 @@ class Commands {
                     if (arg.size == 2) {
                         val other = PlayerLookup.offline(arg[1], playerData) ?: return@launch
                         other.hideRanking = !other.hideRanking
-                        scope.launch { other.update() }
+                        // Awaited, not detached. The enclosing body is already a coroutine - which is why
+                        // the self branch below can await - so scope.launch bought nothing and sent the
+                        // confirmation whether or not the row was written. /ranking filters on the row, so
+                        // a failed write left the admin told the opposite of what they would then see.
+                        other.update()
                         val msg = if (other.hideRanking) "hide" else "unhide"
                         playerData.send("command.exp.ranking.$msg")
                         return@launch
