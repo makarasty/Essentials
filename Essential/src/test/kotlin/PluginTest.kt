@@ -252,6 +252,69 @@ class PluginTest {
             playerDataRetries.clear()
         }
 
+        /**
+         * Error-log text a test has declared it is about to cause. See [expectingErrors].
+         *
+         * Copy-on-write because the plugin logs from `Dispatchers.IO`, the ping thread and the arc
+         * main thread, and the guard below reads this on whichever of those the log came from.
+         */
+        private val expectedErrors = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+        /**
+         * The harness's log guard: **a test must not pass while the plugin is logging errors it did
+         * not expect**, so an error-level line throws unless a test has said it is coming.
+         *
+         * Before the opt-in existed, every deliberate error path in the plugin was untestable - the
+         * code logged, this threw, and the test failed for a reason unrelated to its assertion. That
+         * is a large part of why the error paths this audit found defective had no coverage.
+         *
+         * Two limits worth knowing before you trust it, both measured rather than argued:
+         *
+         * 1. **It is not live for most of the suite.** It is installed here, on the cold-boot path,
+         *    which runs once per JVM; [stopPlugin] puts `baseLogHandler` back and nothing reinstalls
+         *    it. So it guards only the classes that run before the first `stopPlugin()`.
+         * 2. **The throw lands wherever the log call was.** A `Log.err` from a coroutine worker throws
+         *    on that worker and prints `Exception in thread "DefaultDispatcher-worker-N"`; the test
+         *    thread never sees it and the test passes. One inside a `runCatching` or a broad `catch`
+         *    in the plugin is swallowed outright.
+         *
+         * Neither is repaired here: making it durable changes what the whole suite is allowed to log
+         * and needs its own measurement (see `ask/T-2.md`).
+         */
+        fun errorGuardingHandler(base: Log.LogHandler, tap: (String) -> Unit): Log.LogHandler =
+            Log.LogHandler { level, text ->
+                base.log(level, text)
+                tap(text)
+                if (level == Log.LogLevel.err && expectedErrors.none { text.contains(it) }) {
+                    throw RuntimeException("Error detected in logs: $text")
+                }
+            }
+
+        /**
+         * Runs [body] with the guard above suspended for error lines containing any of [substrings].
+         * Every other error line still fails the test, and the allowance ends with the block even if
+         * it throws.
+         *
+         * Use it to test an error path, not to silence one that surprised you:
+         *
+         *     expectingErrors("Failed to load map") {
+         *         clientCommand.handleMessage("/changemap nonexistent", player)
+         *         assertEquals(err("command.changemap.not.found"), playerData.lastReceivedMessage)
+         *     }
+         *
+         * The allowance is global for the duration of the block, because the log line it is waiting
+         * for usually arrives on another thread. Keep the block tight for that reason.
+         */
+        fun <T> expectingErrors(vararg substrings: String, body: () -> T): T {
+            require(substrings.isNotEmpty()) { "expectingErrors needs at least one substring to allow" }
+            expectedErrors.addAll(substrings)
+            try {
+                return body()
+            } finally {
+                substrings.forEach { expectedErrors.remove(it) }
+            }
+        }
+
         @OptIn(ExperimentalPathApi::class)
         fun loadGame(loadPlugin: Boolean = false, deleteConfig: Boolean = true, logHandler: (String) -> Unit = {}, force: Boolean = false) {
             if (gameLoaded && !force) {
@@ -321,14 +384,7 @@ class PluginTest {
                     override fun setup() {
                         // Reset to the pristine logger first so prior tests' handlers don't stack.
                         Log.logger = baseLogHandler
-                        val originalLogger = Log.logger
-                        Log.logger = Log.LogHandler { level, text ->
-                            originalLogger.log(level, text)
-                            logHandler(text)
-                            if (level == Log.LogLevel.err) {
-                                throw RuntimeException("Error detected in logs: $text")
-                            }
-                        }
+                        Log.logger = errorGuardingHandler(baseLogHandler, logHandler)
                         headless = true
                         net = Net(null)
                         tree = FileTree()
@@ -932,6 +988,45 @@ class PluginTest {
         assertTrue(pvpPlayer.isEmpty(), "pvpPlayer carried into the next class")
         assertTrue(worldEditSelection.isEmpty(), "worldEditSelection carried into the next class")
         assertTrue(Commands.charsPlacing.isEmpty(), "a pending /chars placement carried into the next class")
+    }
+
+    /**
+     * The error guard and its opt-in, asserted against a handler this test installs itself rather
+     * than against whichever one the run happens to be holding - the installed handler depends on
+     * whether any class has called [stopPlugin] yet, and a test whose outcome depends on class order
+     * is not a test.
+     */
+    @Test
+    fun errorGuardTest_22() {
+        loadGame()
+        val previous = Log.logger
+        try {
+            // baseLogHandler, not `previous`: whichever handler the run is holding may itself be a
+            // guard, and nesting one guard inside another would throw from the base call instead.
+            Log.logger = errorGuardingHandler(baseLogHandler) {}
+
+            assertFailsWith<RuntimeException>("an error the test did not declare must fail it") {
+                Log.err("guard probe: undeclared")
+            }
+
+            expectingErrors("guard probe: declared") {
+                Log.err("guard probe: declared")
+                Log.warn("guard probe: a warning is not an error")
+            }
+
+            assertFailsWith<RuntimeException>("the allowance must not outlive its block") {
+                Log.err("guard probe: declared")
+            }
+
+            // The allowance is by substring and must not let a different error through with it.
+            assertFailsWith<RuntimeException>("an allowance must not cover an unrelated error") {
+                expectingErrors("guard probe: declared") {
+                    Log.err("guard probe: something else")
+                }
+            }
+        } finally {
+            Log.logger = previous
+        }
     }
 
     @Test
