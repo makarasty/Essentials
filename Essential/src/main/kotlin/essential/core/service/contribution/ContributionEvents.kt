@@ -17,7 +17,10 @@ import mindustry.game.EventType.*
 import mindustry.gen.Building
 import mindustry.gen.Groups
 import mindustry.gen.Unit
+import mindustry.type.Category
 import mindustry.type.Item
+import mindustry.world.Block
+import mindustry.world.blocks.ConstructBlock
 import mindustry.world.blocks.production.Drill
 import mindustry.world.blocks.production.GenericCrafter
 
@@ -35,6 +38,16 @@ private val unitController = mutableMapOf<Int, String>()
 /** Building positions already scored for the one-time factory-build bonus. */
 private val scoredFactories = mutableSetOf<Int>()
 
+/**
+ * Tile position -> the last per-second output pollProduction measured for it while it was still a live
+ * drill or crafter. The engine swaps a building for a ConstructBlock proxy before BlockBuildEndEvent
+ * fires for a deconstruction, so by the time that handler runs, tile.build is a ConstructBuild and
+ * estimateOutputPerSecond(it) can only ever see 0.0 (task-070) - the real building's state is gone, not
+ * just uncomputed. This is the closest thing to it still available: the rate observed at most one poll
+ * tick ago, which pollProduction already computes for every scoring building every second anyway.
+ */
+private val lastOutputPerSecond = mutableMapOf<Int, Double>()
+
 private var timerScheduled = false
 
 private fun resetGameState() {
@@ -42,6 +55,7 @@ private fun resetGameState() {
     unitProducer.clear()
     unitController.clear()
     scoredFactories.clear()
+    lastOutputPerSecond.clear()
     for (data in players) data.currentContribution = 0.0
     for (data in offlinePlayers) data.currentContribution = 0.0
 }
@@ -52,13 +66,15 @@ private fun ownerData(uuid: String?): PlayerData? {
     return findPlayerData(uuid) ?: offlinePlayers.find { it.uuid == uuid }
 }
 
-private fun addScore(uuid: String?, amount: Double) {
+private fun addScoreData(data: PlayerData?, amount: Double) {
     if (amount == 0.0) return
-    ownerData(uuid)?.let { it.currentContribution += amount }
+    data?.let { it.currentContribution += amount }
 }
 
+private fun addScore(uuid: String?, amount: Double) = addScoreData(ownerData(uuid), amount)
+
 /** Sum of a block's item build cost. */
-private fun resourceCost(block: mindustry.world.Block): Int {
+private fun resourceCost(block: Block): Int {
     var sum = 0
     block.requirements?.forEach { sum += it.amount }
     return sum
@@ -71,8 +87,17 @@ private fun unitCost(type: mindustry.type.UnitType): Int {
     return sum
 }
 
-private fun isPenaltyExempt(blockName: String): Boolean =
-    conf.resourcePenaltyExempt.any { blockName.contains(it) }
+/**
+ * "turret" in the exemption list has to mean the block category, not a name substring: real turret
+ * names (duo, salvo, lancer, hail...) do not contain the word "turret" - only the two repair turrets do
+ * - so a substring test exempted almost no real turret and charged every one its full build cost as a
+ * negative score, the opposite of what the config comment promises (task-068). "conveyor", "duct" and
+ * "wall" stay a name-substring test: every vanilla block in those categories already carries the word in
+ * its name (titanium-conveyor, plastic-duct, copper-wall), so that half was never broken.
+ */
+private fun isPenaltyExempt(block: Block): Boolean = conf.resourcePenaltyExempt.any {
+    if (it == "turret") block.category == Category.turret else block.name.contains(it)
+}
 
 /** Stored amount of [item] in the team's first core, 0 if none. */
 private fun coreItem(building: Building, item: Item): Int {
@@ -108,6 +133,11 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
     if (!event.breaking) {
         // Record ownership.
         tileOwner[pos] = player.uuid()
+        // A producer at this position that was removed some other way (killed, an Undo rollback, a raw
+        // setBlock) never went through the breaking branch below, so its rate could still be sitting
+        // here. Whatever gets built now starts with a clean slate rather than inheriting a dead
+        // building's output.
+        lastOutputPerSecond.remove(pos)
 
         // First-build factory bonus.
         val factoryScore = conf.factoryBuildScore[block.name]
@@ -116,21 +146,28 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
         }
 
         // Build resource penalty (skip exempt blocks: conveyors, walls, turrets).
-        if (!Vars.state.rules.infiniteResources && !isPenaltyExempt(block.name)) {
+        if (!Vars.state.rules.infiniteResources && !isPenaltyExempt(block)) {
             addScore(player.uuid(), -resourceCost(block) * conf.buildPenaltyMultiplier)
         }
     } else {
-        // Self-deconstruction of a resource producer: subtract its per-second output value.
+        // Self-deconstruction of a resource producer: subtract its last observed per-second output.
+        //
+        // `block` (tile.block()) is already the ConstructBlock proxy here, not the drill or crafter that
+        // is being removed - the engine swaps it in before this event fires (task-070's other half: it is
+        // also the wrong block for the exemption check below, not just for the output estimate). The real
+        // block the proxy is tearing down is ConstructBuild.current, still set at this point.
         val owner = player.uuid()
         val build = tile.build
-        if (build != null && !isPenaltyExempt(block.name)) {
-            val perSec = estimateOutputPerSecond(build)
+        val realBlock = (build as? ConstructBlock.ConstructBuild)?.current ?: block
+        if (build != null && !isPenaltyExempt(realBlock)) {
+            val perSec = lastOutputPerSecond[pos] ?: 0.0
             if (perSec > 0.0) {
                 addScore(owner, -perSec * miningMultiplier(build))
             }
         }
         tileOwner.remove(pos)
         scoredFactories.remove(pos)
+        lastOutputPerSecond.remove(pos)
     }
 }
 
@@ -260,31 +297,46 @@ private fun estimateOutputPerSecond(build: Building): Double {
     }
 }
 
-private fun pollProduction() {
-    Groups.build.forEach { build ->
-        val owner = tileOwner[build.pos()]
+// internal, not private: task-070/task-072's regression tests drive a real poll tick directly rather
+// than waiting on the real one-second Timer, which would make them slow and share state with whatever
+// else the suite has scheduled on it.
+internal fun pollProduction() {
+    // ownerData() resolves a uuid to a PlayerData with two linear scans - players then offlinePlayers.
+    // Called once per scoring building here, every second, that cost buildings x players string
+    // comparisons every poll tick (task-072). Resolved once per tick into a map instead: building the
+    // map costs O(players), and every building's lookup afterwards is O(1) - the same shape tileOwner
+    // already uses for position -> uuid, just for the second hop, uuid -> PlayerData.
+    val ownerLookup = buildMap<String, PlayerData> {
+        for (data in offlinePlayers) put(data.uuid, data)
+        for (data in players) put(data.uuid, data) // online overrides offline, same preference as ownerData()
+    }
 
-        // Mining (drills).
+    Groups.build.forEach { build ->
+        val pos = build.pos()
+        val owner = tileOwner[pos]?.let { ownerLookup[it] }
+
+        // Mining (drills). Also the source for lastOutputPerSecond (task-070): written every tick a
+        // drill is alive, whatever it is currently producing, so a self-deconstruction penalty never
+        // reads a rate from a building that stopped mining a while before it was torn down.
         if (build is Drill.DrillBuild) {
-            val item = build.dominantItem
-            if (item != null && item != Items.coal) {
-                val perSec = estimateOutputPerSecond(build)
-                if (perSec > 0.0) {
-                    addScore(owner, perSec * conf.miningPerOre * miningMultiplier(build))
-                }
+            val perSec = estimateOutputPerSecond(build)
+            lastOutputPerSecond[pos] = perSec
+            if (perSec > 0.0) {
+                addScoreData(owner, perSec * conf.miningPerOre * miningMultiplier(build))
             }
         }
 
-        // Item production (crafters).
+        // Item production (crafters). Same lastOutputPerSecond bookkeeping as drills above.
         if (build is GenericCrafter.GenericCrafterBuild) {
+            val perSec = estimateOutputPerSecond(build)
+            lastOutputPerSecond[pos] = perSec
             val crafter = build.block as? GenericCrafter
             val outputs = crafter?.outputItems
-            if (crafter != null && outputs != null && crafter.craftTime > 0f) {
+            if (crafter != null && outputs != null && crafter.craftTime > 0f && perSec > 0.0) {
                 for (stack in outputs) {
-                    val perSec = stack.amount * 60.0 / crafter.craftTime * build.warmup
-                    if (perSec <= 0.0) continue
-                    val score = itemScore(stack.item, build) * perSec
-                    addScore(owner, score)
+                    val stackPerSec = stack.amount * 60.0 / crafter.craftTime * build.warmup
+                    if (stackPerSec <= 0.0) continue
+                    addScoreData(owner, itemScore(stack.item, build) * stackPerSec)
                 }
             }
         }
@@ -293,7 +345,7 @@ private fun pollProduction() {
         if (build.block.outputsPower) {
             val prodPerTick = build.getPowerProduction()
             if (prodPerTick > 0f) {
-                addScore(owner, prodPerTick * 60.0 * conf.powerScoreRatio)
+                addScoreData(owner, prodPerTick * 60.0 * conf.powerScoreRatio)
             }
         }
     }
