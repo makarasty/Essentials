@@ -35,6 +35,16 @@ object WorldHistoryTable : Table("world_history") {
      * work out what a bare string was meant to be. This records the answer at the one point it is still
      * known. It is the `Class.getName()` rather than a tag of our own because the consumer compares it
      * against the `Class<*>` keys of `Block.configurations`, so there is no table to keep in sync.
+     *
+     * A class name is coupled to Mindustry's internals, so an engine release that renames or moves a
+     * config class orphans every value written before it. That is safe by design and has to stay that
+     * way: the consumer uses this only to put the named class first in the list it already searches, so
+     * a stale, renamed or truncated value degrades to exactly the behaviour there was before this column
+     * existed. Never turn it into a lookup that fails when the name does not resolve.
+     *
+     * 100 is comfortably wider than anything `Block.configurations` declares today, but H2 rejects an
+     * over-long value rather than truncating it, and a rejected insert is requeued at the head of the
+     * buffer and blocks every row behind it. The writer clamps rather than trusting this width.
      */
     val kind = varchar("kind", 100).nullable()
 
