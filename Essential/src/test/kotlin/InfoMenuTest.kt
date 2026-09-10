@@ -28,6 +28,25 @@ class InfoMenuTest {
             field.isAccessible = true
             return (field.get(null) as Seq<*>).size - 1
         }
+
+        /**
+         * The id the block registered, not whatever the process registered last. `menuListeners`
+         * is process-wide and a menu id is an index into it, so anything else that registers in
+         * the window moves the last index without moving the one this block took - and a click on
+         * the wrong index reaches a different listener silently, because menuChoose only
+         * range-checks. So the id is the first index this block registered, and the count has to
+         * have moved by exactly one: a registrant that got in ahead of the block's own would make
+         * the first new index the wrong menu, and this says so instead of addressing it.
+         */
+        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
+            val before = lastMenuId()
+            block()
+            assertEquals(
+                before + 1, lastMenuId(),
+                "$what should have registered exactly one menu, otherwise this test proves nothing"
+            )
+            return before + 1
+        }
     }
 
     @BeforeTest
@@ -43,13 +62,20 @@ class InfoMenuTest {
 
     private fun admin(): Player = newPlayer().first.also { setPermission(it, "admin", true) }
 
-    private fun openInfo(admin: Player, target: Player): Int {
-        val before = lastMenuId()
-        clientCommand.handleMessage("/info ${target.name}", admin)
-        val menu = lastMenuId()
-        assertTrue(menu > before, "/info should have registered its menu, otherwise this test proves nothing")
-        return menu
-    }
+    /**
+     * By uuid, not by name: `/info` only resolves an online target and opens the menu on it
+     * synchronously when the lookup is unambiguous, and two players sharing a plain name is
+     * enough to send it down `scope.launch { ... Core.app.post { open(other) } }` instead. The
+     * menu is registered either way, so the id below is right either way - but nothing here
+     * pumps the app queue, so the menu's captured target would still be null when it is clicked.
+     * A uuid matches exactly and cannot be ambiguous. `/info <name>` is ClientCommandTest's.
+     */
+    private fun openInfo(admin: Player, target: Player): Int =
+        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
+
+    /** Clicking an option that opens the next menu; returns that menu's own id. */
+    private fun choose(player: Player, menu: Int, option: Int, what: String = "option $option"): Int =
+        menuRegisteredBy(what) { Menus.menuChoose(player, menu, option) }
 
     @Test
     fun infoMenu_strangerCannotOpenTheBanMenu() {
@@ -58,12 +84,13 @@ class InfoMenuTest {
         val target = newPlayer().first
 
         val infoMenu = openInfo(admin, target)
+        // The one claim here that is genuinely about the whole list: nothing at all was registered.
+        // An extra registration from elsewhere can only make this a false red, never a false green.
         val before = lastMenuId()
         Menus.menuChoose(stranger, infoMenu, 1)
         assertEquals(before, lastMenuId(), "a stranger's click must not open the admin's ban menu")
 
-        Menus.menuChoose(admin, infoMenu, 1)
-        assertTrue(lastMenuId() > before, "the admin who opened the menu must still reach the ban menu")
+        choose(admin, infoMenu, 1, "the admin who opened the menu must still reach the ban menu, so option 1")
     }
 
     @Test
@@ -76,9 +103,8 @@ class InfoMenuTest {
         val ipBannedBefore = Vars.netServer.admins.bannedIPs.contains(ip)
 
         val infoMenu = openInfo(admin, target)
-        Menus.menuChoose(admin, infoMenu, 1)
-        Menus.menuChoose(admin, lastMenuId(), 6)
-        val confirmMenu = lastMenuId()
+        val banMenu = choose(admin, infoMenu, 1)
+        val confirmMenu = choose(admin, banMenu, 6)
 
         Menus.menuChoose(stranger, confirmMenu, 0)
         assertFalse(Vars.netServer.admins.isIDBanned(uuid), "a stranger must not answer the admin's confirmation")

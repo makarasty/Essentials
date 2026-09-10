@@ -9,7 +9,7 @@ import mindustry.ui.Menus
 import kotlin.math.ceil
 import kotlin.test.BeforeTest
 import kotlin.test.Test
-import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 
 /**
  * task-128: /maps and /players used to page their own menu through the same PlayerData.status["page"]
@@ -28,6 +28,24 @@ class PagingMenuStalenessTest {
             val field = Menus::class.java.getDeclaredField("menuListeners")
             field.isAccessible = true
             return (field.get(null) as Seq<*>).size - 1
+        }
+
+        /**
+         * The id the block registered, not whatever the process registered last. `menuListeners`
+         * is process-wide, so "the last id" is a question about the whole JVM; the first newly
+         * registered index is this block's own, and the count has to have moved by exactly one -
+         * anything else registering in the window would otherwise be addressed silently. It
+         * matters here because the two menus this test addresses are opened either side of
+         * dozens of player joins, each of which pumps the app queue.
+         */
+        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
+            val before = lastMenuId()
+            block()
+            assertEquals(
+                before + 1, lastMenuId(),
+                "$what should have registered exactly one menu of its own, otherwise this test proves nothing"
+            )
+            return before + 1
         }
     }
 
@@ -54,10 +72,7 @@ class PagingMenuStalenessTest {
 
             // Opened first and never clicked: it stays registered (registerOwnedMenu leaks by design
             // again, per that revert) and stays reachable once whatever opens next is dismissed.
-            val beforeMaps = lastMenuId()
-            clientCommand.handleMessage("/maps", player)
-            val mapsMenu = lastMenuId()
-            assertTrue(mapsMenu > beforeMaps, "/maps should have registered its own menu, otherwise this test proves nothing")
+            val mapsMenu = menuRegisteredBy("/maps") { clientCommand.handleMessage("/maps", player) }
 
             // Enough players that /players has strictly more pages than /maps, so paging it can drive
             // the shared key past the end of /maps' own, smaller prebuilt array.
@@ -65,9 +80,9 @@ class PagingMenuStalenessTest {
                 extras.add(newPlayer().first)
             }
 
-            clientCommand.handleMessage("/players", player)
-            val playersMenu = lastMenuId()
-            assertTrue(playersMenu > mapsMenu, "/players should have registered its own, later menu")
+            // Later than /maps' by construction - menuRegisteredBy already proved each registered
+            // its own, and the list only grows.
+            val playersMenu = menuRegisteredBy("/players") { clientCommand.handleMessage("/players", player) }
 
             // Page /players forward past mapsPages - each click used to read and rewrite the shared
             // status["page"] key through /players' own listener.

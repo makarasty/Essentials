@@ -37,6 +37,32 @@ class UndoTest {
             return (field.get(null) as Seq<*>).size - 1
         }
 
+        /**
+         * The id the block registered, not whatever the process registered last.
+         *
+         * `Menus.menuListeners` is one process-wide list and a menu id is an index into it, so
+         * "the last id" answers a question about the whole JVM: anything else that registers in
+         * the window - Undo's lazy menu on the first MenuOptionChooseEvent, another command's
+         * menu, an event handler's - moves the last index without moving the one `/info` just
+         * took. The click then lands on a different listener and `menuChoose` has no error path
+         * for that (the engine range-checks the id and calls whatever is there), so the test
+         * fails three steps later on a symptom.
+         *
+         * So the id is the *first* index this block registered, and the count has to have moved
+         * by exactly one. Requiring exactly one is the half that keeps this honest: if some
+         * future registrant gets in ahead of the block's own, "first new index" would be its id,
+         * and this would go back to addressing the wrong menu silently. Two is a named failure.
+         */
+        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
+            val before = lastMenuId()
+            block()
+            assertEquals(
+                before + 1, lastMenuId(),
+                "$what should have registered exactly one menu, otherwise this test proves nothing"
+            )
+            return before + 1
+        }
+
         private fun data(player: Player): PlayerData = players.first { it.uuid == player.uuid() }
     }
 
@@ -46,6 +72,12 @@ class UndoTest {
             loadGame(true)
             done = true
         }
+        // Menus.menuChoose fires MenuOptionChooseEvent before it dispatches to the listener, and
+        // CoreEvent's undoMenuChoose handler reads Undo.menuId - a lazy that registers a menu of its
+        // own the first time it is touched. So the first click anywhere in this JVM registers a menu
+        // ahead of the one the clicked listener opens, which would make "the first menu this click
+        // registered" Undo's rather than the /info menu's. Force it here, as InfoMenuTest does.
+        Undo.menuId
     }
 
     private fun admin(group: String = "admin"): Player {
@@ -54,10 +86,23 @@ class UndoTest {
         return player
     }
 
-    private fun openInfo(admin: Player, target: Player): Int {
-        clientCommand.handleMessage("/info ${target.name}", admin)
-        return lastMenuId()
-    }
+    /**
+     * By uuid, not by name. `/info` resolves an online target synchronously and opens the menu on
+     * it before returning (Commands.kt, `PlayerLookup.findOnline` -> `open(current)`); every other
+     * outcome falls to `scope.launch { ... Core.app.post { open(other) } }`, and that post is only
+     * drained by `pumpApp`, which nothing between here and the click below calls. The menu is
+     * registered either way, so its id is right either way - but its captured `targetData` is
+     * still null, and the kick branch is a no-op on a null target. Two players sharing a plain
+     * name is enough to take that path, and the harness names players from a faker surname plus a
+     * millisecond. A uuid matches exactly, ahead of any name matching, and cannot be ambiguous.
+     * `/info <name>` itself is covered by ClientCommandTest.
+     */
+    private fun openInfo(admin: Player, target: Player): Int =
+        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
+
+    /** Clicking an /info menu option that opens the next menu; returns that menu's own id. */
+    private fun choose(admin: Player, menu: Int, option: Int): Int =
+        menuRegisteredBy("option $option") { Menus.menuChoose(admin, menu, option) }
 
     private fun clickUndoMenu(admin: Player, option: Int) {
         Events.fire(MenuOptionChooseEvent(admin, Undo.menuId, option))
@@ -72,9 +117,9 @@ class UndoTest {
         val name = target.name
 
         val infoMenu = openInfo(admin, target)
-        Menus.menuChoose(admin, infoMenu, 1)
-        Menus.menuChoose(admin, lastMenuId(), 6)
-        Menus.menuChoose(admin, lastMenuId(), 0)
+        val banMenu = choose(admin, infoMenu, 1)
+        val confirmMenu = choose(admin, banMenu, 6)
+        Menus.menuChoose(admin, confirmMenu, 0)
 
         assertTrue(Vars.netServer.admins.isIDBanned(uuid), "target should be banned")
         assertTrue(Vars.netServer.admins.bannedIPs.contains(ip), "the ban should place an ip ban")
