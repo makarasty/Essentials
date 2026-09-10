@@ -409,6 +409,23 @@ class FeatureTest {
      * team. Not the same set as `Vars.state.teams.active`, which keeps a team that has lost every core
      * on its remaining buildings - CoreEvent.kt:788-789 says so in its own comment.
      */
+    /**
+     * Runs [block] with a `PlayerData` for a player that is in no scored list and never enters
+     * `players`, so it cannot move a count or an average - a stand-in for a joining player, which
+     * `selectAutoTeam` excludes by uuid anyway. The unit is removed for the reason `leavePlayer` gives:
+     * `createPlayer()` spawns one, and removing the player does not remove it.
+     */
+    private fun <T> withProbeData(block: (PlayerData) -> T): T {
+        val probe = createPlayer()
+        try {
+            return block(createTemporaryPlayerData(probe))
+        } finally {
+            probe.unit()?.takeIf { it.isValid }?.remove()
+            probe.remove()
+            Groups.player.update()
+        }
+    }
+
     private fun playableTeamCounts(): kotlin.collections.Map<Team, Int> = Vars.state.teams.active
         .filter {
             it.team != Team.derelict && it.hasCore() &&
@@ -450,16 +467,21 @@ class FeatureTest {
         // Scenario: 4 teams (A, B, C, D) with 2 players each
         // Win rates: A=100%, B=75%, C=50%, D=25%
         val testTeams = listOf(Team.sharded, Team.crux, Team.green, Team.blue)
-        for (team in testTeams) {
-            val tile = PluginTest.randomTile()
-            tile.setNet(mindustry.content.Blocks.coreShard, team, 0)
+        // Fixed, well separated tiles rather than PluginTest.randomTile(), which is an unseeded
+        // java.util.Random over a 100x100 window. A coreShard is 3x3, so two of four random placements
+        // land on each other about one run in seventy, and the team whose core was overwritten stays in
+        // teams.active on its remaining buildings while dropping out of the set selectAutoTeam scores.
+        // Nothing here needs the placement to vary, and a fix for a flake should not leave a dice roll.
+        val corners = listOf(10 to 10, 10 to 60, 60 to 10, 60 to 60)
+        for ((i, team) in testTeams.withIndex()) {
+            val (x, y) = corners[i]
+            Vars.world.tile(x, y).setNet(mindustry.content.Blocks.coreShard, team, 0)
         }
         
         val activeTeams = Vars.state.teams.active.filter { testTeams.contains(it.team) }.toList()
         assertEquals(4, activeTeams.size, "Need 4 teams for test")
-        // randomTile() is unseeded and a coreShard is 3x3, so two of the four can land on top of each
-        // other and leave a team active but coreless - which silently changes the candidate set the rule
-        // below is asserted against. Fail here, naming the set, rather than three assertions later.
+        // The candidate set is a precondition of the rule asserted below, and the old test assumed it
+        // rather than checking it. Fail here, naming the set, rather than three assertions later.
         assertEquals(
             testTeams.toSet(),
             playableTeamCounts().keys,
@@ -495,11 +517,7 @@ class FeatureTest {
         val teamLowest = byWinRate[0]
         val teamSecondLowest = byWinRate[1]
 
-        // A stand-in for the joining player: selectAutoTeam excludes the joiner by uuid, and this one is
-        // in no scored list and never enters `players`, so it cannot move a count or an average.
-        val probe = createPlayer()
-        try {
-            val joining = createTemporaryPlayerData(probe)
+        withProbeData { joining ->
             val byTeam = seeded.groupBy { it.player.team() }
             // Extra members are repeats of a team's own seeded player, so they raise that team's count
             // without moving its average - the count guard is what is under test here, not the averages.
@@ -531,17 +549,25 @@ class FeatureTest {
                 "the guard is about counts, not win rates: with every other team within one of it, the " +
                         "lowest win rate takes the player at +2 as well"
             )
-        } finally {
-            probe.remove()
-            Groups.player.update()
         }
 
-        // End to end, three real joins through the real join path. What is asserted is the invariant the
-        // guard maintains whatever else is in `players`: a joiner lands on a team that holds a core, and
-        // never on one already more than one player ahead of the smallest of the others.
+        // End to end, three real joins through the real join path. Two things are asserted per join.
+        // First, that the path actually routes through selectAutoTeam: the oracle is the same function
+        // asked, immediately beforehand and on the same list, where it would put a joiner. That covers
+        // the wiring at CoreEvent.kt:1596-1601 - a rememberTeam or spector branch swallowing a fresh
+        // join, say - without depending on what is in `players`, because both sides read the same list.
+        // Second, the invariant the guard maintains whatever else is in `players`: a joiner lands on a
+        // team that holds a core, and never on one already more than one player ahead of the smallest.
         repeat(3) { i ->
             val before = playableTeamCounts()
+            val oracle = withProbeData { selectAutoTeam(it, players) }
             val joined = newPlayer().first.team()
+            assertEquals(
+                oracle, joined,
+                "join ${i + 1} landed on $joined, but selectAutoTeam asked the same question on the same " +
+                        "list a moment earlier said $oracle - the join path is not routing through it. " +
+                        "playable=$before"
+            )
             val had = assertNotNull(
                 before[joined],
                 "join ${i + 1} went to $joined, which holds no core. playable=$before"
@@ -658,13 +684,26 @@ class FeatureTest {
             // which is what made it the fifth flake in the base-rate measurement. So read the row at
             // the instant the transfer fires instead.
             val rowAtTransfer = AtomicReference<PlayerData?>(null)
+            val readFailure = AtomicReference<Throwable?>(null)
             val transferSeen = AtomicBoolean(false)
             val transferListener = Cons<CustomEvents.ServerTransfer> { ev ->
+                // Three other sites fire ServerTransfer - the warpZone branch below this one at
+                // CoreEvent.kt:330, and Trigger.kt:760 and :859 - and all three are live while this test
+                // runs. Answering for somebody else's transfer would read this row at a moment the write
+                // has not happened and redden for it.
+                if (ev.player.uuid() != testPlayerData.uuid) return@Cons
                 // `handled` is the documented seam for taking over the transfer. Setting it also keeps
                 // Call.connect out of it, which under test has no net provider and throws into the
                 // coroutine's exception handler.
                 ev.handled = true
-                rowAtTransfer.set(runBlocking { getPlayerData(testPlayerData.uuid) })
+                try {
+                    rowAtTransfer.set(runBlocking { getPlayerData(testPlayerData.uuid) })
+                } catch (e: Throwable) {
+                    // Otherwise this is swallowed by the scope's CoroutineExceptionHandler and the test
+                    // reports "never reached the transfer" twelve seconds later, which is the wrong
+                    // diagnosis for a read that blew up.
+                    readFailure.set(e)
+                }
                 transferSeen.set(true)
             }
             Events.on(CustomEvents.ServerTransfer::class.java, transferListener)
@@ -679,6 +718,7 @@ class FeatureTest {
                     awaitCondition(12000L) { transferSeen.get() },
                     "the WarpBlock tap never reached the server transfer"
                 )
+                readFailure.get()?.let { throw AssertionError("reading the row at the transfer failed", it) }
                 val row = assertNotNull(
                     rowAtTransfer.get(),
                     "WarpBlock 탭 후 대상 서버 연결 전에 playerData가 DB에 즉시 저장되어야 합니다: " +
