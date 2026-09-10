@@ -24,11 +24,29 @@ import essential.common.database.data.getPluginData
 import essential.common.database.databaseClose
 import essential.common.database.defaultDatabase
 import essential.common.database.worldHistoryDatabase
+import essential.common.isCheated
+import essential.common.isSurrender
+import essential.common.nextVoteAvailable
 import essential.common.offlinePlayers
 import essential.common.players
 import essential.common.rootPath
+import essential.common.timeSource
+import essential.common.voterCooldown
+import essential.core.Commands
 import essential.core.CoreConfig
 import essential.core.Main
+import essential.core.dpsBlocks
+import essential.core.dpsTile
+import essential.core.isGlobalMute
+import essential.core.mapRatings
+import essential.core.mapVotes
+import essential.core.maxDps
+import essential.core.playerDataRetries
+import essential.core.pvpPlayer
+import essential.core.pvpSpecters
+import essential.core.unitLimitMessageCooldown
+import essential.core.worldEditSelection
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
 import mindustry.Vars.*
@@ -61,6 +79,8 @@ import java.util.zip.ZipFile
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.test.*
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.ExperimentalTime
 
 /**
@@ -184,6 +204,150 @@ class PluginTest {
             }
             state.rules.limitMapArea = false
             Team.all.forEach { t -> state.rules.teams.get(t).buildAi = false }
+            resetPluginState()
+        }
+
+        /**
+         * Puts the plugin's own global state back to what a fresh JVM would hold, because the class
+         * boundary is the suite's stand-in for a server boot and the plugin has no unload path.
+         *
+         * Only state that *gates* later behaviour is reset. A leftover `isGlobalMute` silences every
+         * later class's chat; a `nextVoteAvailable` left in the future blocks the vote commands
+         * outright; a `dpsTile` pointing into a world that has been reloaded is healed to 100000000
+         * health once a second by `Trigger`. None of those failures name the class that caused them.
+         *
+         * **Seven of these are also cleared by the plugin itself**, in `CoreEvent`'s `worldLoad` and
+         * `gameOver` handlers - `isCheated`, `isSurrender`, `mapRatings`, `worldEditSelection`,
+         * `dpsTile`, `pvpSpecters`, `pvpPlayer`. That is not redundant here, and the reason is worth
+         * stating because the class doc forbids cleaning up after production: [resetSharedState]
+         * reloads the world **only when the map differs**, and it almost never does between two
+         * classes on [testMap], so neither event fires at a class boundary. The plugin clears them on
+         * a real server; the harness does not give it the chance to.
+         *
+         * Deliberately not reset:
+         * - `isVoting`. It is not a flag, it is the run gate of a live `Timer.Task`: `VoteSystem.run`
+         *   opens `if (isVoting)` and the only path to its own `cancel()` - which removes its chat
+         *   filter and its two event listeners - is inside that branch. Clearing it from outside
+         *   freezes the task instead of ending it, and a later class starting a vote would then be
+         *   killed by the zombie's next tick. Left alone, an orphaned vote notices its starter is gone
+         *   and cancels itself, which is the behaviour that already exists and works.
+         * - `isNotTargetMap`. `Main` derives it from `pluginData.data.warpBlock` on every
+         *   `WorldLoadEvent`, `pluginData` is deliberately not reset, and this function runs *after*
+         *   [resetSharedState]'s `world.loadMap`. Forcing `false` would be a clobber, not a restore,
+         *   and would re-enable the warp scan in the action filter for every later class.
+         * - `pluginData`, which is `lateinit` and is reassigned by every `Main.init()`. Clearing it
+         *   without a plugin reload would leave the in-memory mirror pointing at a row the H2 delete
+         *   in [stopPlugin] has already destroyed, and reloading the plugin per class costs the whole
+         *   suite minutes. A class that needs a clean one calls `stopPlugin(); loadGame(true)`.
+         * - counters nothing branches on (`gameOverCount`, `playerNumber`, `mapStartTime`). They show
+         *   up in `/status` output and in nothing that decides anything.
+         * - the shared **world**. A class that changes the wave, the core's items, the weather or a
+         *   tile leaves all of it for the next class, because of the same conditional reload above.
+         *   That is a real gap and it is not closed here: an unconditional `world.loadMap` per class
+         *   fires `WorldLoadEvent`, which [resetSharedState] documents three classes as needing it not
+         *   to. Recorded rather than papered over.
+         */
+        private fun resetPluginState() {
+            isGlobalMute = false
+            isCheated = false
+            isSurrender = false
+            unitLimitMessageCooldown = 0
+            nextVoteAvailable = timeSource.markNow()
+            voterCooldown.clear()
+            dpsTile = null
+            dpsBlocks = 0f
+            maxDps = null
+            mapVotes.clear()
+            mapRatings.clear()
+            pvpSpecters.clear()
+            pvpPlayer.clear()
+            worldEditSelection.clear()
+            Commands.charsPlacing.clear()
+            // Jobs, not data. The job itself re-checks `isPlayerOnline` after each delay, so the
+            // window it can still write in is narrow - a leave that lands inside a load - but a
+            // coroutine belonging to a class that has finished has nothing left to do either way.
+            playerDataRetries.values.forEach { job -> runCatching { job.cancel() } }
+            playerDataRetries.clear()
+        }
+
+        /**
+         * Error-log text a test has declared it is about to cause. See [expectingErrors].
+         *
+         * Copy-on-write because the plugin logs from `Dispatchers.IO`, the ping thread and the arc
+         * main thread, and the guard below reads this on whichever of those the log came from.
+         */
+        private val expectedErrors = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+        /**
+         * The harness's log guard: **a test must not pass while the plugin is logging errors it did
+         * not expect**, so an error-level line throws unless a test has said it is coming.
+         *
+         * Before the opt-in existed, every deliberate error path in the plugin was untestable - the
+         * code logged, this threw, and the test failed for a reason unrelated to its assertion. That
+         * is a large part of why the error paths this audit found defective had no coverage.
+         *
+         * Two limits worth knowing before you trust it, both measured rather than argued:
+         *
+         * 1. **It is not live for most of the suite.** It is installed here, on the cold-boot path,
+         *    which runs once per JVM; [stopPlugin] puts `baseLogHandler` back and nothing reinstalls
+         *    it. So it guards only the classes that run before the first `stopPlugin()`.
+         * 2. **The throw lands wherever the log call was.** A `Log.err` from a coroutine worker throws
+         *    on that worker and prints `Exception in thread "DefaultDispatcher-worker-N"`; the test
+         *    thread never sees it and the test passes. One inside a `runCatching` or a broad `catch`
+         *    in the plugin is swallowed outright.
+         *
+         * Making it durable would fix the first and **not** the second: reinstalling the handler
+         * buys the property for the other seventy-seven classes, but only for errors logged on
+         * the test thread and not caught. Do not read "durable" as "covers everything". The shape
+         * that would close both is to collect unexpected errors at log time and assert on that
+         * list at the end of the test, on the JUnit thread; that is a bigger change than this
+         * wave, and it is recorded in `answers/T-2.md`.
+         *
+         * The durable half is measured but held: `ask/T-3.md` and `answers/T-3.md` carry the
+         * numbers and the two diffs, ready for whoever has the live databases up.
+         */
+        fun errorGuardingHandler(base: Log.LogHandler, tap: (String) -> Unit): Log.LogHandler =
+            Log.LogHandler { level, text ->
+                base.log(level, text)
+                tap(text)
+                if (level == Log.LogLevel.err && expectedErrors.none { text.contains(it) }) {
+                    throw RuntimeException("Error detected in logs: $text")
+                }
+            }
+
+        /**
+         * Runs [body] with the guard above suspended for error lines containing any of [substrings].
+         * Every other error line still fails the test, and the allowance ends with the block even if
+         * it throws.
+         *
+         * Use it to test an error path, not to silence one that surprised you:
+         *
+         *     expectingErrors("Failed to load map") {
+         *         clientCommand.handleMessage("/changemap nonexistent", player)
+         *         assertEquals(err("command.changemap.not.found"), playerData.lastReceivedMessage)
+         *     }
+         *
+         * The allowance is global for the duration of the block, because the log line it is waiting
+         * for usually arrives on another thread. Keep the block tight for that reason.
+         *
+         * **And keep it wide enough to contain the log.** The substrings are removed in a
+         * `finally`, so an error logged by work the block *started* but did not await - a
+         * `scope.launch`, a `Core.app.post` - arrives after the allowance is gone and throws
+         * anyway. If a test fails on an error it plainly declared, that is where to look: wait
+         * for the observable effect inside the block rather than outside it.
+         */
+        fun <T> expectingErrors(vararg substrings: String, body: () -> T): T {
+            // A blank substring matches every line, so one of those would turn the guard off
+            // globally for the block - the "silence one that surprised you" use this exists to
+            // refuse.
+            require(substrings.isNotEmpty()) { "expectingErrors needs at least one substring to allow" }
+            require(substrings.all { it.isNotBlank() }) { "an expected-error substring cannot be blank" }
+            expectedErrors.addAll(substrings)
+            try {
+                return body()
+            } finally {
+                substrings.forEach { expectedErrors.remove(it) }
+            }
         }
 
         @OptIn(ExperimentalPathApi::class)
@@ -253,16 +417,9 @@ class PluginTest {
 
                 val core: ApplicationCore = object : ApplicationCore() {
                     override fun setup() {
-                        // Reset to the pristine logger first so prior tests' handlers don't stack.
-                        Log.logger = baseLogHandler
-                        val originalLogger = Log.logger
-                        Log.logger = Log.LogHandler { level, text ->
-                            originalLogger.log(level, text)
-                            logHandler(text)
-                            if (level == Log.LogLevel.err) {
-                                throw RuntimeException("Error detected in logs: $text")
-                            }
-                        }
+                        // baseLogHandler explicitly, so a handler an earlier test left installed is
+                        // replaced rather than wrapped.
+                        Log.logger = errorGuardingHandler(baseLogHandler, logHandler)
                         headless = true
                         net = Net(null)
                         tree = FileTree()
@@ -811,6 +968,112 @@ class PluginTest {
         }
 
         stopPlugin()
+    }
+
+    /**
+     * The class-entry contract for plugin state, asserted rather than described.
+     *
+     * Every one of these carried into the next class before this existed, and each of them decides
+     * something: a leftover `isGlobalMute` silences chat, a `nextVoteAvailable` in the future blocks
+     * the vote commands, a stale `dpsTile` is healed once a second by `Trigger` in a world that has
+     * since been reloaded, and a live retry coroutine writes into the next class.
+     */
+    @OptIn(ExperimentalTime::class)
+    @Test
+    fun pluginStateResetTest() {
+        loadGame()
+
+        isGlobalMute = true
+        isCheated = true
+        isSurrender = true
+        unitLimitMessageCooldown = 99
+        nextVoteAvailable = timeSource.markNow() + 10.minutes
+        voterCooldown["probe"] = timeSource.markNow()
+        dpsTile = randomTile()
+        dpsBlocks = 42f
+        maxDps = 42f
+        mapVotes["probe"] = testMap!!
+        mapRatings["probe"] = true
+        pvpSpecters.add("probe")
+        pvpPlayer["probe"] = Team.sharded
+        worldEditSelection["probe"] = Commands.WorldEditSelection()
+        Commands.charsPlacing["probe"] = arrayOf("probe")
+        val retry = Job()
+        playerDataRetries["probe"] = retry
+
+        resetPluginState()
+
+        assertFalse(isGlobalMute, "isGlobalMute carried into the next class")
+        assertFalse(isCheated, "isCheated carried into the next class")
+        assertFalse(isSurrender, "isSurrender carried into the next class")
+        assertEquals(0, unitLimitMessageCooldown, "unitLimitMessageCooldown carried into the next class")
+        assertTrue(
+            nextVoteAvailable.elapsedNow().isPositive() || nextVoteAvailable.elapsedNow() == Duration.ZERO,
+            "nextVoteAvailable is still in the future: the next class cannot start a vote"
+        )
+        assertTrue(voterCooldown.isEmpty(), "voterCooldown carried into the next class")
+        assertNull(dpsTile, "dpsTile carried into the next class")
+        assertEquals(0f, dpsBlocks, "dpsBlocks carried into the next class")
+        assertNull(maxDps, "maxDps carried into the next class")
+        assertTrue(mapVotes.isEmpty(), "mapVotes carried into the next class")
+        assertTrue(mapRatings.isEmpty(), "mapRatings carried into the next class")
+        assertTrue(pvpSpecters.isEmpty(), "pvpSpecters carried into the next class")
+        assertTrue(pvpPlayer.isEmpty(), "pvpPlayer carried into the next class")
+        assertTrue(worldEditSelection.isEmpty(), "worldEditSelection carried into the next class")
+        assertTrue(Commands.charsPlacing.isEmpty(), "a pending /chars placement carried into the next class")
+        assertTrue(playerDataRetries.isEmpty(), "a player-data retry job carried into the next class")
+        assertTrue(retry.isCancelled, "the retry job was dropped from the map but left running")
+
+        // The wiring, not just the body. Everything above pins resetPluginState(); this pins the
+        // one line that makes it happen at all - the call at the end of resetSharedState(). Without
+        // it, deleting that call leaves the suite green while all sixteen fields carry over again.
+        isGlobalMute = true
+        currentTestClass = "a.different.TestClass"
+        loadGame()
+        assertFalse(isGlobalMute, "the class-entry reset did not run: loadGame reached a new class without it")
+    }
+
+    /**
+     * The error guard and its opt-in, asserted against a handler this test installs itself rather
+     * than against whichever one the run happens to be holding - the installed handler depends on
+     * whether any class has called [stopPlugin] yet, and a test whose outcome depends on class order
+     * is not a test.
+     *
+     * No `_NN` suffix, unlike the database tests above: that suffix encodes run order under
+     * `@FixMethodOrder(NAME_ASCENDING)`, which sorts the whole name, and neither this test nor
+     * [pluginStateResetTest] depends on running at any particular point.
+     */
+    @Test
+    fun errorGuardTest() {
+        loadGame()
+        val previous = Log.logger
+        try {
+            // baseLogHandler, not `previous`: whichever handler the run is holding may itself be a
+            // guard, and nesting one guard inside another would throw from the base call instead.
+            Log.logger = errorGuardingHandler(baseLogHandler) {}
+
+            assertFailsWith<RuntimeException>("an error the test did not declare must fail it") {
+                Log.err("guard probe: undeclared")
+            }
+
+            expectingErrors("guard probe: declared") {
+                Log.err("guard probe: declared")
+                Log.warn("guard probe: a warning is not an error")
+            }
+
+            assertFailsWith<RuntimeException>("the allowance must not outlive its block") {
+                Log.err("guard probe: declared")
+            }
+
+            // The allowance is by substring and must not let a different error through with it.
+            assertFailsWith<RuntimeException>("an allowance must not cover an unrelated error") {
+                expectingErrors("guard probe: declared") {
+                    Log.err("guard probe: something else")
+                }
+            }
+        } finally {
+            Log.logger = previous
+        }
     }
 
     @Test
