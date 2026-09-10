@@ -112,6 +112,7 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
         suspendTransaction(db = db) {
             SchemaUtils.create(WorldHistoryTable)
         }
+        migrateWorldHistoryColumns(db)
     }
 
     val (connectionFactory, dialect) = when (databaseType) {
@@ -230,6 +231,56 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
     runFlywayMigration(databaseType, r2dbcUrl, user, pass)
 
     reportLegacyUpgradeOutcome(legacyUpgrade)
+}
+
+/**
+ * Adds to an existing `world_history` any column [WorldHistoryTable] has gained since it was created.
+ *
+ * The world-history database is not the shared one. It is a local per-server H2 file, created by exactly
+ * one statement - `SchemaUtils.create(WorldHistoryTable)` above, which **skips a table that already
+ * exists** - and the boot repair further down runs over the default database's seven tables and has never
+ * included this one. So until this function existed a column added to the Kotlin table appeared only on a
+ * server that had never booted, and on every other one every insert failed against the old shape. Two
+ * findings wanting a column on this table were refused for that reason before it was built.
+ *
+ * Deliberately not Flyway, though Flyway is shipped and already wired up for the shared database:
+ *
+ * - the migration module is **optional** (`-PexcludeModules=migration`, and `services` expands to it),
+ *   and excluding it strips `FlywayMigration`, `db/migration/**` and `org/flywaydb/` from the artifact.
+ *   A column that arrives only through Flyway is a column a modular jar does not have, while the code
+ *   that writes it is in `common` and `core` and is always present - which is the original failure again,
+ *   somewhere harder to find. This ships wherever the table does, so the write path may assume it;
+ * - `runFlywayMigration` runs long after `SchemaUtils.create`, so on a fresh server a versioned
+ *   `ALTER TABLE ... ADD COLUMN` would meet a table that already has the column, fail, log at error
+ *   level and leave a failed row in `flyway_schema_history` that blocks every later migration in that
+ *   file until somebody runs `repair` by hand on six machines.
+ *
+ * Asked of the engine rather than written out as DDL literals, so it cannot drift out of step with
+ * [WorldHistoryTable] and the next column added there needs no edit here. Columns only: this is the same
+ * call the shared-database repair makes, and the reasoning for declining constraints and indexes on a
+ * live table is unchanged and set out below.
+ */
+private suspend fun migrateWorldHistoryColumns(db: R2dbcDatabase) {
+    // Log.warn, not err: "I could not tell what is missing" is not "I failed to repair it", and a boot
+    // that cannot read the metadata still has a working table for every column that was already there.
+    val missing = runCatching {
+        suspendTransaction(db = db) {
+            SchemaUtils.addMissingColumnsStatements(WorldHistoryTable, withLogs = false)
+        }
+    }.onFailure {
+        Log.warn("[Database/worldHistory] could not work out what world_history is missing: ${it.message}")
+    }.getOrDefault(emptyList())
+
+    for (statement in missing) {
+        Log.info("[Database/worldHistory] $statement")
+        // Log.err here, unlike above, because a refused column is not survivable in the quiet way the
+        // shared database's refusals are: the code that writes that column ships regardless, so every
+        // later insert fails and rollback stops recording anything. Each statement gets its own
+        // transaction for the same reason the shared repair does - one failure must not take the rest.
+        runCatching { suspendTransaction(db = db) { exec(statement) } }.onFailure {
+            Log.err("[Database/worldHistory] column repair refused: $statement: ${it.message}")
+        }
+    }
 }
 
 /**

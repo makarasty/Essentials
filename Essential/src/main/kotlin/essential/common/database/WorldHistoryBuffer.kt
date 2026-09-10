@@ -29,6 +29,8 @@ object WorldHistoryBuffer {
         val rotate: Int,
         val team: String,
         val value: String?,
+        val kind: String?,
+        val uuid: String?,
         val createdAt: Long,
     )
 
@@ -121,6 +123,11 @@ object WorldHistoryBuffer {
         rotate: Int,
         team: String,
         value: String?,
+        // Defaulted, so a caller that has no type or no acting player in hand - and every caller written
+        // before these columns existed - records null rather than being forced to invent one. Null is
+        // also what every row already in the table carries, so the two cases are one case downstream.
+        kind: String? = null,
+        uuid: String? = null,
     ) {
         if (stopped.get()) return
         val packed = (x.toInt() shl 16) or (y.toInt() and 0xFFFF)
@@ -136,6 +143,8 @@ object WorldHistoryBuffer {
                 rotate = rotate,
                 team = team,
                 value = value,
+                kind = kind,
+                uuid = uuid,
                 createdAt = System.currentTimeMillis(),
             )
         )
@@ -296,6 +305,8 @@ object WorldHistoryBuffer {
                         row[WorldHistoryTable.rotate] = e.rotate
                         row[WorldHistoryTable.team] = e.team
                         row[WorldHistoryTable.value] = e.value
+                        row[WorldHistoryTable.kind] = e.kind
+                        row[WorldHistoryTable.uuid] = e.uuid
                         row[WorldHistoryTable.createdAt] = Instant.fromEpochMilliseconds(e.createdAt)
                     }
                 }
