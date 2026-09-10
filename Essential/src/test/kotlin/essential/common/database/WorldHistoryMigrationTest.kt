@@ -4,7 +4,9 @@ import PluginTest.Companion.loadGame
 import PluginTest.Companion.loadPlugin
 import PluginTest.Companion.stopPlugin
 import essential.common.database.data.getAllWorldHistory
+import essential.common.database.table.WorldHistoryTable
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.exposed.v1.r2dbc.insert
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -31,6 +33,23 @@ import kotlin.test.assertNull
  * with none of the guessing about how Exposed renders `uinteger`, `timestamp` or a default expression on
  * H2 that a hand-written `CREATE TABLE` would smuggle in. The two columns are the entire difference
  * between the shapes.
+ *
+ * **Two properties this class depends on, recorded because a later test added here could break either.**
+ *
+ * It is the suite's first `loadPlugin(force = true)` over a *running* plugin - every other forced load
+ * calls `stopPlugin()` and deletes the H2 files first - so it is also the only place `databaseInit` runs
+ * a second time over an existing, populated database. That path was walked for error-level logging and
+ * has none. The cost is that generation one's connection pools are replaced without being disposed and
+ * leak for the life of the JVM, which `Database.kt` already does on every forced reload and which the
+ * `SHUTDOWN` in `stopPlugin` releases.
+ *
+ * And between the `DROP COLUMN`s and the migration there is a window in which a queued row's insert
+ * would name `kind`/`uuid` against a table that is two columns short, fail, and skip `requeueOldest` -
+ * destroying that batch and killing the flush loop for the rest of the JVM. It cannot fire as this class
+ * stands: `discard()` empties the queue under the flush lock, `flushLoop` skips an empty queue, and the
+ * only producer is `CoreEvent.addLog` off tile events, which needs a game tick this class never causes.
+ * **A test added here that ticks the game opens that window**, and the fix then is the allowance
+ * `WorldHistoryBufferBoundsTest` uses, not a wider drop.
  */
 class WorldHistoryMigrationTest {
 
@@ -44,7 +63,11 @@ class WorldHistoryMigrationTest {
     fun teardown() {
         // Hands the next class a database this class did not shape, and puts the listener and timer
         // registrations the second `loadPlugin` added back to the baseline.
-        runCatching { stopPlugin() }
+        //
+        // Bare, not wrapped in runCatching: if stopPlugin throws before its last line the error guard is
+        // never reinstalled, pluginLoaded stays true and the H2 files survive into the next class, and
+        // swallowing the throw here would hide the only evidence of it.
+        stopPlugin()
     }
 
     @Test
@@ -53,12 +76,27 @@ class WorldHistoryMigrationTest {
             suspendTransaction(db = worldHistoryDatabase) {
                 exec("ALTER TABLE world_history DROP COLUMN kind")
                 exec("ALTER TABLE world_history DROP COLUMN uuid")
-                // Named columns only, as a jar without these columns would write. `id` and `created_at`
-                // are left to their default and their auto-increment, exactly as that jar left them.
-                exec(
-                    "INSERT INTO world_history (time, player, action, x, y, tile, rotate, team, value) " +
-                        "VALUES (1000, 'oldjar', 'config', 40, 45, 'sorter', 0, 'sharded', 'copper')"
-                )
+                // Written through Exposed rather than as raw SQL, and that is not a style choice. Three
+                // of these column names - time, action, value - are SQL keywords, so Exposed quoted them
+                // when it wrote the CREATE, and hand-typed SQL has to reproduce that quoting and its
+                // case exactly or the statement names columns that do not exist. My two reviewers read
+                // the identifier-folding chain in opposite directions and disagreed about which case
+                // lands, which is reason enough not to depend on the answer: going through the same
+                // builder that created the table renders both sides identically and the question cannot
+                // arise. `insert` emits only the columns set here, which is exactly what a jar without
+                // kind and uuid emits, so this is that jar's insert and not an imitation of it. `id` and
+                // `created_at` are left to the auto-increment and the database default, as it left them.
+                WorldHistoryTable.insert { row ->
+                    row[WorldHistoryTable.time] = 1000
+                    row[WorldHistoryTable.player] = "oldjar"
+                    row[WorldHistoryTable.action] = "config"
+                    row[WorldHistoryTable.x] = 40
+                    row[WorldHistoryTable.y] = 45
+                    row[WorldHistoryTable.tile] = "sorter"
+                    row[WorldHistoryTable.rotate] = 0
+                    row[WorldHistoryTable.team] = "sharded"
+                    row[WorldHistoryTable.value] = "copper"
+                }
             }
         }
 

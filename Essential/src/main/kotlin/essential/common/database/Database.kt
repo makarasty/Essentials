@@ -256,14 +256,25 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
  *   file until somebody runs `repair` by hand on six machines.
  *
  * Asked of the engine rather than written out as DDL literals, so it cannot drift out of step with
- * [WorldHistoryTable] and the next column added there needs no edit here. Columns only: this is the same
- * call the shared-database repair makes, and the reasoning for declining constraints and indexes on a
- * live table is unchanged and set out below.
+ * [WorldHistoryTable] and the next column added there needs no edit here.
+ *
+ * **Additions only, and that filter is not decoration.** `addMissingColumnsStatements` is *not* the call
+ * the shared repair below makes - that one asks `statementsRequiredToActualizeScheme` - and it is not
+ * additive by construction either. Read out of `SchemaUtilityApi.mapMissingColumnStatementsTo`, it
+ * appends `Column.ddl` for a genuinely missing column, **and** `Column.modifyStatements` for an existing
+ * column whose type, nullability or default differs from what the engine's metadata reports, **and**
+ * `Index.createStatement` for an index touching a missing column, **and** a primary-key statement when
+ * the existing key differs. On H2 a spurious modify renders as `ALTER COLUMN` and would therefore
+ * *succeed* - rewriting a live column on six per-server files, once per boot, forever, with nothing to
+ * refuse it and nothing to notice. So everything that is not an addition is reported and **not run**,
+ * which is the same policy and the same reasoning as the shared repair's `CONSTRAINT`/`INDEX` partition
+ * further down: this is the report rather than the repair, because whether a live column can safely be
+ * rewritten is something only somebody who can look at the data knows.
  */
 private suspend fun migrateWorldHistoryColumns(db: R2dbcDatabase) {
     // Log.warn, not err: "I could not tell what is missing" is not "I failed to repair it", and a boot
     // that cannot read the metadata still has a working table for every column that was already there.
-    val missing = runCatching {
+    val offered = runCatching {
         suspendTransaction(db = db) {
             SchemaUtils.addMissingColumnsStatements(WorldHistoryTable, withLogs = false)
         }
@@ -271,12 +282,28 @@ private suspend fun migrateWorldHistoryColumns(db: R2dbcDatabase) {
         Log.warn("[Database/worldHistory] could not work out what world_history is missing: ${it.message}")
     }.getOrDefault(emptyList())
 
-    for (statement in missing) {
+    // Exposed renders an added column as `ALTER TABLE <t> ADD <ddl>` - `ADD`, and not `ADD COLUMN`. The
+    // two negative clauses are what stop the predicate calling something an addition when it is not one:
+    // a modify is `ALTER COLUMN` on H2, and a column that closes a primary key carries `, ADD <pk
+    // constraint>` appended to its own addition.
+    val (additions, declined) = offered.partition { statement ->
+        statement.contains(" ADD ", ignoreCase = true) &&
+            !statement.contains(" ALTER COLUMN ", ignoreCase = true) &&
+            !statement.contains("CONSTRAINT", ignoreCase = true) &&
+            !statement.contains("INDEX", ignoreCase = true)
+    }
+
+    for (statement in declined) {
+        Log.warn("[Database/worldHistory] repair declined, this is a report and not a repair: $statement")
+    }
+
+    for (statement in additions) {
         Log.info("[Database/worldHistory] $statement")
-        // Log.err here, unlike above, because a refused column is not survivable in the quiet way the
-        // shared database's refusals are: the code that writes that column ships regardless, so every
-        // later insert fails and rollback stops recording anything. Each statement gets its own
-        // transaction for the same reason the shared repair does - one failure must not take the rest.
+        // Log.err, unlike the declined half, because a missing column really is not survivable: the code
+        // that writes it ships whatever happens to this call, so every later insert fails and rollback
+        // stops recording anything. Each statement gets its own transaction so one failure does not take
+        // the others - though under the test harness's error guard this line throws and ends the boot,
+        // which is a property the shared repair's own Log.err already has.
         runCatching { suspendTransaction(db = db) { exec(statement) } }.onFailure {
             Log.err("[Database/worldHistory] column repair refused: $statement: ${it.message}")
         }
