@@ -297,7 +297,7 @@ class PluginTest {
          *    in the plugin is swallowed outright.
          *
          * Making it durable would fix the first and **not** the second: reinstalling the handler
-         * buys the property for sixty more classes, but only for errors logged synchronously on
+         * buys the property for the other seventy-seven classes, but only for errors logged on
          * the test thread and not caught. Do not read "durable" as "covers everything". The shape
          * that would close both is to collect unexpected errors at log time and assert on that
          * list at the end of the test, on the JUnit thread; that is a bigger change than this
@@ -337,7 +337,11 @@ class PluginTest {
          * for the observable effect inside the block rather than outside it.
          */
         fun <T> expectingErrors(vararg substrings: String, body: () -> T): T {
+            // A blank substring matches every line, so one of those would turn the guard off
+            // globally for the block - the "silence one that surprised you" use this exists to
+            // refuse.
             require(substrings.isNotEmpty()) { "expectingErrors needs at least one substring to allow" }
+            require(substrings.all { it.isNotBlank() }) { "an expected-error substring cannot be blank" }
             expectedErrors.addAll(substrings)
             try {
                 return body()
@@ -413,8 +417,8 @@ class PluginTest {
 
                 val core: ApplicationCore = object : ApplicationCore() {
                     override fun setup() {
-                        // Reset to the pristine logger first so prior tests' handlers don't stack.
-                        Log.logger = baseLogHandler
+                        // baseLogHandler explicitly, so a handler an earlier test left installed is
+                        // replaced rather than wrapped.
                         Log.logger = errorGuardingHandler(baseLogHandler, logHandler)
                         headless = true
                         net = Net(null)
