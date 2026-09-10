@@ -1727,7 +1727,10 @@ class Commands {
                         pluginData.hubMapName = Vars.state.map.name()
                         playerData.send("command.hub.mode.on")
                     } else if (pluginData.hubMapName != Vars.state.map.name()) {
-                        playerData.err("command.hub.mode.exists")
+                        // hubMapName is one value shared by every server (task-124, unfixed - see
+                        // ask/9b-1.md): naming it here at least tells the admin which map to look for,
+                        // and that if it is not one of this server's own, another server set it.
+                        playerData.err("command.hub.mode.exists.at", pluginData.hubMapName ?: "?")
                     } else {
                         pluginData.hubMapName = null
                         playerData.send("command.hub.mode.off")
