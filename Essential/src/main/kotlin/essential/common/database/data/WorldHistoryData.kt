@@ -23,6 +23,10 @@ data class WorldHistoryData @OptIn(ExperimentalTime::class) constructor(
     val rotate: Int,
     val team: String,
     val value: String?,
+    /** Runtime class name [value] was flattened from, or null for a row written before the column. */
+    val kind: String?,
+    /** Acting player's uuid, or null for a row written before the column, or one with no acting player. */
+    val uuid: String?,
     val createdAt: Instant
 )
 
