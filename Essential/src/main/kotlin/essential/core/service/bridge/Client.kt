@@ -1,5 +1,6 @@
 package essential.core.service.bridge
 
+import arc.Core
 import arc.util.Log
 import arc.util.Timer
 import essential.core.service.bridge.BridgeService.Companion.conf
@@ -106,7 +107,18 @@ class Client : Runnable {
                             val message = readBridgeLine(reader)?.let(::decodeBridgePayload)
                                 ?: throw IOException("Invalid bridge message payload")
                             lastReceivedMessage = message
-                            Call.sendMessage(message)
+                            // task-104/task-174: this reader runs on scope's Dispatchers.IO, a real
+                            // thread distinct from the main loop, unlike an arc Timer.Task - calling
+                            // an engine Call straight from here races the main thread's own tick over
+                            // the same connection list. Posted, with its own try/catch, because arc's
+                            // TaskQueue.run() invokes a posted runnable bare.
+                            Core.app.post {
+                                try {
+                                    Call.sendMessage(message)
+                                } catch (e: Exception) {
+                                    Log.err("Failed to display a bridged message", e)
+                                }
+                            }
                         }
                         "banned" -> readBridgeLine(reader) ?: throw IOException("Missing bridge ban payload")
                         "exit" -> break
