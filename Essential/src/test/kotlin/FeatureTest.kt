@@ -47,6 +47,7 @@ import essential.core.selectAutoTeam
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
+import essential.core.Undo
 import essential.core.worldLoad
 import arc.Events
 import arc.func.Cons
@@ -265,6 +266,14 @@ class FeatureTest {
         if (!done) {
             System.setProperty("test", "yes")
             loadGame(true)
+
+            // Menus.menuChoose fires MenuOptionChooseEvent before it dispatches, and CoreEvent's
+            // undoMenuChoose reads Undo.menuId - a lazy that registers a menu of its own. Force it here
+            // so the menu counts below measure only what the click did. InfoMenuTest and UndoTest do the
+            // same. Nothing forks the test JVM (Essential/build.gradle.kts:452 sets no forkEvery), so
+            // without this the class is green only while some earlier class, or some earlier test in
+            // this one, happens to have clicked a menu first.
+            Undo.menuId
 
             val p = newPlayer()
             player = p.first.self()
