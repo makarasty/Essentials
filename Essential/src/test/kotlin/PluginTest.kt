@@ -26,7 +26,6 @@ import essential.common.database.defaultDatabase
 import essential.common.database.worldHistoryDatabase
 import essential.common.isCheated
 import essential.common.isSurrender
-import essential.common.isVoting
 import essential.common.nextVoteAvailable
 import essential.common.offlinePlayers
 import essential.common.players
@@ -39,7 +38,6 @@ import essential.core.Main
 import essential.core.dpsBlocks
 import essential.core.dpsTile
 import essential.core.isGlobalMute
-import essential.core.isNotTargetMap
 import essential.core.mapRatings
 import essential.core.mapVotes
 import essential.core.maxDps
@@ -48,6 +46,7 @@ import essential.core.pvpPlayer
 import essential.core.pvpSpecters
 import essential.core.unitLimitMessageCooldown
 import essential.core.worldEditSelection
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
 import mindustry.Vars.*
@@ -213,27 +212,45 @@ class PluginTest {
          * boundary is the suite's stand-in for a server boot and the plugin has no unload path.
          *
          * Only state that *gates* later behaviour is reset. A leftover `isGlobalMute` silences every
-         * later class's chat; a leftover `isVoting` makes every later `/vote` answer "already voting";
-         * a `nextVoteAvailable` left in the future blocks the vote commands outright; a `dpsTile`
-         * pointing into a world that has been reloaded is healed to 100000000 health once a second by
-         * `Trigger`. None of those failures name the class that caused them.
+         * later class's chat; a `nextVoteAvailable` left in the future blocks the vote commands
+         * outright; a `dpsTile` pointing into a world that has been reloaded is healed to 100000000
+         * health once a second by `Trigger`. None of those failures name the class that caused them.
+         *
+         * **Seven of these are also cleared by the plugin itself**, in `CoreEvent`'s `worldLoad` and
+         * `gameOver` handlers - `isCheated`, `isSurrender`, `mapRatings`, `worldEditSelection`,
+         * `dpsTile`, `pvpSpecters`, `pvpPlayer`. That is not redundant here, and the reason is worth
+         * stating because the class doc forbids cleaning up after production: [resetSharedState]
+         * reloads the world **only when the map differs**, and it almost never does between two
+         * classes on [testMap], so neither event fires at a class boundary. The plugin clears them on
+         * a real server; the harness does not give it the chance to.
          *
          * Deliberately not reset:
+         * - `isVoting`. It is not a flag, it is the run gate of a live `Timer.Task`: `VoteSystem.run`
+         *   opens `if (isVoting)` and the only path to its own `cancel()` - which removes its chat
+         *   filter and its two event listeners - is inside that branch. Clearing it from outside
+         *   freezes the task instead of ending it, and a later class starting a vote would then be
+         *   killed by the zombie's next tick. Left alone, an orphaned vote notices its starter is gone
+         *   and cancels itself, which is the behaviour that already exists and works.
+         * - `isNotTargetMap`. `Main` derives it from `pluginData.data.warpBlock` on every
+         *   `WorldLoadEvent`, `pluginData` is deliberately not reset, and this function runs *after*
+         *   [resetSharedState]'s `world.loadMap`. Forcing `false` would be a clobber, not a restore,
+         *   and would re-enable the warp scan in the action filter for every later class.
          * - `pluginData`, which is `lateinit` and is reassigned by every `Main.init()`. Clearing it
          *   without a plugin reload would leave the in-memory mirror pointing at a row the H2 delete
          *   in [stopPlugin] has already destroyed, and reloading the plugin per class costs the whole
          *   suite minutes. A class that needs a clean one calls `stopPlugin(); loadGame(true)`.
          * - counters nothing branches on (`gameOverCount`, `playerNumber`, `mapStartTime`). They show
          *   up in `/status` output and in nothing that decides anything.
-         * - state a running server would leak too. That is a production defect and belongs in a
-         *   report, not here; see the class doc.
+         * - the shared **world**. A class that changes the wave, the core's items, the weather or a
+         *   tile leaves all of it for the next class, because of the same conditional reload above.
+         *   That is a real gap and it is not closed here: an unconditional `world.loadMap` per class
+         *   fires `WorldLoadEvent`, which [resetSharedState] documents three classes as needing it not
+         *   to. Recorded rather than papered over.
          */
         private fun resetPluginState() {
             isGlobalMute = false
-            isVoting = false
             isCheated = false
             isSurrender = false
-            isNotTargetMap = false
             unitLimitMessageCooldown = 0
             nextVoteAvailable = timeSource.markNow()
             voterCooldown.clear()
@@ -246,8 +263,9 @@ class PluginTest {
             pvpPlayer.clear()
             worldEditSelection.clear()
             Commands.charsPlacing.clear()
-            // Jobs, not data: one left running re-adds a departed class's player to `players` in the
-            // middle of the next class.
+            // Jobs, not data. The job itself re-checks `isPlayerOnline` after each delay, so the
+            // window it can still write in is narrow - a leave that lands inside a load - but a
+            // coroutine belonging to a class that has finished has nothing left to do either way.
             playerDataRetries.values.forEach { job -> runCatching { job.cancel() } }
             playerDataRetries.clear()
         }
@@ -952,20 +970,18 @@ class PluginTest {
      * The class-entry contract for plugin state, asserted rather than described.
      *
      * Every one of these carried into the next class before this existed, and each of them decides
-     * something: a leftover `isGlobalMute` silences chat, a leftover `isVoting` refuses every vote, a
-     * `nextVoteAvailable` in the future blocks the vote commands, a stale `dpsTile` is healed once a
-     * second by `Trigger` in a world that has since been reloaded.
+     * something: a leftover `isGlobalMute` silences chat, a `nextVoteAvailable` in the future blocks
+     * the vote commands, a stale `dpsTile` is healed once a second by `Trigger` in a world that has
+     * since been reloaded, and a live retry coroutine writes into the next class.
      */
     @OptIn(ExperimentalTime::class)
     @Test
-    fun pluginStateResetTest_21() {
+    fun pluginStateResetTest() {
         loadGame()
 
         isGlobalMute = true
-        isVoting = true
         isCheated = true
         isSurrender = true
-        isNotTargetMap = true
         unitLimitMessageCooldown = 99
         nextVoteAvailable = timeSource.markNow() + 10.minutes
         voterCooldown["probe"] = timeSource.markNow()
@@ -978,14 +994,14 @@ class PluginTest {
         pvpPlayer["probe"] = Team.sharded
         worldEditSelection["probe"] = Commands.WorldEditSelection()
         Commands.charsPlacing["probe"] = arrayOf("probe")
+        val retry = Job()
+        playerDataRetries["probe"] = retry
 
         resetPluginState()
 
         assertFalse(isGlobalMute, "isGlobalMute carried into the next class")
-        assertFalse(isVoting, "isVoting carried into the next class")
         assertFalse(isCheated, "isCheated carried into the next class")
         assertFalse(isSurrender, "isSurrender carried into the next class")
-        assertFalse(isNotTargetMap, "isNotTargetMap carried into the next class")
         assertEquals(0, unitLimitMessageCooldown, "unitLimitMessageCooldown carried into the next class")
         assertTrue(
             nextVoteAvailable.elapsedNow().isPositive() || nextVoteAvailable.elapsedNow() == Duration.ZERO,
@@ -1001,6 +1017,16 @@ class PluginTest {
         assertTrue(pvpPlayer.isEmpty(), "pvpPlayer carried into the next class")
         assertTrue(worldEditSelection.isEmpty(), "worldEditSelection carried into the next class")
         assertTrue(Commands.charsPlacing.isEmpty(), "a pending /chars placement carried into the next class")
+        assertTrue(playerDataRetries.isEmpty(), "a player-data retry job carried into the next class")
+        assertTrue(retry.isCancelled, "the retry job was dropped from the map but left running")
+
+        // The wiring, not just the body. Everything above pins resetPluginState(); this pins the
+        // one line that makes it happen at all - the call at the end of resetSharedState(). Without
+        // it, deleting that call leaves the suite green while all sixteen fields carry over again.
+        isGlobalMute = true
+        currentTestClass = "a.different.TestClass"
+        loadGame()
+        assertFalse(isGlobalMute, "the class-entry reset did not run: loadGame reached a new class without it")
     }
 
     /**
@@ -1008,9 +1034,13 @@ class PluginTest {
      * than against whichever one the run happens to be holding - the installed handler depends on
      * whether any class has called [stopPlugin] yet, and a test whose outcome depends on class order
      * is not a test.
+     *
+     * No `_NN` suffix, unlike the database tests above: that suffix encodes run order under
+     * `@FixMethodOrder(NAME_ASCENDING)`, which sorts the whole name, and neither this test nor
+     * [pluginStateResetTest] depends on running at any particular point.
      */
     @Test
-    fun errorGuardTest_22() {
+    fun errorGuardTest() {
         loadGame()
         val previous = Log.logger
         try {
