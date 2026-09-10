@@ -54,8 +54,10 @@ class PagingMenuStalenessTest {
 
             // Opened first and never clicked: it stays registered (registerOwnedMenu leaks by design
             // again, per that revert) and stays reachable once whatever opens next is dismissed.
+            val beforeMaps = lastMenuId()
             clientCommand.handleMessage("/maps", player)
             val mapsMenu = lastMenuId()
+            assertTrue(mapsMenu > beforeMaps, "/maps should have registered its own menu, otherwise this test proves nothing")
 
             // Enough players that /players has strictly more pages than /maps, so paging it can drive
             // the shared key past the end of /maps' own, smaller prebuilt array.

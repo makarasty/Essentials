@@ -6,10 +6,12 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.serverCommand
 import PluginTest.Companion.setPermission
 import essential.common.database.data.PlayerData
+import essential.common.util.PlayerLookup
 import mindustry.gen.Player
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 
 /**
  * task-076: both /kill variants dereferenced the target's unit with no null check
@@ -59,6 +61,12 @@ class KillNoUnitTest {
         val orphan = target.unit()
         try {
             target.clearUnit()
+
+            // The whole body of the server command sits behind PlayerLookup.online(arg[0]) != null, so
+            // "does not throw" alone would also pass for the wrong reason if the lookup itself started
+            // failing. Proving the lookup still resolves the target is what makes the no-throw below
+            // mean the null-unit branch was actually exercised.
+            assertNotNull(PlayerLookup.online(target.name()), "the lookup must still resolve the target for this test to prove anything")
 
             // Must not throw. The server console variant has no player to report an error to, so this
             // only proves the command survives a target with no unit.
