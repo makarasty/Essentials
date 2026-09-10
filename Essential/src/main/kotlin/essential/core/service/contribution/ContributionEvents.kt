@@ -133,6 +133,11 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
     if (!event.breaking) {
         // Record ownership.
         tileOwner[pos] = player.uuid()
+        // A producer at this position that was removed some other way (killed, an Undo rollback, a raw
+        // setBlock) never went through the breaking branch below, so its rate could still be sitting
+        // here. Whatever gets built now starts with a clean slate rather than inheriting a dead
+        // building's output.
+        lastOutputPerSecond.remove(pos)
 
         // First-build factory bonus.
         val factoryScore = conf.factoryBuildScore[block.name]

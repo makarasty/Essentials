@@ -57,6 +57,10 @@ class ContributionPenaltyTest {
 
     @Test
     fun aRealTurretIsExemptFromTheBuildPenalty() {
+        // Without this, blockBuildEnd() returns on its first line and the test passes with the
+        // pre-fix substring test still intact - it would not have caught the defect either.
+        assertTrue(ContributionService.conf.enabled, "contribution scoring has to be on to reach isPenaltyExempt")
+
         val wasInfinite = Vars.state.rules.infiniteResources
         Vars.state.rules.infiniteResources = false
         try {
@@ -80,6 +84,8 @@ class ContributionPenaltyTest {
 
     @Test
     fun aWallStaysExemptByNameSubstring() {
+        assertTrue(ContributionService.conf.enabled, "contribution scoring has to be on to reach isPenaltyExempt")
+
         val wasInfinite = Vars.state.rules.infiniteResources
         Vars.state.rules.infiniteResources = false
         try {
