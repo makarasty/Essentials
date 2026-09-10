@@ -2,7 +2,7 @@ import PluginTest.Companion.clientCommand
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
-import arc.struct.Seq
+import essential.core.OwnedMenus
 import essential.core.Undo
 import mindustry.Vars
 import mindustry.gen.Player
@@ -23,29 +23,30 @@ class InfoMenuTest {
     companion object {
         private var done = false
 
-        private fun lastMenuId(): Int {
-            val field = Menus::class.java.getDeclaredField("menuListeners")
-            field.isAccessible = true
-            return (field.get(null) as Seq<*>).size - 1
-        }
-
         /**
-         * The id the block registered, not whatever the process registered last. `menuListeners`
-         * is process-wide and a menu id is an index into it, so anything else that registers in
-         * the window moves the last index without moving the one this block took - and a click on
-         * the wrong index reaches a different listener silently, because menuChoose only
-         * range-checks. So the id is the first index this block registered, and the count has to
-         * have moved by exactly one: a registrant that got in ahead of the block's own would make
-         * the first new index the wrong menu, and this says so instead of addressing it.
+         * The id the block opened its owned menu under.
+         *
+         * This used to count `Menus.menuListeners`, taking the first index the block registered and
+         * requiring the count to have moved by exactly one. That question can no longer be asked of
+         * the engine's list: `OwnedMenus` registers each slot's listener once and hands the id out
+         * again when nothing can still answer on it, so a menu opened on a recycled slot does not
+         * move that list at all. `OwnedMenus.allocationCount` counts the same event one level up - a
+         * menu handed to a player - and the claim is unchanged, including the "exactly one": if a
+         * second owned menu is opened in the window, "the id this block took" is ambiguous, and a
+         * click on the wrong one reaches a different listener silently because `menuChoose` only
+         * range-checks the id. Two is still a named failure, not something addressed by accident.
          */
-        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
-            val before = lastMenuId()
+        private fun menuOpenedBy(what: String, block: () -> Unit): Int {
+            val before = OwnedMenus.allocationCount
             block()
+            // Counted on allocations, not on the id list: a block that allocated the same slot twice
+            // - which happens whenever a menu is answered inside the block, freeing its slot for the
+            // next one - yields one id for two menus, and the gate would pass on the wrong one.
             assertEquals(
-                before + 1, lastMenuId(),
-                "$what should have registered exactly one menu, otherwise this test proves nothing"
+                1, (OwnedMenus.allocationCount - before).toInt(),
+                "$what should have opened exactly one owned menu, otherwise this test proves nothing"
             )
-            return before + 1
+            return OwnedMenus.idsAllocatedAfter(before).last()
         }
     }
 
@@ -55,9 +56,6 @@ class InfoMenuTest {
             loadGame(true)
             done = true
         }
-        // Undo registers its own menu lazily, on the first MenuOptionChooseEvent. Force it here so that
-        // counting registered menus below measures only what the /info menu did.
-        Undo.menuId
     }
 
     private fun admin(): Player = newPlayer().first.also { setPermission(it, "admin", true) }
@@ -71,11 +69,11 @@ class InfoMenuTest {
      * A uuid matches exactly and cannot be ambiguous. `/info <name>` is ClientCommandTest's.
      */
     private fun openInfo(admin: Player, target: Player): Int =
-        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
+        menuOpenedBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
 
     /** Clicking an option that opens the next menu; returns that menu's own id. */
     private fun choose(player: Player, menu: Int, option: Int, what: String = "option $option"): Int =
-        menuRegisteredBy(what) { Menus.menuChoose(player, menu, option) }
+        menuOpenedBy(what) { Menus.menuChoose(player, menu, option) }
 
     @Test
     fun infoMenu_strangerCannotOpenTheBanMenu() {
@@ -84,11 +82,16 @@ class InfoMenuTest {
         val target = newPlayer().first
 
         val infoMenu = openInfo(admin, target)
-        // The one claim here that is genuinely about the whole list: nothing at all was registered.
-        // An extra registration from elsewhere can only make this a false red, never a false green.
-        val before = lastMenuId()
+        // Nothing was opened at all. This asked the engine's list the same question until owned menu
+        // ids became reusable - and a reused slot registers nothing with the engine, so a stranger's
+        // click that *did* open the ban menu could have left that list untouched and passed. Asking
+        // OwnedMenus makes the claim true again rather than merely still green.
+        val before = OwnedMenus.allocationCount
         Menus.menuChoose(stranger, infoMenu, 1)
-        assertEquals(before, lastMenuId(), "a stranger's click must not open the admin's ban menu")
+        assertEquals(
+            before, OwnedMenus.allocationCount,
+            "a stranger's click must not open the admin's ban menu"
+        )
 
         choose(admin, infoMenu, 1, "the admin who opened the menu must still reach the ban menu, so option 1")
     }

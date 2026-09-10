@@ -19,11 +19,14 @@ import kotlin.test.assertEquals
  * player-chosen display name, stored on TileLog with no uuid to disambiguate. "Bobby" matched a
  * rollback aimed at "Bob", reverting a bystander's tiles.
  *
- * The honest fix needs a uuid on TileLog / WorldHistoryTable, which lives in CoreEvent.kt and is not
- * this cluster's file (filed as an ask). What is fixed here, in Commands.kt alone, is the substring
- * itself: matching the exact stored name instead of a substring of it closes the "Bobby is not Bob"
- * case and the "renamed to contain someone else's name" case. It does not close two entries sharing
- * one exact name after a later rename - that residue needs the uuid.
+ * The first half of the fix, in Commands.kt alone, was the substring itself: matching the exact
+ * stored name closes "Bobby is not Bob" and "renamed to contain someone else's name". It could not
+ * close two entries sharing one exact name after a later rename, because a name is a snapshot.
+ *
+ * The uuid column now exists and that residue is closed for history recorded since it arrived - see
+ * [rollbackTellsTwoAccountsApartByUuidWhenTheHistoryCarriesIt]. The two name tests below still hold
+ * and are not redundant: their rows carry no uuid, which is every row written before the upgrade,
+ * and the name match is what those must keep falling back to.
  */
 class RollbackPlayerMatchTest {
     companion object {
@@ -123,6 +126,70 @@ class RollbackPlayerMatchTest {
         } finally {
             leavePlayer(admin.first)
             Vars.world.tile(x.toInt(), y.toInt())?.setBlock(Blocks.air, Team.derelict, 0)
+        }
+    }
+
+    /**
+     * The residue the exact-name match could not reach: two accounts whose stored display name is
+     * identical, told apart by the column rather than by the name.
+     *
+     * The admin addresses the target by uuid, which `PlayerLookup.findExact` resolves ahead of every
+     * name comparison - so this pins the new path without depending on how an ambiguous *name* is
+     * resolved, which is deliberately still the old behaviour. Before the column, `/rollback <uuid>`
+     * compared that uuid against stored display names, matched nothing, and reverted nothing.
+     */
+    @Test
+    fun rollbackTellsTwoAccountsApartByUuidWhenTheHistoryCarriesIt() {
+        val nonce = Random.nextInt(100000, 999999)
+        val sharedName = "Twin$nonce"
+        val mineX: Short = 42
+        val mineY: Short = 45
+        val theirsX: Short = 48
+        val theirsY: Short = 51
+
+        val mine = newPlayer()
+        val theirs = newPlayer()
+        val admin = newPlayer()
+        try {
+            setPermission(admin.first, "owner", true)
+
+            // Same coordinates trick as the tests above: start on a block the history disagrees with,
+            // so "reverted" and "left alone" are distinguishable rather than both ending on air.
+            Vars.world.tile(mineX.toInt(), mineY.toInt())?.setBlock(Blocks.titaniumWall, Team.sharded, 0)
+            Vars.world.tile(theirsX.toInt(), theirsY.toInt())?.setBlock(Blocks.titaniumWall, Team.sharded, 0)
+
+            // One display name, two accounts. Only the uuid separates these rows.
+            WorldHistoryBuffer.enqueue(
+                time = 1000, player = sharedName, action = "place",
+                x = mineX, y = mineY, tile = Blocks.copperWall.name, rotate = 0, team = "sharded",
+                value = null, uuid = mine.first.uuid()
+            )
+            WorldHistoryBuffer.enqueue(
+                time = 1000, player = sharedName, action = "place",
+                x = theirsX, y = theirsY, tile = Blocks.copperWall.name, rotate = 0, team = "sharded",
+                value = null, uuid = theirs.first.uuid()
+            )
+
+            clientCommand.handleMessage("/rollback ${mine.first.uuid()}", admin.first)
+
+            assertEquals(
+                true,
+                waitUntil(10000) {
+                    Vars.world.tile(mineX.toInt(), mineY.toInt())?.block() != Blocks.titaniumWall
+                },
+                "rollback by uuid should have reverted that account's own tile"
+            )
+            assertEquals(
+                Blocks.titaniumWall,
+                Vars.world.tile(theirsX.toInt(), theirsY.toInt())?.block(),
+                "the other account's tile must survive, even though both rows carry the same name"
+            )
+        } finally {
+            leavePlayer(mine.first)
+            leavePlayer(theirs.first)
+            leavePlayer(admin.first)
+            Vars.world.tile(mineX.toInt(), mineY.toInt())?.setBlock(Blocks.air, Team.derelict, 0)
+            Vars.world.tile(theirsX.toInt(), theirsY.toInt())?.setBlock(Blocks.air, Team.derelict, 0)
         }
     }
 }

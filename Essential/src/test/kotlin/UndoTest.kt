@@ -6,13 +6,13 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import arc.Events
-import arc.struct.Seq
 import essential.common.database.data.PlayerData
 import essential.common.database.data.checkPlayerBanned
 import essential.common.permission.Permission
 import essential.common.players
 import essential.common.rootPath
 import essential.common.timeSource
+import essential.core.OwnedMenus
 import essential.core.Undo
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
@@ -31,36 +31,30 @@ class UndoTest {
     companion object {
         private var done = false
 
-        private fun lastMenuId(): Int {
-            val field = Menus::class.java.getDeclaredField("menuListeners")
-            field.isAccessible = true
-            return (field.get(null) as Seq<*>).size - 1
-        }
-
         /**
-         * The id the block registered, not whatever the process registered last.
+         * The id the block opened its owned menu under.
          *
-         * `Menus.menuListeners` is one process-wide list and a menu id is an index into it, so
-         * "the last id" answers a question about the whole JVM: anything else that registers in
-         * the window - Undo's lazy menu on the first MenuOptionChooseEvent, another command's
-         * menu, an event handler's - moves the last index without moving the one `/info` just
-         * took. The click then lands on a different listener and `menuChoose` has no error path
-         * for that (the engine range-checks the id and calls whatever is there), so the test
-         * fails three steps later on a symptom.
-         *
-         * So the id is the *first* index this block registered, and the count has to have moved
-         * by exactly one. Requiring exactly one is the half that keeps this honest: if some
-         * future registrant gets in ahead of the block's own, "first new index" would be its id,
-         * and this would go back to addressing the wrong menu silently. Two is a named failure.
+         * This used to count `Menus.menuListeners`, taking the first index the block registered and
+         * requiring the count to have moved by exactly one. That question can no longer be asked of
+         * the engine's list: `OwnedMenus` registers each slot's listener once and hands the id out
+         * again when nothing can still answer on it, so a menu opened on a recycled slot does not
+         * move that list at all. `OwnedMenus.allocationCount` counts the same event one level up - a
+         * menu handed to a player - and the claim is unchanged, including the "exactly one": if a
+         * second owned menu is opened in the window, "the id this block took" is ambiguous, and a
+         * click on the wrong one reaches a different listener silently because `menuChoose` only
+         * range-checks the id. Two is still a named failure, not something addressed by accident.
          */
-        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
-            val before = lastMenuId()
+        private fun menuOpenedBy(what: String, block: () -> Unit): Int {
+            val before = OwnedMenus.allocationCount
             block()
+            // Counted on allocations, not on the id list: a block that allocated the same slot twice
+            // - which happens whenever a menu is answered inside the block, freeing its slot for the
+            // next one - yields one id for two menus, and the gate would pass on the wrong one.
             assertEquals(
-                before + 1, lastMenuId(),
-                "$what should have registered exactly one menu, otherwise this test proves nothing"
+                1, (OwnedMenus.allocationCount - before).toInt(),
+                "$what should have opened exactly one owned menu, otherwise this test proves nothing"
             )
-            return before + 1
+            return OwnedMenus.idsAllocatedAfter(before).last()
         }
 
         private fun data(player: Player): PlayerData = players.first { it.uuid == player.uuid() }
@@ -72,12 +66,6 @@ class UndoTest {
             loadGame(true)
             done = true
         }
-        // Menus.menuChoose fires MenuOptionChooseEvent before it dispatches to the listener, and
-        // CoreEvent's undoMenuChoose handler reads Undo.menuId - a lazy that registers a menu of its
-        // own the first time it is touched. So the first click anywhere in this JVM registers a menu
-        // ahead of the one the clicked listener opens, which would make "the first menu this click
-        // registered" Undo's rather than the /info menu's. Force it here, as InfoMenuTest does.
-        Undo.menuId
     }
 
     private fun admin(group: String = "admin"): Player {
@@ -98,11 +86,11 @@ class UndoTest {
      * `/info <name>` itself is covered by ClientCommandTest.
      */
     private fun openInfo(admin: Player, target: Player): Int =
-        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
+        menuOpenedBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
 
     /** Clicking an /info menu option that opens the next menu; returns that menu's own id. */
     private fun choose(admin: Player, menu: Int, option: Int): Int =
-        menuRegisteredBy("option $option") { Menus.menuChoose(admin, menu, option) }
+        menuOpenedBy("option $option") { Menus.menuChoose(admin, menu, option) }
 
     private fun clickUndoMenu(admin: Player, option: Int) {
         Events.fire(MenuOptionChooseEvent(admin, Undo.menuId, option))

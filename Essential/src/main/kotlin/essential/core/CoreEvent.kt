@@ -144,7 +144,8 @@ fun withdraw(event: WithdrawEvent) {
                 checkValidBlock(event.tile.tile),
                 event.tile.rotation,
                 event.tile.team,
-                event.tile.config()
+                event.tile.config(),
+                event.player.uuid()
             )
         )
     }
@@ -167,7 +168,8 @@ fun deposit(event: DepositEvent) {
                 checkValidBlock(event.tile.tile),
                 event.tile.rotation,
                 event.tile.team,
-                event.tile.config()
+                event.tile.config(),
+                event.player.uuid()
             )
         )
     }
@@ -186,7 +188,8 @@ fun config(event: ConfigEvent) {
                 checkValidBlock(event.tile.tile),
                 event.tile.rotation,
                 event.tile.team,
-                event.value
+                event.value,
+                event.player.uuid()
             )
         )
         if (checkValidBlock(event.tile.tile).contains("message", true)) {
@@ -200,7 +203,8 @@ fun config(event: ConfigEvent) {
                     checkValidBlock(event.tile.tile),
                     event.tile.rotation,
                     event.tile.team,
-                    event.value
+                    event.value,
+                    event.player.uuid()
                 )
             )
         }
@@ -234,7 +238,8 @@ fun tap(event: TapEvent) {
                 checkValidBlock(event.tile),
                 if (event.tile.build != null) event.tile.build.rotation else 0,
                 if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-                null
+                null,
+                event.player.uuid()
             )
         )
     }
@@ -355,7 +360,11 @@ fun tap(event: TapEvent) {
                                 tile = entry.tile,
                                 rotate = entry.rotate,
                                 team = Team.all.find { it.name == entry.team } ?: Team.derelict,
-                                value = entry.value
+                                value = entry.value,
+                                // Read path, not a write one: this buffer is rendered to the admin
+                                // and never reaches addLog. Carrying the row's own uuid rather than
+                                // null keeps it truthful for whatever displays it next.
+                                uuid = entry.uuid
                             )
                         )
                     }
@@ -444,6 +453,10 @@ fun tap(event: TapEvent) {
 
             val bundle = Bundle(event.player.locale())
             val options = arrayOf(arrayOf(bundle["command.hub.zone.yes"], bundle["command.hub.zone.no"]))
+            // This registers one listener per warp zone created and the engine never prunes
+            // menuListeners, so it leaks the same way registerOwnedMenu used to. OwnedMenus would
+            // close it, but FeatureTest.kt:1451 addresses this menu as `Menus.registerMenu {} - 1`
+            // and a pooled id does not always move that list. Left alone deliberately.
             val menu = Menus.registerMenu { player, option ->
                 // menuChoose is client-callable with any id, and menu ids are process-wide, so without
                 // this any connected player could answer the hub menu and write a warp zone.
@@ -992,7 +1005,8 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                             checkValidBlock(tile),
                             if (tile.build != null) tile.build.rotation else 0,
                             if (tile.build != null) tile.build.team else Vars.state.rules.defaultTeam,
-                            event.config
+                            event.config,
+                            target.uuid
                         )
                     )
 
@@ -1013,7 +1027,8 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                             checkValidBlock(tile),
                             if (tile.build != null) tile.build.rotation else 0,
                             if (tile.build != null) tile.build.team else Vars.state.rules.defaultTeam,
-                            event.config
+                            event.config,
+                            target.uuid
                         )
                     )
 
@@ -1028,6 +1043,26 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
     }
 }
 
+/**
+ * **This whole handler is unreachable and has never run on any server.**
+ *
+ * `BuildSelectEvent.builder` is a `mindustry.gen.Unit`, which implements `Builderc`/`Unitc` and not
+ * `Playerc`; the only class implementing `Playerc` is `mindustry.gen.Player`, which does not extend
+ * `Unit`. So `event.builder is Playerc` cannot be true. It compiles because `Unit` is abstract, and
+ * `CommandSmokeTest.kt:282` fires the event with `dummyPlayer.unit()`, which is not a `Playerc`
+ * either - so the test passes without ever entering the branch. The "select" history row and the
+ * `log.block.remove` line below have therefore never been written.
+ *
+ * **The `uuid` argument added below is consequently dead code, not a working write.** It is left in
+ * place so that whoever wakes this does not have to add it back.
+ *
+ * The known repair is `event.builder != null && event.builder.isPlayer`, then `event.builder.player`
+ * for the name and uuid. It is deliberately not applied here: `BuildSelectEvent` fires on
+ * block-selection drags at a rate nobody has measured, and this handler writes into the
+ * world-history buffer. Waking a dormant high-frequency writer on six live servers needs a measured
+ * fire rate or the operator's say-so, not a chip's edit. Nothing regresses by leaving it asleep - it
+ * has been asleep for the life of the code.
+ */
 @Event
 fun buildSelect(event: BuildSelectEvent) {
     if (event.builder is Playerc && event.builder.buildPlan() != null && event.tile != null && event.tile.block() !== Blocks.air && event.breaking) {
@@ -1044,7 +1079,8 @@ fun buildSelect(event: BuildSelectEvent) {
                 checkValidBlock(event.tile),
                 if (event.tile.build != null) event.tile.build.rotation else 0,
                 if (event.tile.build != null) event.tile.build.team else Vars.state.rules.defaultTeam,
-                event.tile.build.config()
+                event.tile.build.config(),
+                (event.builder as Playerc).uuid()
             )
         )
     }
@@ -1114,6 +1150,8 @@ fun playerLeave(event: PlayerLeave) {
     )
     Rtv.leave(event.player.uuid(), event.player.plainName())
     Undo.leave(event.player.uuid())
+    // Their dialogs went with their connection, so the menu ids they held can be handed out again.
+    OwnedMenus.release(event.player.uuid())
     cancelPlayerDataRetry(event.player.uuid())
     val data = players.find { e -> e.uuid == event.player.uuid() }
     if (data != null) {
@@ -1767,7 +1805,17 @@ private fun addLog(log: TileLog) {
         tile = log.tile,
         rotate = log.rotate,
         team = log.team.name,
-        value = log.value?.toString()
+        value = log.value?.toString(),
+        // The runtime class of the config value, taken at the only point where its type is still
+        // known - the line above flattens it to a string and the type is gone. Fed to
+        // Commands.kt's reconstructConfig, which works in terms of Block.configurations' own
+        // Class<*> keys, so a class name compares directly with no lookup table in between.
+        //
+        // Clamped to the column's width: H2 rejects an over-long value rather than truncating it,
+        // and a rejected insert is requeued at the head of the buffer, so one long class name would
+        // wedge the queue and lose history silently.
+        kind = log.value?.javaClass?.name?.take(100),
+        uuid = log.uuid
     )
 }
 
@@ -1780,7 +1828,13 @@ class TileLog(
     val tile: String,
     val rotate: Int,
     val team: Team,
-    val value: Any?
+    val value: Any?,
+    /**
+     * Acting player's uuid. [player] is a display name the player chose and can change, and two
+     * accounts can hold the same one at different times, so it cannot identify who acted; this can.
+     * Defaulted because a row read back out of the database may predate the column.
+     */
+    val uuid: String? = null
 )
 
 fun isUnitInside(target: Tile, first: Tile, second: Tile): Boolean {
