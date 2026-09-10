@@ -77,12 +77,11 @@ class WorldHistoryMigrationTest {
 
         val migrated = runBlocking { getAllWorldHistory() }
 
-        val old = migrated.singleOrNull { it.player == "oldjar" }
         assertEquals(
             1, migrated.count { it.player == "oldjar" },
             "the row written before the migration did not survive it: $migrated"
         )
-        checkNotNull(old)
+        val old = migrated.first { it.player == "oldjar" }
         assertEquals("config", old.action, "the migration rewrote an existing row's action")
         assertEquals("copper", old.value, "the migration rewrote an existing row's value")
         assertEquals(1000L, old.time, "the migration rewrote an existing row's time")
