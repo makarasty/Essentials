@@ -3,6 +3,7 @@ package essential.core.service.vote
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
+import PluginTest.Companion.setPermission
 import essential.common.isVoting
 import essential.core.VoteData
 import essential.core.VoteType
@@ -122,6 +123,37 @@ class VoteElectorateTest {
             isVoting = false
             Vars.state.rules.pvp = wasPvp
             leavePlayer(starter.first)
+        }
+    }
+
+    @Test
+    fun aVotePassHolderStartingTheirOwnVoteCarriesItOnTheFirstTick() {
+        val starter = newPlayer()
+        // Enough non-afk players that check()'s table alone (without isAdminVote) would demand more
+        // than the starter's single seeded vote, so a pass on the first tick proves the instant-pass
+        // branch ran rather than the ordinary threshold happening to already be met.
+        val bystanders = (1..2).map { newPlayer() }
+        try {
+            setPermission(starter.first, "admin", true) // grants vote.pass, see permission_default.yaml
+            isVoting = true
+
+            val voteData = VoteData(type = VoteType.Skip, wave = 1, starter = starter.second)
+            val vote = VoteSystem(voteData)
+
+            val filtered = Vars.netServer.admins.filterMessage(starter.first, "y")
+            assertEquals(null, filtered, "the yes/no chat message must still be swallowed by the vote filter")
+
+            vote.run()
+
+            assertTrue(
+                !isVoting,
+                "task-109: the constructor pre-seeds `voted` with the starter, which used to make the " +
+                    "outer guard `!voted.contains(...)` false for them forever - a vote.pass holder's own " +
+                    "'y' must carry their vote on the first tick, not wait out the full timer"
+            )
+        } finally {
+            isVoting = false
+            (listOf(starter) + bystanders).forEach { leavePlayer(it.first) }
         }
     }
 }

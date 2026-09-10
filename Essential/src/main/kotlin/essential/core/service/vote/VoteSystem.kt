@@ -205,15 +205,18 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 val data = findPlayerData(player.uuid())
                 if (data != null) {
                     val isAdmin = Permission.check(data, "vote.pass")
-                    if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        if (voteData.starter != data) {
-                            if (Vars.state.rules.pvp && voteData.team == player.team()) {
-                                voted.add(player.uuid())
-                            } else if (!Vars.state.rules.pvp) {
-                                voted.add(player.uuid())
-                            }
-                        } else if (isAdmin) {
-                            isAdminVote = true
+                    // The starter is pre-seeded into `voted` at construction (so their own vote
+                    // counts without them having to speak), which also means the ordinary yes-branch
+                    // below - guarded on `!voted.contains` - can never see them. A starter holding
+                    // vote.pass needs its own branch to reach the instant pass at all.
+                    if (isVoting && isYes(message) && voteData.starter == data && isAdmin && !isAdminVote) {
+                        isAdminVote = true
+                        data.send("command.vote.voted")
+                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
+                        if (Vars.state.rules.pvp && voteData.team == player.team()) {
+                            voted.add(player.uuid())
+                        } else if (!Vars.state.rules.pvp) {
+                            voted.add(player.uuid())
                         }
                         data.send("command.vote.voted")
                     } else if (isVoting && isNo(message) && isAdmin) {
