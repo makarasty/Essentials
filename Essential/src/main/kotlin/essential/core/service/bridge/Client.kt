@@ -120,6 +120,10 @@ class Client : Runnable {
                                 }
                             }
                         }
+                        // task-105: never sent by the server (its only sender, handleBanCheck, is
+                        // itself unreached, see Server.kt), and this reads the payload without
+                        // applying anything even if it arrived - the ban-sharing half of the protocol
+                        // is dead end to end. See BridgeConfig.SharingConfig.ban, read by nothing.
                         "banned" -> readBridgeLine(reader) ?: throw IOException("Missing bridge ban payload")
                         "exit" -> break
                         else -> throw IOException("Unknown bridge command: $command")
@@ -173,7 +177,26 @@ class Client : Runnable {
     fun send(command: String, vararg parameter: String?) {
         when (command) {
             "crash" -> sendPayload("crash", parameter.firstOrNull().orEmpty())
-            "exit" -> closeConnection()
+            "exit" -> {
+                // task-105: this used to map straight to closeConnection(), which never wrote the
+                // word "exit" to the wire - so the peer's own "exit" handler (Server.kt) could never
+                // fire from a clean client shutdown, only from the socket close that followed it.
+                // Written synchronously, not queued through sendPayload/messageQueue, because
+                // BridgeService.dispose() calls cancel() (which stops the writer coroutine)
+                // immediately after this returns.
+                val activeWriter = writer
+                if (activeWriter != null) {
+                    try {
+                        synchronized(activeWriter) {
+                            activeWriter.write("exit")
+                            activeWriter.newLine()
+                            activeWriter.flush()
+                        }
+                    } catch (_: IOException) {
+                    }
+                }
+                closeConnection()
+            }
             else -> Log.warn("Unknown bridge command: $command")
         }
     }
