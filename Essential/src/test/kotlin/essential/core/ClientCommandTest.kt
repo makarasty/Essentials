@@ -907,15 +907,18 @@ class ClientCommandTest {
         clientCommand.handleMessage("/ranking exp 1", player)
 
         // Test ranking command with invalid type parameter
+        playerData.lastReceivedMessage = "sentinel"
         clientCommand.handleMessage("/ranking invalid", player)
         run {
-            val expected1 = err("command.ranking.wrong")
-            val expected2 = err("player.not.found")
-            val rankingSeen = observeMessages(playerData, 2000) { it == expected1 || it == expected2 }
-            assertTrue(
-                rankingSeen.any { it == expected1 || it == expected2 },
-                "ranking said: $rankingSeen"
-            )
+            // `player.not.found` used to be accepted here too. /ranking never produces it - an
+            // unrecognised type is answered with command.ranking.wrong at Commands.kt:1392 and a
+            // throw with the same key at :1526 - so the allowance only ever matched an /unban reply
+            // that the previous test had left in flight, and it made this assertion pass in 5 ms on
+            // another test's output. drainPostedWork at the test boundary is what removes the need
+            // for it.
+            val expected = err("command.ranking.wrong")
+            val rankingSeen = observeMessages(playerData, 5000) { it == expected }
+            assertTrue(rankingSeen.any { it == expected }, "ranking said: $rankingSeen")
         }
 
         // Test ranking command without parameter
