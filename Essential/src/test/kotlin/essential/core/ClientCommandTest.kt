@@ -74,8 +74,9 @@ class ClientCommandTest {
      * Best effort on purpose: the return value is discarded, so a drain that gives up leaves the
      * suite exactly where it was rather than turning a slow test into a failing one. It is not
      * literally throw-free - [drainPostedWork] propagates if a connection pool ever reports no
-     * metrics - but JUnit attaches an `@AfterEach` throwable as *suppressed* when the test body has
-     * already failed, so that cannot mask a real failure either.
+     * metrics - but this suite is JUnit 4 (`org.junit.runners`, no `useJUnitPlatform()`), whose
+     * `RunAfters` collects an `@After` throwable into a `MultipleFailureException` alongside the
+     * body's, so a teardown failure is reported *beside* a real failure rather than in place of it.
      */
     @AfterTest
     fun settle() {
@@ -632,9 +633,26 @@ class ClientCommandTest {
         clientCommand.handleMessage("/info ${dummy.first.name}", player)
         assertEquals(err("command.permission.false"), playerData.lastReceivedMessage)
 
-        // Test info command with permission
+        // Test info command with permission.
+        //
+        // This asserted nothing until now, and it is the suite's only proof that `/info <name>` on
+        // an ONLINE target works: UndoTest and InfoMenuTest were both moved onto `/info <uuid>`,
+        // and client_infoOfflineTarget covers the offline path. An unasserted call cannot tell a
+        // working menu from a silent async miss, so the no-error assertion below mirrors what
+        // client_infoOfflineTarget already does for its own branch.
         setPermission("owner", true)
+        drainPostedWork()
+        playerData.lastReceivedMessage = "sentinel"
         clientCommand.handleMessage("/info ${dummy.first.name}", player)
+        // A broadcast to every player lands in this slot too, so the assertion is that no error
+        // arrived rather than that nothing did.
+        val onlineSeen = observeMessages(playerData, 3000) { false }
+        assertEquals(
+            emptyList(),
+            onlineSeen.filter { it.startsWith("[scarlet]") },
+            "info on an online target by name should open the menu instead of reporting an error, " +
+                "saw: $onlineSeen"
+        )
 
         // Test info command with not exist player
         clientCommand.handleMessage("/info nonexistentplayer", player)
