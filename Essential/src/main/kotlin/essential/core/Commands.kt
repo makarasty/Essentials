@@ -1564,12 +1564,18 @@ class Commands {
                         val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
                         grouped.forEach { (pos, entriesUnsorted) ->
-                            val hasPlayerAction = entriesUnsorted.any { it.player.contains(arg[0], ignoreCase = true) }
+                            // Exact, not a substring: entries.player is a player-chosen display name, and
+                            // a substring match reverted bystanders too - "Bobby" matched a rollback of
+                            // "Bob", and renaming to contain someone else's name could redirect blame.
+                            // This narrows the match; it does not close it, because the stored name is a
+                            // snapshot, not a uuid, so two entries can still share one exact name if a
+                            // later player renamed to a name an earlier one already had. See ask/9b-*.md.
+                            val hasPlayerAction = entriesUnsorted.any { it.player.equals(arg[0], ignoreCase = true) }
                             if (!hasPlayerAction) return@forEach
 
                             val entries = entriesUnsorted.sortedBy { it.time }
 
-                            val firstIdx = entries.indexOfFirst { it.player.contains(arg[0], ignoreCase = true) }
+                            val firstIdx = entries.indexOfFirst { it.player.equals(arg[0], ignoreCase = true) }
                             if (firstIdx == -1) return@forEach
 
                             val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
