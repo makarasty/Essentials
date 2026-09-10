@@ -42,17 +42,24 @@ class UndoTest {
          *
          * `Menus.menuListeners` is one process-wide list and a menu id is an index into it, so
          * "the last id" answers a question about the whole JVM: anything else that registers in
-         * the window - Undo's lazy menu on the first record, another command's menu, an event
-         * handler's - moves the last index without moving the one `/info` just took. The click
-         * then lands on a different listener and `menuChoose` has no error path for that (the
-         * engine range-checks the id and calls whatever is there), so the test fails three steps
-         * later on a symptom. Taking the *first* newly registered index instead pins the id to
-         * this block whatever the rest of the process is doing.
+         * the window - Undo's lazy menu on the first MenuOptionChooseEvent, another command's
+         * menu, an event handler's - moves the last index without moving the one `/info` just
+         * took. The click then lands on a different listener and `menuChoose` has no error path
+         * for that (the engine range-checks the id and calls whatever is there), so the test
+         * fails three steps later on a symptom.
+         *
+         * So the id is the *first* index this block registered, and the count has to have moved
+         * by exactly one. Requiring exactly one is the half that keeps this honest: if some
+         * future registrant gets in ahead of the block's own, "first new index" would be its id,
+         * and this would go back to addressing the wrong menu silently. Two is a named failure.
          */
         private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
             val before = lastMenuId()
             block()
-            assertTrue(lastMenuId() > before, "$what should have registered a menu, otherwise this test proves nothing")
+            assertEquals(
+                before + 1, lastMenuId(),
+                "$what should have registered exactly one menu, otherwise this test proves nothing"
+            )
             return before + 1
         }
 
@@ -79,8 +86,19 @@ class UndoTest {
         return player
     }
 
+    /**
+     * By uuid, not by name. `/info` resolves an online target synchronously and opens the menu on
+     * it before returning (Commands.kt, `PlayerLookup.findOnline` -> `open(current)`); every other
+     * outcome falls to `scope.launch { ... Core.app.post { open(other) } }`, and that post is only
+     * drained by `pumpApp`, which nothing between here and the click below calls. The menu is
+     * registered either way, so its id is right either way - but its captured `targetData` is
+     * still null, and the kick branch is a no-op on a null target. Two players sharing a plain
+     * name is enough to take that path, and the harness names players from a faker surname plus a
+     * millisecond. A uuid matches exactly, ahead of any name matching, and cannot be ambiguous.
+     * `/info <name>` itself is covered by ClientCommandTest.
+     */
     private fun openInfo(admin: Player, target: Player): Int =
-        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.name}", admin) }
+        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
 
     /** Clicking an /info menu option that opens the next menu; returns that menu's own id. */
     private fun choose(admin: Player, menu: Int, option: Int): Int =

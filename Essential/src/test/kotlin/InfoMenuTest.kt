@@ -34,12 +34,17 @@ class InfoMenuTest {
          * is process-wide and a menu id is an index into it, so anything else that registers in
          * the window moves the last index without moving the one this block took - and a click on
          * the wrong index reaches a different listener silently, because menuChoose only
-         * range-checks. The first newly registered index is this block's whatever else is going on.
+         * range-checks. So the id is the first index this block registered, and the count has to
+         * have moved by exactly one: a registrant that got in ahead of the block's own would make
+         * the first new index the wrong menu, and this says so instead of addressing it.
          */
         private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
             val before = lastMenuId()
             block()
-            assertTrue(lastMenuId() > before, "$what should have registered a menu, otherwise this test proves nothing")
+            assertEquals(
+                before + 1, lastMenuId(),
+                "$what should have registered exactly one menu, otherwise this test proves nothing"
+            )
             return before + 1
         }
     }
@@ -57,12 +62,20 @@ class InfoMenuTest {
 
     private fun admin(): Player = newPlayer().first.also { setPermission(it, "admin", true) }
 
+    /**
+     * By uuid, not by name: `/info` only resolves an online target and opens the menu on it
+     * synchronously when the lookup is unambiguous, and two players sharing a plain name is
+     * enough to send it down `scope.launch { ... Core.app.post { open(other) } }` instead. The
+     * menu is registered either way, so the id below is right either way - but nothing here
+     * pumps the app queue, so the menu's captured target would still be null when it is clicked.
+     * A uuid matches exactly and cannot be ambiguous. `/info <name>` is ClientCommandTest's.
+     */
     private fun openInfo(admin: Player, target: Player): Int =
-        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.name}", admin) }
+        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
 
     /** Clicking an option that opens the next menu; returns that menu's own id. */
-    private fun choose(player: Player, menu: Int, option: Int): Int =
-        menuRegisteredBy("option $option") { Menus.menuChoose(player, menu, option) }
+    private fun choose(player: Player, menu: Int, option: Int, what: String = "option $option"): Int =
+        menuRegisteredBy(what) { Menus.menuChoose(player, menu, option) }
 
     @Test
     fun infoMenu_strangerCannotOpenTheBanMenu() {
@@ -77,8 +90,7 @@ class InfoMenuTest {
         Menus.menuChoose(stranger, infoMenu, 1)
         assertEquals(before, lastMenuId(), "a stranger's click must not open the admin's ban menu")
 
-        // menuRegisteredBy fails with "option 1 should have registered a menu" if it does not.
-        choose(admin, infoMenu, 1)
+        choose(admin, infoMenu, 1, "the admin who opened the menu must still reach the ban menu, so option 1")
     }
 
     @Test
