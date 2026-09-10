@@ -43,6 +43,7 @@ import essential.core.mapRatings
 import essential.core.mergeTemporaryPlayerData
 import essential.core.playerDataRetries
 import essential.core.playerIpUnban
+import essential.core.selectAutoTeam
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
@@ -402,6 +403,39 @@ class FeatureTest {
         }
     }
 
+    /**
+     * The teams selectAutoTeam actually scores: active, not derelict, holding a core, and not the wave
+     * team. Not the same set as `Vars.state.teams.active`, which keeps a team that has lost every core
+     * on its remaining buildings - CoreEvent.kt:788-789 says so in its own comment.
+     */
+    private fun playableTeamCounts(): kotlin.collections.Map<Team, Int> = Vars.state.teams.active
+        .filter {
+            it.team != Team.derelict && it.hasCore() &&
+                    !(Vars.state.rules.waves && Vars.state.rules.waveTeam == it.team)
+        }
+        .associate { td -> td.team to players.count { it.player.team() == td.team } }
+
+    /**
+     * selectAutoTeam (CoreEvent.kt:1612) promises the lowest average win rate among the teams that hold
+     * a core, unless that team already has two more members than the smallest of the others, in which
+     * case the next one by win rate that passes the same guard. Both halves are scored over the plugin's
+     * own `players` list, and that list is not this class's to control: `/changemap` goes through
+     * WorldReloader, whose begin() clears Groups.player via Logic.reset() and whose end() re-teams the
+     * saved players but never calls player.add() again. So every player of every earlier test in this
+     * class stays in `players`, invisible to Groups.player, and is counted by both the averages and the
+     * guard.
+     *
+     * Measured on a green run at 30772163, immediately after this test's own /changemap: `players=7
+     * groups=0`, and by the time the test predicted anything the four teams it believes are 2/2/2/2 were
+     * 5/4/2/2. The old assertion "the eleventh player goes to the second lowest win rate" follows from
+     * the guard only while every other team is at least two behind the lowest, and with green sitting on
+     * exactly 2 it was one leaked player away from flipping back to blue - which is the recorded flake,
+     * "Player 11 should go to second lowest win rate team expected:<green> but was:<blue>".
+     *
+     * So the rule is asserted twice below: exactly, against a list this test owns - selectAutoTeam takes
+     * the list it scores as a parameter - and end to end as the invariant the guard actually maintains
+     * whatever else is in `players`.
+     */
     @Test
     fun pvpBalanceTest() {
         setPermission("owner", true)
@@ -422,10 +456,20 @@ class FeatureTest {
         
         val activeTeams = Vars.state.teams.active.filter { testTeams.contains(it.team) }.toList()
         assertEquals(4, activeTeams.size, "Need 4 teams for test")
-        
+        // randomTile() is unseeded and a coreShard is 3x3, so two of the four can land on top of each
+        // other and leave a team active but coreless - which silently changes the candidate set the rule
+        // below is asserted against. Fail here, naming the set, rather than three assertions later.
+        assertEquals(
+            testTeams.toSet(),
+            playableTeamCounts().keys,
+            "selectAutoTeam scores exactly the core-holding teams, and the rule asserted below assumes " +
+                    "those are the four this test planted"
+        )
+
         val winRates = listOf(1.0, 0.75, 0.5, 0.25)
-        
+
         // Fill teams with 2 players each
+        val seeded = mutableListOf<PlayerData>()
         for (i in activeTeams.indices) {
             val team = activeTeams[i].team
             val rate = winRates[i]
@@ -435,44 +479,82 @@ class FeatureTest {
                 p.first.team(team)
                 p.second.pvpWinCount = (rate * 100).toInt().toShort()
                 p.second.pvpLoseCount = ((1.0 - rate) * 100).toInt().toShort()
+                seeded.add(p.second)
             }
         }
 
-        // The teams should be sorted by win rate: D, C, B, A (lowest first)
-        val sortedActiveTeams = activeTeams.sortedBy { teamData ->
-            val teamPlayers = players.filter { it.player.team() == teamData.team }
-            if (teamPlayers.isEmpty()) 0.5 else teamPlayers.map {
+        // Over the seeded eight only - the whole `players` list carries earlier tests' players, which is
+        // exactly what the old assertion assumed away.
+        val byWinRate = activeTeams.map { it.team }.sortedBy { team ->
+            seeded.filter { it.player.team() == team }.map {
                 val total = it.pvpWinCount + it.pvpLoseCount
                 if (total == 0) 0.5 else it.pvpWinCount.toDouble() / total
             }.average()
         }
-        
-        val teamLowest = sortedActiveTeams[0].team
-        val teamSecondLowest = sortedActiveTeams[1].team
+        val teamLowest = byWinRate[0]
+        val teamSecondLowest = byWinRate[1]
 
-        // Add one more player - should go to teamLowest (lowest win rate)
-        val p9 = newPlayer()
-        assertEquals(teamLowest, p9.first.team(), "Player 9 should go to lowest win rate team")
+        // A stand-in for the joining player: selectAutoTeam excludes the joiner by uuid, and this one is
+        // in no scored list and never enters `players`, so it cannot move a count or an average.
+        val probe = createPlayer()
+        try {
+            val joining = createTemporaryPlayerData(probe)
+            val byTeam = seeded.groupBy { it.player.team() }
+            // Extra members are repeats of a team's own seeded player, so they raise that team's count
+            // without moving its average - the count guard is what is under test here, not the averages.
+            fun scored(vararg extra: Pair<Team, Int>): List<PlayerData> =
+                seeded + extra.flatMap { (team, n) -> List(n) { byTeam.getValue(team).first() } }
 
-        // Add one more player - should go to teamLowest (it can have up to 2 more than others)
-        val p10 = newPlayer()
-        assertEquals(teamLowest, p10.first.team(), "Player 10 should go to lowest win rate team")
+            assertEquals(
+                teamLowest, selectAutoTeam(joining, scored()),
+                "level counts: the lowest average win rate takes the player"
+            )
+            assertEquals(
+                teamLowest, selectAutoTeam(joining, scored(teamLowest to 1)),
+                "one ahead of the smallest team is still inside the handicap the guard allows"
+            )
+            assertEquals(
+                teamSecondLowest, selectAutoTeam(joining, scored(teamLowest to 2)),
+                "two ahead of the smallest team is the handicap ceiling, so the next win rate takes the player"
+            )
+            // The recorded flake, forced. The guard compares each team against the smallest OTHER team,
+            // so once every other team is within one, the lowest win rate takes the player at +2 as well.
+            // That is the state a single leaked player from an earlier test produces, and it is why "the
+            // eleventh player goes to the second lowest win rate" was never the promise.
+            assertEquals(
+                teamLowest,
+                selectAutoTeam(
+                    joining,
+                    scored(teamLowest to 2, *byWinRate.drop(1).map { it to 1 }.toTypedArray())
+                ),
+                "the guard is about counts, not win rates: with every other team within one of it, the " +
+                        "lowest win rate takes the player at +2 as well"
+            )
+        } finally {
+            probe.remove()
+            Groups.player.update()
+        }
 
-        // Now teamLowest has 4 players (2 initial + 2 new), others have 2. 
-        // min=2, Lowest=4. 4 < 2 + 2 is false.
-        // Next player should go to teamSecondLowest
-        val p11 = newPlayer()
-        assertEquals(teamSecondLowest, p11.first.team(), "Player 11 should go to second lowest win rate team")
+        // End to end, three real joins through the real join path. What is asserted is the invariant the
+        // guard maintains whatever else is in `players`: a joiner lands on a team that holds a core, and
+        // never on one already more than one player ahead of the smallest of the others.
+        repeat(3) { i ->
+            val before = playableTeamCounts()
+            val joined = newPlayer().first.team()
+            val had = assertNotNull(
+                before[joined],
+                "join ${i + 1} went to $joined, which holds no core. playable=$before"
+            )
+            val minOthers = (before - joined).values.minOrNull() ?: had
+            assertTrue(
+                had <= minOthers + 1,
+                "join ${i + 1} went to $joined, which already had $had players while the smallest other " +
+                        "core-holding team had $minOthers; the handicap guard allows at most minOthers + 1. " +
+                        "playable=$before"
+            )
+        }
 
         clientCommand.handleMessage("/status", player)
-
-        // Verify final counts
-        val finalCounts = activeTeams.map { teamData ->
-            players.count { it.player.team() == teamData.team }
-        }
-        // The one with lowest win rate should have 4, one with second lowest should have 3, others 2.
-        assertTrue(finalCounts.contains(4))
-        assertTrue(finalCounts.contains(3))
     }
 
     @Test
