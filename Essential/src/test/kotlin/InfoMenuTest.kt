@@ -39,12 +39,14 @@ class InfoMenuTest {
         private fun menuOpenedBy(what: String, block: () -> Unit): Int {
             val before = OwnedMenus.allocationCount
             block()
-            val ids = OwnedMenus.idsAllocatedAfter(before)
+            // Counted on allocations, not on the id list: a block that allocated the same slot twice
+            // - which happens whenever a menu is answered inside the block, freeing its slot for the
+            // next one - yields one id for two menus, and the gate would pass on the wrong one.
             assertEquals(
-                1, ids.size,
+                1, (OwnedMenus.allocationCount - before).toInt(),
                 "$what should have opened exactly one owned menu, otherwise this test proves nothing"
             )
-            return ids.single()
+            return OwnedMenus.idsAllocatedAfter(before).last()
         }
     }
 

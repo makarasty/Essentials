@@ -58,12 +58,14 @@ class OwnedMenuTest {
         private fun ownedMenuOpenedBy(what: String, block: () -> Unit): Int {
             val before = OwnedMenus.allocationCount
             block()
-            val ids = OwnedMenus.idsAllocatedAfter(before)
+            // Counted on allocations, not on the id list: a block that allocated the same slot twice
+            // - which happens whenever a menu is answered inside the block, freeing its slot for the
+            // next one - yields one id for two menus, and the gate would pass on the wrong one.
             assertEquals(
-                1, ids.size,
+                1, (OwnedMenus.allocationCount - before).toInt(),
                 "$what should have opened exactly one owned menu, otherwise this test proves nothing"
             )
-            return ids.single()
+            return OwnedMenus.idsAllocatedAfter(before).last()
         }
     }
 
@@ -147,6 +149,33 @@ class OwnedMenuTest {
 
         Vars.netServer.admins.unbanPlayerID(uuid)
         if (!ipBannedBefore) Vars.netServer.admins.unbanPlayerIP(ip)
+    }
+
+    /**
+     * A slot is claimed by `register`, not by the show that follows it, and the two are not the same
+     * instant. `/info` registers its listener at the top and shows it only after resolving the
+     * target - which for an offline target is a database round-trip on `Dispatchers.IO` and a
+     * `Core.app.post` later. If a slot were free during that window the next command would take it,
+     * and `/info`'s late show would put its dialog under somebody else's listener: an admin running
+     * `/info offlineA` then `/info onlineB` would ban B by clicking A's menu.
+     *
+     * Driven directly rather than through the two commands, because the point is the window itself
+     * and reproducing it through `/info` means racing a coroutine.
+     */
+    @Test
+    fun aClaimedMenuIdIsNotHandedOutAgainBeforeItIsShown() {
+        val (player, data) = newPlayer()
+        try {
+            val claimed = OwnedMenus.register(data) { _, _ -> }
+            val next = OwnedMenus.register(data) { _, _ -> }
+            assertNotEquals(
+                claimed, next,
+                "a registered menu must keep its id until it is shown, or a command that resolves its " +
+                    "target slowly has its dialog opened under the next command's listener"
+            )
+        } finally {
+            leavePlayer(player)
+        }
     }
 
     /**

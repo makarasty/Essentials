@@ -110,6 +110,12 @@ import kotlin.time.ExperimentalTime
  * grows to the high-water mark of *concurrently open* owned dialogs and then stops. No id is ever
  * reused while a dialog can still answer on it, which is the whole of the constraint.
  *
+ * Accepted: `menuChoose` is a remote the client drives, so a player can send more of them than they
+ * were shown dialogs and retire their own slot early. It is self-inflicted only - a slot recycled to
+ * anyone else is refused by the owner check, so the worst case is that a player's own stale dialog
+ * reaches their own newer listener. A per-show token instead of a count would close it; not worth the
+ * bookkeeping for an attack whose only victim is its author.
+ *
  * Accepted: a linear scan over that list under one lock. Everything here is main-thread in
  * production - `menuChoose` arrives through `ArcNetProvider$3.received` -> `Core.app.post` - so the
  * lock is uncontended and the list is only as long as the dialogs open right now. An id-keyed map
@@ -120,8 +126,18 @@ internal object OwnedMenus {
         var owner: String? = null
         var listener: ((Player, Int) -> kotlin.Unit)? = null
 
-        /** Dialogs shown on this id that the client has not answered or dismissed yet. */
+        /**
+         * Dialogs shown on this id that the client has not answered or dismissed yet, plus one for a
+         * slot that has been claimed and not yet shown. `/info` registers its listener and only shows
+         * it after resolving the target - which for an offline target is a database round-trip and a
+         * `Core.app.post` later - so a slot that counted only shown dialogs would be the first free
+         * slot throughout that window, and the next command would take it and leave `/info`'s late
+         * show pointing at somebody else's listener.
+         */
         var open = 0
+
+        /** Set by [register], cleared by the first [show]; see [open]. */
+        var awaitingFirstShow = false
 
         /** Allocation order, so a caller can name the slot a block took. */
         var seq = 0L
@@ -155,14 +171,26 @@ internal object OwnedMenus {
             ?: newSlot()
         slot.owner = owner.uuid
         slot.listener = listener
-        // Unconditional, and load-bearing for the branch above: a slot arrives here either already
-        // at zero or carrying dialogs that died with a connection that is gone. Leaving a departed
-        // player's count on it would keep that slot permanently ineligible for the first branch, so
-        // every menu the next player opened would be handed the same recycled id - the shared-id
-        // defect back again, by way of the fix for the leak.
-        slot.open = 0
+        // One, not zero: the slot is claimed from here until its first show, which is not the same
+        // instant. Resetting rather than incrementing also matters for the branch above - a slot
+        // taken from a departed owner still carries their count, and leaving it would keep that slot
+        // permanently ineligible for the first branch, so every menu the next player opened would be
+        // handed the same recycled id: the shared-id defect back again, by way of its own fix.
+        slot.open = 1
+        slot.awaitingFirstShow = true
         slot.seq = ++allocations
         slot.id
+    }
+
+    /**
+     * Frees everything [uuid] held. Their dialogs went with their connection, so nothing can answer on
+     * these ids any more. Called from the `PlayerLeave` handler beside `Undo.leave`, which does the
+     * same job for the same reason. Without it a player who opens a menu, drops without answering it
+     * and rejoins holds that id for the rest of their presence - `players` says they are online again,
+     * so neither reuse branch will take it - and the pool grows by one per such cycle.
+     */
+    fun release(uuid: String) = synchronized(slots) {
+        slots.forEach { if (it.owner == uuid) { it.open = 0; it.awaitingFirstShow = false } }
     }
 
     /**
@@ -171,7 +199,13 @@ internal object OwnedMenus {
      * that counted registrations rather than shows would be handed away with a live dialog on it.
      */
     fun show(con: NetConnection?, id: Int, title: String, message: String, options: Array<Array<String>>) {
-        synchronized(slots) { slots.firstOrNull { it.id == id }?.let { it.open++ } }
+        synchronized(slots) {
+            slots.firstOrNull { it.id == id }?.let { slot ->
+                // The first show spends the reservation [register] made; every later one is a paging
+                // menu putting a second dialog on the same id and has to be counted.
+                if (slot.awaitingFirstShow) slot.awaitingFirstShow = false else slot.open++
+            }
+        }
         Call.menu(con, id, title, message, options)
     }
 
@@ -185,11 +219,15 @@ internal object OwnedMenus {
     }
 
     private fun dispatch(index: Int, player: Player, option: Int) {
-        val slot = synchronized(slots) { slots[index] }
-        val listener = slot.listener ?: return
-        // The responder is whoever called the remote, not whoever the menu was opened for. This is
-        // the only gate on that, and it is what makes a recycled slot inert for everybody else.
-        if (player.uuid() != slot.owner) return
+        // Owner and listener read under the same lock that writes them, so the pair cannot be torn
+        // across a reallocation.
+        val (slot, listener) = synchronized(slots) {
+            val s = slots[index]
+            // The responder is whoever called the remote, not whoever the menu was opened for. This
+            // is the only gate on that, and it is what makes a recycled slot inert for everybody else.
+            s to (if (player.uuid() == s.owner) s.listener else null)
+        }
+        listener ?: return
         try {
             listener(player, option)
         } finally {

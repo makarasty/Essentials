@@ -40,12 +40,14 @@ class PagingMenuStalenessTest {
         private fun menuOpenedBy(what: String, block: () -> Unit): Int {
             val before = OwnedMenus.allocationCount
             block()
-            val ids = OwnedMenus.idsAllocatedAfter(before)
+            // Counted on allocations, not on the id list: a block that allocated the same slot twice
+            // - which happens whenever a menu is answered inside the block, freeing its slot for the
+            // next one - yields one id for two menus, and the gate would pass on the wrong one.
             assertEquals(
-                1, ids.size,
+                1, (OwnedMenus.allocationCount - before).toInt(),
                 "$what should have opened exactly one owned menu, otherwise this test proves nothing"
             )
-            return ids.single()
+            return OwnedMenus.idsAllocatedAfter(before).last()
         }
     }
 
@@ -81,8 +83,10 @@ class PagingMenuStalenessTest {
                 extras.add(newPlayer().first)
             }
 
-            // Later than /maps' by construction - menuRegisteredBy already proved each registered
-            // its own, and the list only grows.
+            // A different menu from /maps' by construction: menuOpenedBy proved each opened exactly
+            // one of its own, and /maps' slot still has its unanswered dialog on it so it cannot be
+            // the one recycled here. Not "later", though - ids come back now, so a menu opened
+            // second can carry a lower id than one opened first.
             val playersMenu = menuOpenedBy("/players") { clientCommand.handleMessage("/players", player) }
 
             // Page /players forward past mapsPages - each click used to read and rewrite the shared

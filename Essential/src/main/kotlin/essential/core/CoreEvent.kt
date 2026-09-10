@@ -1118,6 +1118,8 @@ fun playerLeave(event: PlayerLeave) {
     )
     Rtv.leave(event.player.uuid(), event.player.plainName())
     Undo.leave(event.player.uuid())
+    // Their dialogs went with their connection, so the menu ids they held can be handed out again.
+    OwnedMenus.release(event.player.uuid())
     cancelPlayerDataRetry(event.player.uuid())
     val data = players.find { e -> e.uuid == event.player.uuid() }
     if (data != null) {
