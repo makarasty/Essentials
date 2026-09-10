@@ -30,6 +30,7 @@ import essential.common.isCheated
 import essential.common.isSurrender
 import essential.common.nextVoteAvailable
 import essential.common.offlinePlayers
+import essential.common.permission.Permission
 import essential.common.players
 import essential.common.rootPath
 import essential.common.timeSource
@@ -787,9 +788,24 @@ class PluginTest {
          * 현재 유저의 권한을 변경함
          * @param group 그룹명 (visitor, user, admin, owner)
          * @param admin 관리자 유무 (true, false)
+         *
+         * **By uuid, never by name**, and it is worth the comment because most of the suite's
+         * setup calls this. `setperm` resolves its target through `withPermissionTarget`
+         * (`Commands.kt:1921`) into `PlayerLookup.findOnline`. A name two online players share
+         * makes `pick` return `Ambiguous`, and `withPermissionTarget` then reports and returns -
+         * the group is **never applied at all**, silently. A name matching nobody online falls to
+         * `scope.launch { ... Core.app.post { action(data) } }` (`Commands.kt:1936-1940`), which
+         * nothing here drains, so the caller's next line runs with the old group. Either way the
+         * failure surfaces as somebody else's assertion in another class, with nothing pointing
+         * back here. `PlayerLookup.kt:108` matches a uuid exactly and ahead of every name
+         * comparison, so an online uuid cannot reach either branch.
+         *
+         * The vanilla `admin` below stays by name on purpose: it is the engine's own command, it
+         * does not gate `Permission.check`, and it resolves by a different path entirely.
+         * Pinned by [setPermissionSurvivesADuplicateOnlineName].
          */
         fun setPermission(group: String, admin: Boolean) {
-            serverCommand.handleMessage("setperm ${player.name()} $group")
+            serverCommand.handleMessage("setperm ${player.uuid()} $group")
             if (admin) {
                 serverCommand.handleMessage("admin ${player.name()}")
             }
@@ -802,7 +818,7 @@ class PluginTest {
          * @param admin 관리자 유무 (true, false)
          */
         fun setPermission(player: Playerc, group: String, admin: Boolean) {
-            serverCommand.handleMessage("setperm ${player.name()} $group")
+            serverCommand.handleMessage("setperm ${player.uuid()} $group")
             if (admin) {
                 serverCommand.handleMessage("admin ${player.name()}")
             }
@@ -1182,6 +1198,47 @@ class PluginTest {
             }
         } finally {
             Log.logger = previous
+        }
+    }
+
+    /**
+     * [setPermission] must grant the group before it returns, even when another online player shares
+     * the target's name.
+     *
+     * It used to pass `player.name()` to `setperm`, which resolves through
+     * `Commands.withPermissionTarget` into `PlayerLookup.findOnline`. Two online players with the
+     * same name make `pick` return `Ambiguous`, `withPermissionTarget` reports and returns, and the
+     * group is **never applied** - silently, with the caller's next line running as though it had
+     * been. A name matching nobody online takes the `scope.launch { ... Core.app.post { ... } }`
+     * branch instead and lands whenever something later pumps. Most of the suite's setup calls this,
+     * so either outcome surfaces as an unrelated assertion failing in another class.
+     *
+     * Duplicate names are not contrived: `createPlayer` draws from Faker, `resetSharedState` empties
+     * the player list only at a class boundary, and several classes create players in a loop.
+     */
+    @Test
+    fun setPermissionSurvivesADuplicateOnlineName() {
+        loadGame(loadPlugin = true)
+
+        val (target, targetData) = newPlayer()
+        val (impostor, _) = newPlayer()
+        try {
+            // The collision, forced rather than waited for.
+            impostor.name(target.name())
+            assertEquals<String>(
+                target.name(), impostor.name(),
+                "the test did not create the duplicate name it is about to rely on"
+            )
+
+            setPermission(target, "owner", false)
+
+            assertEquals<String>(
+                "owner", Permission.groupOf(targetData.uuid, targetData.permission),
+                "setPermission returned without granting the group while another online player shared the target's name"
+            )
+        } finally {
+            runCatching { leavePlayer(impostor) }
+            runCatching { leavePlayer(target) }
         }
     }
 
