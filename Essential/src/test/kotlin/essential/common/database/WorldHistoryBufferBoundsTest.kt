@@ -1,5 +1,6 @@
 package essential.common.database
 
+import PluginTest.Companion.expectingErrors
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.waitUntil
 import arc.util.Log
@@ -64,15 +65,26 @@ class WorldHistoryBufferBoundsTest {
 
     @Test
     fun aFailedWriteKeepsItsRowsForTheNextFlush() {
-        runBlocking { dropTable() }
+        // The error this test exists to cause is now the harness's business too: `stopPlugin`
+        // reinstalls the log guard, so `[WorldHistoryBuffer] flush failed` would fail the test that
+        // deliberately provokes it. Declared rather than silenced - every other error line still
+        // throws inside the block.
+        //
+        // The allowance opens at the drop and closes once the table is back, rather than wrapping the
+        // forced flush alone: `WorldHistoryBuffer.start` runs a flush loop every FLUSH_INTERVAL_MS
+        // (200 ms) on Dispatchers.IO, so while the table is gone the ticker logs the same line on its
+        // own schedule, outside any single call this test makes.
+        expectingErrors("[WorldHistoryBuffer] flush failed") {
+            runBlocking { dropTable() }
 
-        record("kept", 11)
-        // Fails: the table is not there. The rows have already left the queue by then, and used to
-        // exist only as a local list that went out of scope with the log line.
-        runBlocking { WorldHistoryBuffer.flush() }
+            record("kept", 11)
+            // Fails: the table is not there. The rows have already left the queue by then, and used to
+            // exist only as a local list that went out of scope with the log line.
+            runBlocking { WorldHistoryBuffer.flush() }
 
-        runBlocking { restoreTable() }
-        runBlocking { WorldHistoryBuffer.flush() }
+            runBlocking { restoreTable() }
+            runBlocking { WorldHistoryBuffer.flush() }
+        }
 
         val rows = runBlocking { getAllWorldHistory() }
         assertEquals(

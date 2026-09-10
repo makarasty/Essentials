@@ -569,7 +569,7 @@ class PluginTest {
         }
 
         fun stopPlugin() {
-            Log.logger = baseLogHandler
+            Log.logger = errorGuardingHandler(baseLogHandler) {}
             listenerBaseline?.let { baseline ->
                 eventListenerTable().forEach { entry -> entry.value.truncate(baseline[entry.key] ?: 0) }
                 listenerBaseline = null
