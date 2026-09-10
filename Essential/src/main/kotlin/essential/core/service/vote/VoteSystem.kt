@@ -254,7 +254,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     }
 
     fun check(): Int {
-        return if (!isPvP) {
+        val threshold = if (!isPvP) {
             when (players.filterNot { it.afk }.size) {
                 1 -> 1
                 in 2..4 -> 2
@@ -277,6 +277,11 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 else -> 8
             }
         }
+        // Ruled in answers/9-2.md: a bare `1 -> 2` above would also block the one case that works
+        // today, a single player alone on the whole server voting `map` (the `solo` hatch at
+        // Commands.kt). The floor exists to stop one person deciding for others, so where `players`
+        // (server-wide) holds nobody else, it has nothing to do.
+        return if (players.size == 1) threshold else maxOf(2, threshold)
     }
 
     override fun cancel() {

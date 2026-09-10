@@ -15,7 +15,10 @@ data class VoteData(
     var map: Map? = null,
     var wave: Int? = null,
     var starter: PlayerData,
-    var team: Team = Vars.state.rules.defaultTeam,
+    // Ruled in answers/9-2.md: on a PvP map the electorate is the starter's own team, never
+    // defaultTeam - `kick` and `gg` used to hand-write this and the other five vote types left
+    // it as "whoever is on defaultTeam", which is nobody's intent. See VoteSystem.check().
+    var team: Team = if (Vars.state.rules.pvp) starter.player.team() else Vars.state.rules.defaultTeam,
 )
 
 enum class VoteType {
