@@ -155,31 +155,34 @@ class OwnedMenuTest {
      */
     @Test
     fun ownedMenuIdsAreReusedOnceTheirOwnerIsGone() {
-        val (first, _) = newPlayer()
-        try {
-            setPermission(first, "owner", true)
-            repeat(20) { clientCommand.handleMessage("/players", first) }
-        } finally {
-            leavePlayer(first)
+        fun twentyUnansweredMenusThenLeave() {
+            val (player, _) = newPlayer()
+            try {
+                setPermission(player, "owner", true)
+                repeat(20) { clientCommand.handleMessage("/players", player) }
+            } finally {
+                leavePlayer(player)
+            }
         }
 
-        val (second, _) = newPlayer()
-        try {
-            setPermission(second, "owner", true)
-            // One call first, so a slot that had to be registered for want of a free one is not
-            // counted against the twenty below.
-            clientCommand.handleMessage("/players", second)
-            val before = menuListenerCount()
+        // The first round sets the high-water mark. It is allowed to register ids, and it should:
+        // twenty stacked dialogs need twenty ids.
+        twentyUnansweredMenusThenLeave()
+        val before = menuListenerCount()
 
-            repeat(20) { clientCommand.handleMessage("/players", second) }
+        // The second round runs with the first player gone, so every id they held is answerable by
+        // nobody and all twenty are available again. This round must register nothing at all.
+        //
+        // Measured the other way round first, with one warm-up call before the snapshot, and it was
+        // off by exactly one: the warm-up consumed one of the recyclable ids, so the twenty after it
+        // needed a twenty-first. That was the pool being right - the count tracks dialogs open at
+        // once, and there really were twenty-one - and the test being wrong about its own arithmetic.
+        twentyUnansweredMenusThenLeave()
 
-            assertEquals(
-                before, menuListenerCount(),
-                "owned menu ids must be reused once nothing can answer on them, not registered afresh " +
-                    "per menu opened - the engine never prunes that list"
-            )
-        } finally {
-            leavePlayer(second)
-        }
+        assertEquals(
+            before, menuListenerCount(),
+            "owned menu ids must come back once nothing can answer on them, rather than being " +
+                "registered afresh per menu opened - the engine never prunes that list"
+        )
     }
 }
