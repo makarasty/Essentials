@@ -76,6 +76,7 @@ import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.insert
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 import kotlin.time.Clock
@@ -648,15 +649,51 @@ class FeatureTest {
             testPlayerData.totalPlayed = 88888
             testPlayerData.blockPlaceCount = 77777
 
-            tap(TapEvent(testPlayer, tile))
+            // What the code promises is an ordering, not a latency: CoreEvent.kt:286-302 is one
+            // coroutine that awaits `data.update()` at :291 and only then fires ServerTransfer at :299
+            // and calls Call.connect at :301, so the row is durable before anything hands the player
+            // over. The old assertion polled the row for three seconds after the tap and said nothing
+            // about the transfer - it would have passed just as happily had the write landed a minute
+            // after the player left, and it reddened whenever the write took longer than its budget,
+            // which is what made it the fifth flake in the base-rate measurement. So read the row at
+            // the instant the transfer fires instead.
+            val rowAtTransfer = AtomicReference<PlayerData?>(null)
+            val transferSeen = AtomicBoolean(false)
+            val transferListener = Cons<CustomEvents.ServerTransfer> { ev ->
+                // `handled` is the documented seam for taking over the transfer. Setting it also keeps
+                // Call.connect out of it, which under test has no net provider and throws into the
+                // coroutine's exception handler.
+                ev.handled = true
+                rowAtTransfer.set(runBlocking { getPlayerData(testPlayerData.uuid) })
+                transferSeen.set(true)
+            }
+            Events.on(CustomEvents.ServerTransfer::class.java, transferListener)
+            try {
+                tap(TapEvent(testPlayer, tile))
 
-            assertTrue(
-                awaitCondition {
-                    val dbData = runBlocking { getPlayerData(testPlayerData.uuid) }
-                    dbData != null && dbData.exp == 99999 && dbData.totalPlayed == 88888 && dbData.blockPlaceCount == 77777 && !dbData.isConnected
-                },
-                "WarpBlock 탭 후 대상 서버 연결 전에 playerData가 DB에 즉시 저장되어야 합니다."
-            )
+                // The write's own ceiling is the connection pool's maxAcquireTime (Database.kt:128,
+                // ten seconds), so a shorter budget than that asserts a latency the code never
+                // promised. Nothing here rides on how long it takes - the assertions below are on what
+                // the row held when the transfer fired - so the wait only has to outlast the write.
+                assertTrue(
+                    awaitCondition(12000L) { transferSeen.get() },
+                    "the WarpBlock tap never reached the server transfer"
+                )
+                val row = assertNotNull(
+                    rowAtTransfer.get(),
+                    "WarpBlock 탭 후 대상 서버 연결 전에 playerData가 DB에 즉시 저장되어야 합니다: " +
+                            "the player had no row at all when the transfer fired"
+                )
+                assertEquals(99999, row.exp, "exp was not durable when the transfer fired")
+                assertEquals(88888, row.totalPlayed, "totalPlayed was not durable when the transfer fired")
+                assertEquals(77777, row.blockPlaceCount, "blockPlaceCount was not durable when the transfer fired")
+                assertFalse(
+                    row.isConnected,
+                    "the row still claimed the player was connected here when the transfer fired"
+                )
+            } finally {
+                Events.remove(CustomEvents.ServerTransfer::class.java, transferListener)
+            }
         } finally {
             pluginData.data.warpBlock.clear()
             pluginData.data.warpBlock.addAll(originalWarpBlocks)
