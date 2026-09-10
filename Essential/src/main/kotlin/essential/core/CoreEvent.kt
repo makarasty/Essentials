@@ -1043,6 +1043,26 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
     }
 }
 
+/**
+ * **This whole handler is unreachable and has never run on any server.**
+ *
+ * `BuildSelectEvent.builder` is a `mindustry.gen.Unit`, which implements `Builderc`/`Unitc` and not
+ * `Playerc`; the only class implementing `Playerc` is `mindustry.gen.Player`, which does not extend
+ * `Unit`. So `event.builder is Playerc` cannot be true. It compiles because `Unit` is abstract, and
+ * `CommandSmokeTest.kt:282` fires the event with `dummyPlayer.unit()`, which is not a `Playerc`
+ * either - so the test passes without ever entering the branch. The "select" history row and the
+ * `log.block.remove` line below have therefore never been written.
+ *
+ * **The `uuid` argument added below is consequently dead code, not a working write.** It is left in
+ * place so that whoever wakes this does not have to add it back.
+ *
+ * The known repair is `event.builder != null && event.builder.isPlayer`, then `event.builder.player`
+ * for the name and uuid. It is deliberately not applied here: `BuildSelectEvent` fires on
+ * block-selection drags at a rate nobody has measured, and this handler writes into the
+ * world-history buffer. Waking a dormant high-frequency writer on six live servers needs a measured
+ * fire rate or the operator's say-so, not a chip's edit. Nothing regresses by leaving it asleep - it
+ * has been asleep for the life of the code.
+ */
 @Event
 fun buildSelect(event: BuildSelectEvent) {
     if (event.builder is Playerc && event.builder.buildPlan() != null && event.tile != null && event.tile.block() !== Blocks.air && event.breaking) {

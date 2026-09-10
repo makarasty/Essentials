@@ -112,10 +112,13 @@ import kotlin.time.ExperimentalTime
  * reused while a dialog can still answer on it, which is the whole of the constraint.
  *
  * Accepted: `menuChoose` is a remote the client drives, so a player can send more of them than they
- * were shown dialogs and retire their own slot early. It is self-inflicted only - a slot recycled to
- * anyone else is refused by the owner check, so the worst case is that a player's own stale dialog
- * reaches their own newer listener. A per-show token instead of a count would close it; not worth the
- * bookkeeping for an attack whose only victim is its author.
+ * were shown dialogs and retire their own slot early, then have one of their own stale dialogs drive
+ * their own newer listener. Only ever their own - the owner check refuses a recycled slot to everyone
+ * else - but "their own" is not the same as harmless: for an admin the newer listener is a ban
+ * confirmation, so the ceiling accepted here is **an admin able to ban a third party by driving their
+ * own client off-protocol**. Accepted because it takes a modified client to reach: a stock one cannot
+ * double-send, since `Dialog.hide(Action)` sets `ignoreTouchDown` for the fade. A per-show token
+ * instead of a count closes it, and that is the upgrade if a modified client is ever in scope.
  *
  * Accepted: a linear scan over that list under one lock. Everything here is main-thread in
  * production - `menuChoose` arrives through `ArcNetProvider$3.received` -> `Core.app.post` - so the
@@ -1008,7 +1011,12 @@ class Commands {
             } else {
                 scope.launch {
                     val other = PlayerLookup.offline(arg[0], playerData) ?: return@launch
-                    Core.app.post { open(other) }
+                    // The admin can leave during the lookup. Opening then would register a menu for a
+                    // connection that is gone, leaving its slot outstanding with no dialog to answer
+                    // it - reclaimable, since OwnedMenus.release runs on their leave and the reuse
+                    // branch takes a departed owner's slots, but this is the last way to reach that
+                    // state at all and it costs one line not to.
+                    Core.app.post { if (players.any { it.uuid == playerData.uuid }) open(other) }
                 }
             }
         } else {
@@ -1705,8 +1713,7 @@ class Commands {
      * the declared type cannot be round-tripped through a bare string (a Point2 link, a live Building
      * reference, or any class this does not know how to rebuild) so the caller can refuse the restore
      * rather than hand the block a value of the wrong type.
-     */
-    /**
+     *
      * [kind] is the runtime class name the row was written with, or null for a row written before
      * that column existed. It is a **hint**, not a lookup: a class name is coupled to Mindustry's
      * internals, so an engine release that renames or moves a config class orphans every kind
