@@ -83,6 +83,46 @@ class RollbackPlayerMatchTest {
             )
         } finally {
             leavePlayer(admin.first)
+            // These coordinates started on air, not on a leftover from an earlier test class; restore
+            // that rather than leaving titanium-wall behind for whatever runs after this class.
+            Vars.world.tile(bobX.toInt(), bobY.toInt())?.setBlock(Blocks.air, Team.derelict, 0)
+            Vars.world.tile(bobbyX.toInt(), bobbyY.toInt())?.setBlock(Blocks.air, Team.derelict, 0)
+        }
+    }
+
+    @Test
+    fun rollbackMatchesAColoredNameAgainstThePlainNameTheAdminTyped() {
+        val nonce = Random.nextInt(100000, 999999)
+        // "place"/"break" store the acting player's raw name (CoreEvent.kt's TileLog construction uses
+        // target.name, not plainName()), and a client can set color markup on its own name, a permission
+        // group can recolor it (Permission.kt), or /color can rewrite it every tick (Trigger.kt) - none
+        // of that is under the admin's control when they type a plain name at the rollback prompt.
+        val plainName = "Colorful$nonce"
+        val coloredName = "[red]$plainName[]"
+        val x: Short = 42
+        val y: Short = 45
+
+        Vars.world.tile(x.toInt(), y.toInt())?.setBlock(Blocks.titaniumWall, Team.sharded, 0)
+
+        WorldHistoryBuffer.enqueue(
+            time = 1000, player = coloredName, action = "place",
+            x = x, y = y, tile = Blocks.copperWall.name, rotate = 0, team = "sharded", value = null
+        )
+
+        val admin = newPlayer()
+        try {
+            setPermission(admin.first, "owner", true)
+
+            clientCommand.handleMessage("/rollback $plainName", admin.first)
+
+            assertEquals(
+                true,
+                waitUntil(10000) { Vars.world.tile(x.toInt(), y.toInt())?.block() != Blocks.titaniumWall },
+                "rollback typed with the plain name must still match a colored stored name, not silently do nothing"
+            )
+        } finally {
+            leavePlayer(admin.first)
+            Vars.world.tile(x.toInt(), y.toInt())?.setBlock(Blocks.air, Team.derelict, 0)
         }
     }
 }

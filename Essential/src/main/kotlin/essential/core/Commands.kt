@@ -1567,15 +1567,19 @@ class Commands {
                             // Exact, not a substring: entries.player is a player-chosen display name, and
                             // a substring match reverted bystanders too - "Bobby" matched a rollback of
                             // "Bob", and renaming to contain someone else's name could redirect blame.
+                            // Stripped of color markup: "place"/"break" store the raw name
+                            // (CoreEvent.kt's TileLog construction uses target.name, not plainName()),
+                            // and a colored or group-recolored name would otherwise never match a plain
+                            // admin-typed arg[0] at all, turning the command into a silent no-op.
                             // This narrows the match; it does not close it, because the stored name is a
                             // snapshot, not a uuid, so two entries can still share one exact name if a
                             // later player renamed to a name an earlier one already had. See ask/9b-*.md.
-                            val hasPlayerAction = entriesUnsorted.any { it.player.equals(arg[0], ignoreCase = true) }
+                            val hasPlayerAction = entriesUnsorted.any { Strings.stripColors(it.player).equals(arg[0], ignoreCase = true) }
                             if (!hasPlayerAction) return@forEach
 
                             val entries = entriesUnsorted.sortedBy { it.time }
 
-                            val firstIdx = entries.indexOfFirst { it.player.equals(arg[0], ignoreCase = true) }
+                            val firstIdx = entries.indexOfFirst { Strings.stripColors(it.player).equals(arg[0], ignoreCase = true) }
                             if (firstIdx == -1) return@forEach
 
                             val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
