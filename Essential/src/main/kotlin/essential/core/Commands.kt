@@ -49,6 +49,7 @@ import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.Unit
 import mindustry.maps.Map
+import mindustry.net.NetConnection
 import mindustry.net.Packets
 import mindustry.net.WorldReloader
 import mindustry.type.Item
@@ -77,6 +78,128 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.ExperimentalTime
 
+
+/**
+ * Menu ids for menus that act on behalf of one player.
+ *
+ * A menu id is an index into `Menus.menuListeners`, one process-wide list, and `menuChoose` is a
+ * remote any client may call with any id - the engine hands every id it receives straight to the
+ * listener registered under it. So a menu that acts for the player it was opened for has to check
+ * the responder itself; nothing under `Menus` does it.
+ *
+ * `Menus.registerMenu` appends to that list and the engine exposes no unregister at all. Registering
+ * one per menu opened leaked a listener, and the `PlayerData` its closure captured, on every /info,
+ * /players, /maps and four more sites, for the life of the server. Sharing a single id per player
+ * closed that leak and opened something worse: `Call.menu` shows a *new* dialog every time
+ * (`UI.showMenu`), and answering one hides only that one (`UI.lambda$showMenu$27` is
+ * `cb.get(opt); dialog.hide()`), so dialogs stack on the client. A dialog left unanswered and later
+ * revealed then drove whatever that player had registered most recently, with its own option
+ * indices - and index 0 is "ban" on every confirm menu, "close" on /info's and "<-" on the paging
+ * ones, so it is the most natural click in the interface.
+ *
+ * So each slot registers its engine listener exactly **once**, and a slot is handed out again only
+ * when nothing can still answer on it. That is knowable rather than guessed: a plain menu dialog
+ * leaves the client's screen in exactly two ways, and both report it to the server.
+ *
+ *  - An option click, which sends `menuChoose(id, option)` and then hides that dialog.
+ *  - Escape or back, which arc's `Dialog.closeOnBack` turns into `menuChoose(id, -1)` and a hide.
+ *    The engine range-checks the id and not the option, so -1 reaches the listener; every listener
+ *    here falls through its `when`, which is why that has always been harmless.
+ *
+ * `Slot.open` counts the dialogs shown on a slot and [dispatch] retires one per click, so the pool
+ * grows to the high-water mark of *concurrently open* owned dialogs and then stops. No id is ever
+ * reused while a dialog can still answer on it, which is the whole of the constraint.
+ *
+ * Accepted: a linear scan over that list under one lock. Everything here is main-thread in
+ * production - `menuChoose` arrives through `ArcNetProvider$3.received` -> `Core.app.post` - so the
+ * lock is uncontended and the list is only as long as the dialogs open right now. An id-keyed map
+ * and per-slot locking if either ever stops being true.
+ */
+internal object OwnedMenus {
+    private class Slot(val id: Int) {
+        var owner: String? = null
+        var listener: ((Player, Int) -> kotlin.Unit)? = null
+
+        /** Dialogs shown on this id that the client has not answered or dismissed yet. */
+        var open = 0
+
+        /** Allocation order, so a caller can name the slot a block took. */
+        var seq = 0L
+    }
+
+    private val slots = ArrayList<Slot>()
+    private var allocations = 0L
+
+    /** Allocations so far. Snapshot it, run something, then ask [idsAllocatedAfter]. */
+    val allocationCount: Long
+        get() = synchronized(slots) { allocations }
+
+    /**
+     * The ids [register] handed out after allocation number [after], oldest first. This is how a test
+     * names the menu a command just opened: counting `Menus.menuListeners` cannot do it any more,
+     * because a recycled slot registers nothing with the engine at all.
+     */
+    fun idsAllocatedAfter(after: Long): List<Int> = synchronized(slots) {
+        slots.filter { it.seq > after }.sortedBy { it.seq }.map { it.id }
+    }
+
+    /** Claims a slot for [owner] and returns the menu id to show it under. */
+    fun register(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int = synchronized(slots) {
+        // Free first; then a slot whose owner is no longer online, because their dialogs went with
+        // their connection and the owner check in dispatch refuses anything that somehow survived.
+        // Without that second branch a player who opens a menu and quits without answering it pins
+        // its id for the life of the server, which is the original leak again by a slower route.
+        // Only then a new one, so the pool settles at the high-water mark and stops growing.
+        val slot = slots.firstOrNull { it.open == 0 }
+            ?: slots.firstOrNull { s -> players.none { it.uuid == s.owner } }
+            ?: newSlot()
+        slot.owner = owner.uuid
+        slot.listener = listener
+        // Unconditional, and load-bearing for the branch above: a slot arrives here either already
+        // at zero or carrying dialogs that died with a connection that is gone. Leaving a departed
+        // player's count on it would keep that slot permanently ineligible for the first branch, so
+        // every menu the next player opened would be handed the same recycled id - the shared-id
+        // defect back again, by way of the fix for the leak.
+        slot.open = 0
+        slot.seq = ++allocations
+        slot.id
+    }
+
+    /**
+     * Shows a menu on an owned id. Every `Call.menu` on one goes through here, because the paging
+     * menus re-show on their own id from inside their own listener without re-registering: a slot
+     * that counted registrations rather than shows would be handed away with a live dialog on it.
+     */
+    fun show(con: NetConnection?, id: Int, title: String, message: String, options: Array<Array<String>>) {
+        synchronized(slots) { slots.firstOrNull { it.id == id }?.let { it.open++ } }
+        Call.menu(con, id, title, message, options)
+    }
+
+    private fun newSlot(): Slot {
+        // The engine's id and this list's index are different numbers - menuListeners carries every
+        // other menu in the process too - so the listener closes over the index and looks the slot up.
+        val index = slots.size
+        val slot = Slot(Menus.registerMenu { player, option -> dispatch(index, player, option) })
+        slots.add(slot)
+        return slot
+    }
+
+    private fun dispatch(index: Int, player: Player, option: Int) {
+        val slot = synchronized(slots) { slots[index] }
+        val listener = slot.listener ?: return
+        // The responder is whoever called the remote, not whoever the menu was opened for. This is
+        // the only gate on that, and it is what makes a recycled slot inert for everybody else.
+        if (player.uuid() != slot.owner) return
+        try {
+            listener(player, option)
+        } finally {
+            // After the listener, never before: a paging menu re-shows on this same id from inside
+            // its own listener, and retiring the click first would free a slot that is about to
+            // carry a live dialog again.
+            synchronized(slots) { if (slot.open > 0) slot.open-- }
+        }
+    }
+}
 
 class Commands {
     companion object {
@@ -107,15 +230,11 @@ class Commands {
         }
 
         /**
-         * A menu id is an index into one process wide list, and `menuChoose` is a remote any client
-         * may call with any id, so the engine hands every id it receives straight to the listener
-         * registered under it. A menu that acts on behalf of the player it was opened for therefore
-         * has to check the responder itself; nothing below this call does it.
+         * `/info` on yourself has no actions on it, so its listener is a no-op and one id serves
+         * every player forever. Registering a fresh one per call only grew `Menus.menuListeners`,
+         * which the engine never prunes.
          */
-        private fun registerOwnedMenu(owner: PlayerData, listener: (Player, Int) -> kotlin.Unit): Int =
-            Menus.registerMenu { player, option ->
-                if (player.uuid() == owner.uuid) listener(player, option)
-            }
+        private val selfInfoMenu: Int by lazy { Menus.registerMenu { _, _ -> } }
 
         /**
          * Calculate the Levenshtein distance between two strings
@@ -588,8 +707,7 @@ class Commands {
         val cancel = "info.button.cancel"
 
         if (arg.isEmpty()) {
-            val infoMenu = Menus.registerMenu { _, _ -> }
-            Call.menu(playerData.player.con(), infoMenu, bundle["info.title"], show(playerData), arrayOf(arrayOf(bundle[close])))
+            Call.menu(playerData.player.con(), selfInfoMenu, bundle["info.title"], show(playerData), arrayOf(arrayOf(bundle[close])))
         } else if (Permission.check(playerData, "info.other")) {
             var targetData: PlayerData? = null
             var isBanned = false
@@ -648,10 +766,10 @@ class Commands {
                 arrayOf(bundle[close])
             )
 
-            val mainMenu = registerOwnedMenu(playerData) { p, select ->
+            val mainMenu = OwnedMenus.register(playerData) { p, select ->
                 when (select) {
                     1 if !isBanned -> {
-                        val innerMenu = registerOwnedMenu(playerData) { _, s ->
+                        val innerMenu = OwnedMenus.register(playerData) { _, s ->
                             val time: Int = when (s) {
                                 0 -> 10
                                 1 -> 60
@@ -678,7 +796,7 @@ class Commands {
                                 }"]
 
                                 if (s <= 5) {
-                                    val tempBanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
+                                    val tempBanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
                                         if (i == 0) {
                                             require(targetData != null) {
                                                 "DB error?"
@@ -725,7 +843,7 @@ class Commands {
                                             }
                                         }
                                     }
-                                    Call.menu(
+                                    OwnedMenus.show(
                                         p.con(),
                                         tempBanConfirmMenu,
                                         bundle["info.tempBan.title"],
@@ -733,7 +851,7 @@ class Commands {
                                         arrayOf(arrayOf(bundle[ban], bundle[cancel]))
                                     )
                                 } else if (s == 6) {
-                                    val banConfirmMenu = registerOwnedMenu(playerData) { _, i ->
+                                    val banConfirmMenu = OwnedMenus.register(playerData) { _, i ->
                                         if (i == 0) {
                                             val uuid = targetData!!.uuid
                                             val label = Undo.label(uuid)
@@ -742,7 +860,7 @@ class Commands {
                                         }
                                     }
                                     // 영구 차단
-                                    Call.menu(
+                                    OwnedMenus.show(
                                         p.con(),
                                         banConfirmMenu,
                                         bundle["info.ban.title"],
@@ -753,7 +871,7 @@ class Commands {
                             } catch (_: MissingResourceException) {
                             }
                         }
-                        Call.menu(
+                        OwnedMenus.show(
                             p.con(),
                             innerMenu,
                             bundle["info.tempBan.title"],
@@ -763,7 +881,7 @@ class Commands {
                     }
 
                     1 -> {
-                        val unbanConfirmMenu = registerOwnedMenu(playerData) { _, i ->
+                        val unbanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
                             if (i == 0) {
                                 targetData!!.banExpireDate = null
                                 // Captured now: targetData is a mutable var a later /info call can repoint
@@ -784,7 +902,7 @@ class Commands {
                                 ) { Undo.ban(it) }
                             }
                         }
-                        Call.menu(
+                        OwnedMenus.show(
                             p.con(),
                             unbanConfirmMenu,
                             bundle["info.unban.title"],
@@ -821,7 +939,7 @@ class Commands {
                     unbanControlMenus
                 }
                 targetData = other
-                Call.menu(
+                OwnedMenus.show(
                     playerData.player.con(),
                     mainMenu,
                     bundle["info.admin.title"],
@@ -1067,26 +1185,26 @@ class Commands {
 
         var mainMenu = 0
         var page = 0
-        mainMenu = registerOwnedMenu(playerData) { p, select ->
+        mainMenu = OwnedMenus.register(playerData) { p, select ->
             when (select) {
                 0 -> {
                     if (page != 0) page--
-                    Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
                 1 -> {
-                    Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
                 2 -> {
                     if (page != pages) page++
-                    Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
                 else -> {}
             }
         }
-        Call.menu(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
+        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
     }
 
     @ClientCommand("meme", "<type>", "Enjoy mindustry meme features!")
@@ -1340,26 +1458,26 @@ class Commands {
 
         var mainMenu = 0
         var page = 0
-        mainMenu = registerOwnedMenu(playerData) { p, select ->
+        mainMenu = OwnedMenus.register(playerData) { p, select ->
             when (select) {
                 0 -> {
                     if (page != 0) page--
-                    Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
                 1 -> {
-                    Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
                 2 -> {
                     if (page != pages) page++
-                    Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
                 else -> {}
             }
         }
-        Call.menu(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
+        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
     }
 
     @ClientCommand("ranking", "<time/exp/attack/place/break/pvp> [page]", "Show player ranking")
