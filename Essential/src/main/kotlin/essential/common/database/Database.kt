@@ -246,7 +246,9 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
  * Deliberately not Flyway, though Flyway is shipped and already wired up for the shared database:
  *
  * - the migration module is **optional** (`-PexcludeModules=migration`, and `services` expands to it),
- *   and excluding it strips `FlywayMigration`, `db/migration/**` and `org/flywaydb/` from the artifact.
+ *   and excluding it strips `FlywayMigration`, the `db/migration` resources and `org/flywaydb/` from the
+ *   artifact - a glob is spelled out here because `/` followed by two stars inside a KDoc opens a nested
+ *   block comment, which Kotlin allows and which swallowed the rest of this file once already.
  *   A column that arrives only through Flyway is a column a modular jar does not have, while the code
  *   that writes it is in `common` and `core` and is always present - which is the original failure again,
  *   somewhere harder to find. This ships wherever the table does, so the write path may assume it;
