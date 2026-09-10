@@ -888,8 +888,13 @@ class Commands {
             if (Permission.check(playerData, "kill.other")) {
                 val other = PlayerLookup.online(arg[0], playerData)
                 if (other != null) {
-                    other.unit().kill()
-                    playerData.send("command.kill.done", other.plainName())
+                    val unit = other.unit()
+                    if (unit != null) {
+                        unit.kill()
+                        playerData.send("command.kill.done", other.plainName())
+                    } else {
+                        playerData.err("command.kill.no.unit", other.plainName())
+                    }
                 }
             } else {
                 playerData.send("command.permission.false")
@@ -901,8 +906,13 @@ class Commands {
     fun kill(arg: Array<out String>) {
         val other = PlayerLookup.online(arg[0])
         if (other != null) {
-            other.unit().kill()
-            Log.info(Bundle()["command.kill.done", other.plainName()])
+            val unit = other.unit()
+            if (unit != null) {
+                unit.kill()
+                Log.info(Bundle()["command.kill.done", other.plainName()])
+            } else {
+                Log.warn(Bundle()["command.kill.no.unit", other.plainName()])
+            }
         }
     }
 
