@@ -1,5 +1,7 @@
 package essential.core.service.chat
 
+import arc.files.Fi
+import arc.util.Log
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
@@ -14,6 +16,53 @@ import mindustry.game.EventType
 import mindustry.gen.Player
 import mindustry.net.Administration
 import java.util.regex.Pattern
+import java.util.regex.PatternSyntaxException
+
+// Compiling every entry and re-reading the file happened inside filter(), so it happened again for
+// every chat message on the server (task-106). Cached here instead, keyed on the file's mtime and size
+// the way MapController already caches a map hash - a stat is orders of magnitude cheaper than the read
+// plus N Pattern.compile calls it replaces, and it is enough to notice an operator's edit without a
+// watcher: the file is checked on every call, just no longer re-read and re-compiled on every call.
+private class CompiledBlacklist(val lastModified: Long, val size: Long, val regex: Boolean, val matchers: List<(String) -> Boolean>)
+
+@Volatile
+private var blacklistCache: CompiledBlacklist? = null
+
+private fun compiledBlacklist(file: Fi): List<(String) -> Boolean> {
+    val lastModified = file.lastModified()
+    val size = file.length()
+    val regex = conf.blacklist.regex
+    val cached = blacklistCache
+    if (cached != null && cached.lastModified == lastModified && cached.size == size && cached.regex == regex) {
+        return cached.matchers
+    }
+    val entries = file.readString("UTF-8").split(Regex("\\R")).filter { it.isNotBlank() }
+    val matchers: List<(String) -> Boolean> = if (regex) {
+        entries.mapNotNull { text ->
+            try {
+                val pattern = Pattern.compile(text)
+                val matcher: (String) -> Boolean = { message -> pattern.matcher(message).find() }
+                matcher
+            } catch (_: PatternSyntaxException) {
+                // One bad line used to throw PatternSyntaxException per message and take the whole
+                // filter down with it. Skipped instead, once, with the entry so the operator can find it -
+                // not a line number: entries is already blank-filtered above, so its index would not
+                // match the file's physical lines. An operator's own typo is a warning, not an engine
+                // error - Log.err aborts a listener dispatch (arc.Events.fire has no try/catch) and this
+                // harness fails a test on any err log.
+                Log.warn("chat_blacklist.txt: invalid regex '@', ignoring this entry", text)
+                null
+            }
+        }
+    } else {
+        entries.map { text -> { message: String -> message.contains(text) } }
+    }
+    val result = CompiledBlacklist(lastModified, size, regex, matchers)
+    blacklistCache = result
+    return matchers
+}
+
+private fun blacklistFile(): Fi = rootPath.child("chat_blacklist.txt")
 
 /**
  * The player-independent half of the registered blacklist filter: it decides, it does not reply.
@@ -26,13 +75,9 @@ fun isChatBlacklisted(message: String): Boolean {
     if (!conf.blacklist.enabled) return false
     // ChatService writes this file when it starts, so it is missing exactly when the chat module is off.
     // There is no list to match against then, and throwing here would take the caller down with it.
-    val file = rootPath.child("chat_blacklist.txt")
+    val file = blacklistFile()
     if (!file.exists()) return false
-    val entries = file.readString("UTF-8")
-        .split(Regex("\\R")).filter { it.isNotBlank() }
-    return entries.any {
-        if (conf.blacklist.regex) Pattern.compile(it).matcher(message).find() else message.contains(it)
-    }
+    return compiledBlacklist(file).any { it(message) }
 }
 
 @Event
