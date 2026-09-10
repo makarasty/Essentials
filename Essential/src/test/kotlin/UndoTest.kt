@@ -1,5 +1,6 @@
 import PluginTest.Companion.clientCommand
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.err
 import PluginTest.Companion.log
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
@@ -21,6 +22,7 @@ import mindustry.ui.Menus
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
@@ -268,4 +270,47 @@ class UndoTest {
         clientCommand.handleMessage("/undo", admin)
         assertEquals(log("command.undo.empty"), data(admin).lastReceivedMessage)
     }
+
+    /**
+     * Undo.take removes the entry before revert runs, so a refused revert cannot be retried and the
+     * admin has to be told it did not apply. Only the setperm revert can fail that way, and only
+     * through permission_user.yaml - so the report has to branch on the entry's action, not on the
+     * global alone, which is persistent state that would otherwise report a permission error after a
+     * mute undo that worked.
+     */
+    @Test
+    fun undo_setpermReportsThePermissionFileProblemAndOtherActionsDoNot() {
+        val admin = admin()
+        val target = newPlayer().first
+        val adminData = data(admin)
+
+        val userFile = rootPath.child("permission_user.yaml")
+        val saved = if (userFile.exists()) userFile.readString() else null
+        try {
+            Undo.record(adminData, "mute", target.uuid(), target.name) { }
+            Undo.record(adminData, "setperm", target.uuid(), target.name) { }
+
+            userFile.writeString("this: [is not: valid yaml", false)
+            Permission.load()
+            val problem = Permission.userFileProblem()
+            assertNotNull(problem, "the corrupted permission_user.yaml should be reported as a problem")
+
+            clientCommand.handleMessage("/undo", admin)
+            assertEquals(
+                err("permission.user.file.invalid", problem),
+                adminData.lastReceivedMessage,
+                "a setperm undo must report the permission file problem instead of claiming it was done"
+            )
+
+            clientCommand.handleMessage("/undo", admin)
+            assertTrue(
+                adminData.lastReceivedMessage.contains(log("command.undo.action.mute", target.name)),
+                "a mute undo must still report success while the permission file is broken"
+            )
+        } finally {
+            if (saved != null) userFile.writeString(saved, false) else userFile.delete()
+            Permission.load()
+        }
+    }
+
 }

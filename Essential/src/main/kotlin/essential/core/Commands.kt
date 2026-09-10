@@ -2399,7 +2399,18 @@ class Commands {
             return
         }
         entry.revert(entry.targetUuid)
-        playerData.send("command.undo.done", entry.description)
+        // Undo.take removed the entry before revert ran, so a refused revert cannot be retried and
+        // saying "done" would leave the admin believing an action was undone that was not. Only the
+        // setperm revert can fail this way, and only through the permission file: Permission.kt's
+        // userFileProblem is persistent state, so checking it for every action would report a
+        // permission error after a mute undo that worked. Same key and same shape as the forward
+        // /setperm path above, so both halves say the same thing in the same words about the same file.
+        val undoProblem = if (entry.action == "setperm") Permission.userFileProblem() else null
+        if (undoProblem != null) {
+            playerData.err("permission.user.file.invalid", undoProblem)
+        } else {
+            playerData.send("command.undo.done", entry.description)
+        }
     }
 
     @ServerCommand("undo", "[id/list]", "Undo the last administrative action.")
@@ -2424,7 +2435,13 @@ class Commands {
             return
         }
         entry.revert(entry.targetUuid)
-        Log.info(bundle["command.undo.done", entry.description])
+        // Same reasoning as the client /undo above.
+        val undoProblem = if (entry.action == "setperm") Permission.userFileProblem() else null
+        if (undoProblem != null) {
+            Log.warn(bundle["permission.user.file.invalid", undoProblem])
+        } else {
+            Log.info(bundle["command.undo.done", entry.description])
+        }
     }
 
     @ClientCommand("unmute", "<player>", "Unmute player")

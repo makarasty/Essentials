@@ -29,6 +29,14 @@ import kotlin.time.TimeMark
 
 class UndoEntry(
     val id: Int,
+    /**
+     * The action this entry reverts - "setperm", "tempban", "mute" and the rest, exactly the string
+     * [Undo.record] was called with. Held because a caller reporting the outcome of an undo has to
+     * branch on what was undone, and neither of the other fields can stand in for it: [description] is
+     * prose localised to the acting player, and [undoLabelKey] defaults to the same value for most
+     * actions.
+     */
+    val action: String,
     val description: String,
     val targetUuid: String,
     val undoLabelKey: String,
@@ -78,6 +86,7 @@ object Undo {
         val bundle = admin?.bundle ?: Bundle()
         val entry = UndoEntry(
             ids.incrementAndGet(),
+            action,
             bundle["command.undo.action.$action", targetLabel],
             targetUuid,
             undoLabelKey,
