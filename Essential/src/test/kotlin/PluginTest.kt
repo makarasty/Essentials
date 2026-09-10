@@ -22,7 +22,9 @@ import essential.common.database.data.getPlayerData
 import essential.common.database.LEGACY_BASELINE_VERSION
 import essential.common.database.data.getPluginData
 import essential.common.database.databaseClose
+import essential.common.database.defaultConnectionPool
 import essential.common.database.defaultDatabase
+import essential.common.database.worldHistoryConnectionPool
 import essential.common.database.worldHistoryDatabase
 import essential.common.isCheated
 import essential.common.isSurrender
@@ -818,6 +820,82 @@ class PluginTest {
                 return
             }
             queue.run()
+        }
+
+        /** Replies `Core.app.post` has queued and [pumpApp] has not run yet. */
+        private fun postedWorkPending(): Int = try {
+            (runnablesField?.get(Core.app) as? TaskQueue)?.size() ?: 0
+        } catch (_: Exception) {
+            0
+        }
+
+        /**
+         * Transactions the plugin has in flight, over both pools, including the ones still waiting for
+         * a connection. The main pool is `maxSize(5)`, so a handful of un-awaited commands is enough to
+         * make the next one queue behind them for seconds.
+         *
+         * `ConnectionPool.getMetrics()` is an `Optional`, and reading an empty one as zero would make
+         * [drainPostedWork] return instantly while claiming to have waited - a drain that cannot see the
+         * database is worse than no drain, because it looks like one. It is not empty here:
+         * r2dbc-pool 1.0.2's constructor builds it as `Optional.ofNullable(pool.metrics())` over the
+         * reactor-pool instance, which returns itself, and neither pool in `Database.kt` is built with a
+         * configuration that could suppress it. So the absent case is a misconfiguration nobody has
+         * introduced yet, and it throws rather than reading as idle if somebody does.
+         *
+         * A null pool is a different thing and is skipped, not an error: [stopPlugin] nulls both, and no
+         * database means no database work to wait for.
+         */
+        private fun databaseWorkPending(): Int =
+            listOfNotNull(defaultConnectionPool, worldHistoryConnectionPool).sumOf { pool ->
+                val metrics = pool.metrics.orElseThrow {
+                    IllegalStateException("connection pool exposes no metrics: drainPostedWork cannot see the database")
+                }
+                metrics.acquiredSize() + metrics.pendingAcquireSize()
+            }
+
+        /**
+         * Waits for the asynchronous work the calling test started, so its answer belongs to it and not
+         * to whichever test runs next.
+         *
+         * Most of this plugin's commands open with `scope.launch` and answer either by writing the
+         * sender's message slot from that coroutine or through a `Core.app.post`. A test that fires one
+         * and returns without waiting leaves both behind: the queued reply lands in the next test's
+         * slot the first time that test pumps, and the coroutine goes on holding one of the main pool's
+         * five connections while the next test's own command queues behind it. Both were measured in
+         * one failure - `client_temporaryPlayerIsNotRegistered` spent its whole five-second window
+         * collecting four `/ranking` pages and an `/unban` `player.not.found` that three earlier,
+         * assertion-free command calls had left in flight, and never saw its own `/mute` reply.
+         *
+         * The wait is for two consecutive idle polls rather than one, because a `scope.launch` that has
+         * been dispatched but has not yet acquired its connection reads as idle on the first.
+         *
+         * **What that second poll is worth, exactly.** [waitUntil] sleeps `intervalMs` (16 ms) between
+         * turns, so the rule tolerates a gap of up to about 16 ms between the coroutine releasing its
+         * connection and its `Core.app.post` landing. It is a grace window sized to dispatch latency, not
+         * a proof of quiescence: a command that releases its connection and then `delay`s before posting
+         * would slip through it. Nothing in `Commands.kt` does that today - every posting command posts
+         * either inside the transaction or on the statement after it - and the guard against it is this
+         * sentence plus [anAsyncCommandsReplyDoesNotCrossTheTestBoundary], which fails if the drain ever
+         * stops covering `/unban`'s shape.
+         *
+         * **It is a wait, not a barrier.** Work started after it returns is not covered, and neither is
+         * a coroutine that neither posts nor touches the database. Returns false when it gave up, which
+         * a caller may assert on and [ClientCommandTest]'s per-test teardown deliberately does not.
+         *
+         * **It is also not installed anywhere but [ClientCommandTest].** The arc queue is process-global,
+         * so the leak crosses class boundaries as well as test boundaries; the harness-level home for
+         * this would be one call at the top of [resetSharedState], which every class already runs. That
+         * is deliberately not done here - it changes teardown for all 90 classes and would need its own
+         * full-suite measurement to ship honestly - and it is recorded in the run notes instead.
+         */
+        fun drainPostedWork(timeoutMs: Long = 5000): Boolean {
+            var wasIdle = false
+            return waitUntil(timeoutMs) {
+                val idle = postedWorkPending() == 0 && databaseWorkPending() == 0
+                val settled = idle && wasIdle
+                wasIdle = idle
+                settled
+            }
         }
 
         /**
