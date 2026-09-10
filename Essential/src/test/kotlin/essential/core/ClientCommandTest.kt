@@ -2,6 +2,7 @@ package essential.core
 
 import PluginTest.Companion.clientCommand
 import PluginTest.Companion.createPlayer
+import PluginTest.Companion.drainPostedWork
 import PluginTest.Companion.err
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
@@ -62,6 +63,24 @@ class ClientCommandTest {
 
             done = true
         }
+    }
+
+    /**
+     * Every command in this class that answers asynchronously is waited for here rather than in the
+     * test that fired it, because most of them fire and return. Without it the reply lands in the next
+     * test's message slot and that test's own command queues behind the coroutine still holding a
+     * connection - see [drainPostedWork].
+     *
+     * Best effort on purpose: the return value is discarded, so a drain that gives up leaves the
+     * suite exactly where it was rather than turning a slow test into a failing one. It is not
+     * literally throw-free - [drainPostedWork] propagates if a connection pool ever reports no
+     * metrics - but this suite is JUnit 4 (`org.junit.runners`, no `useJUnitPlatform()`), whose
+     * `RunAfters` collects an `@After` throwable into a `MultipleFailureException` alongside the
+     * body's, so a teardown failure is reported *beside* a real failure rather than in place of it.
+     */
+    @AfterTest
+    fun settle() {
+        drainPostedWork()
     }
 
     @Test
@@ -614,9 +633,26 @@ class ClientCommandTest {
         clientCommand.handleMessage("/info ${dummy.first.name}", player)
         assertEquals(err("command.permission.false"), playerData.lastReceivedMessage)
 
-        // Test info command with permission
+        // Test info command with permission.
+        //
+        // This asserted nothing until now, and it is the suite's only proof that `/info <name>` on
+        // an ONLINE target works: UndoTest and InfoMenuTest were both moved onto `/info <uuid>`,
+        // and client_infoOfflineTarget covers the offline path. An unasserted call cannot tell a
+        // working menu from a silent async miss, so the no-error assertion below mirrors what
+        // client_infoOfflineTarget already does for its own branch.
         setPermission("owner", true)
+        drainPostedWork()
+        playerData.lastReceivedMessage = "sentinel"
         clientCommand.handleMessage("/info ${dummy.first.name}", player)
+        // A broadcast to every player lands in this slot too, so the assertion is that no error
+        // arrived rather than that nothing did.
+        val onlineSeen = observeMessages(playerData, 3000) { false }
+        assertEquals(
+            emptyList(),
+            onlineSeen.filter { it.startsWith("[scarlet]") },
+            "info on an online target by name should open the menu instead of reporting an error, " +
+                "saw: $onlineSeen"
+        )
 
         // Test info command with not exist player
         clientCommand.handleMessage("/info nonexistentplayer", player)
@@ -892,15 +928,26 @@ class ClientCommandTest {
         clientCommand.handleMessage("/ranking exp 1", player)
 
         // Test ranking command with invalid type parameter
-        clientCommand.handleMessage("/ranking invalid", player)
         run {
-            val expected1 = err("command.ranking.wrong")
-            val expected2 = err("player.not.found")
-            val rankingSeen = observeMessages(playerData, 2000) { it == expected1 || it == expected2 }
-            assertTrue(
-                rankingSeen.any { it == expected1 || it == expected2 },
-                "ranking said: $rankingSeen"
-            )
+            // `player.not.found` used to be accepted here too. /ranking never produces it - an
+            // unrecognised type is answered with command.ranking.wrong at Commands.kt:1392 and the
+            // catch-all at :1526 uses the same key - so the allowance only ever matched an /unban
+            // reply that an earlier test had left in flight, and it made this assertion pass in 5 ms
+            // on another test's output.
+            //
+            // Narrowing it alone would have swapped a vacuous pass for a race. The seven /ranking
+            // calls above each queued a `command.ranking.wait` post (Commands.kt:1396) and nothing
+            // has pumped yet, while `command.ranking.wrong` is written straight from the coroutine
+            // (Commands.kt:1392, no post, no connection) within microseconds. observeMessages only
+            // sees a value that survives from one pump to the next sample, so a batch of queued
+            // `wait` writes flushing over the answer loses it for good. Draining first empties that
+            // batch, and the sentinel makes the window start from a value this test chose.
+            drainPostedWork()
+            playerData.lastReceivedMessage = "sentinel"
+            clientCommand.handleMessage("/ranking invalid", player)
+            val expected = err("command.ranking.wrong")
+            val rankingSeen = observeMessages(playerData, 5000) { it == expected }
+            assertTrue(rankingSeen.any { it == expected }, "ranking said: $rankingSeen")
         }
 
         // Test ranking command without parameter
@@ -1478,6 +1525,39 @@ class ClientCommandTest {
             emptyList(),
             errors,
             "info on an offline target should open the menu instead of reporting an error, saw: $seen"
+        )
+    }
+
+    /**
+     * The queue bleed that made this class's failures full-suite-only, pinned so it fails every time
+     * rather than one run in ten.
+     *
+     * `/unban` answers from a coroutine through a `Core.app.post` (`Commands.kt:2372-2375`), and
+     * `client_unban` fires two calls that reach that coroutine plus one arity error, asserts nothing
+     * and never pumps. Whichever test pumps next drains those replies into its
+     * own message slot: in the recorded failure that was
+     * `client_temporaryPlayerIsNotRegistered`, which collected `/ranking`'s pages and `/unban`'s
+     * `player.not.found` while its own `/mute` reply queued behind eleven un-awaited coroutines on a
+     * five-connection pool.
+     *
+     * Delete the [drainPostedWork] call and the window below catches the leftover every run.
+     */
+    @Test
+    fun anAsyncCommandsReplyDoesNotCrossTheTestBoundary() {
+        setPermission("owner", true)
+
+        // What client_unban does: fire it and walk away.
+        clientCommand.handleMessage("/unban notaplayer", player)
+
+        assertTrue(drainPostedWork(), "the plugin's async work did not settle at the test boundary")
+
+        // Stands in for the next test. Nothing is fired here, so anything that arrives was left over.
+        playerData.lastReceivedMessage = "sentinel"
+        val leaked = observeMessages(playerData, 2000) { false }.filter { it != "sentinel" }
+        assertEquals(
+            emptyList(),
+            leaked,
+            "an earlier command's reply arrived in a later test's observation window: $leaked"
         )
     }
 

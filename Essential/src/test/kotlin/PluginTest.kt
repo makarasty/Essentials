@@ -22,12 +22,15 @@ import essential.common.database.data.getPlayerData
 import essential.common.database.LEGACY_BASELINE_VERSION
 import essential.common.database.data.getPluginData
 import essential.common.database.databaseClose
+import essential.common.database.defaultConnectionPool
 import essential.common.database.defaultDatabase
+import essential.common.database.worldHistoryConnectionPool
 import essential.common.database.worldHistoryDatabase
 import essential.common.isCheated
 import essential.common.isSurrender
 import essential.common.nextVoteAvailable
 import essential.common.offlinePlayers
+import essential.common.permission.Permission
 import essential.common.players
 import essential.common.rootPath
 import essential.common.timeSource
@@ -286,25 +289,29 @@ class PluginTest {
          * code logged, this threw, and the test failed for a reason unrelated to its assertion. That
          * is a large part of why the error paths this audit found defective had no coverage.
          *
-         * Two limits worth knowing before you trust it, both measured rather than argued:
+         * **It is live for the whole run.** It used to guard only the classes before the first
+         * `stopPlugin()` - installed here on the cold-boot path, which runs once per JVM, and taken
+         * off again by `stopPlugin` restoring the pristine logger, which nothing undid. Chip T
+         * measured that split as 39 tests of 360 guarded. [stopPlugin] now reinstalls it, on its
+         * last line, and the cost was measured over a full suite with all three databases up:
+         * exactly one test failed, `WorldHistoryBufferBoundsTest.aFailedWriteKeepsItsRowsForTheNextFlush`,
+         * which declares its deliberate error with [expectingErrors] and is the only opt-in here.
          *
-         * 1. **It is not live for most of the suite.** It is installed here, on the cold-boot path,
-         *    which runs once per JVM; [stopPlugin] puts `baseLogHandler` back and nothing reinstalls
-         *    it. So it guards only the classes that run before the first `stopPlugin()`.
-         * 2. **The throw lands wherever the log call was.** A `Log.err` from a coroutine worker throws
-         *    on that worker and prints `Exception in thread "DefaultDispatcher-worker-N"`; the test
-         *    thread never sees it and the test passes. One inside a `runCatching` or a broad `catch`
-         *    in the plugin is swallowed outright.
+         * **The limit durability does not fix, and you must not read past it.** The throw lands on
+         * whichever thread logged. A `Log.err` from a coroutine worker throws on that worker and
+         * prints `Exception in thread "DefaultDispatcher-worker-N"` - the test thread never sees it
+         * and the test passes. One inside a `runCatching` or a broad `catch` in the plugin is
+         * swallowed outright. Both are real here, not hypothetical: the certifying run detected
+         * undeclared errors in `PermissionOfflineApplyTest` and `FeatureTest` and failed neither, and
+         * the plugin's own `CoroutineExceptionHandler` (`Main.kt:66-68`) logs a second error line when
+         * the first throw escapes a `scope.launch`, so one defect can appear twice and still fail
+         * nothing.
          *
-         * Making it durable would fix the first and **not** the second: reinstalling the handler
-         * buys the property for the other seventy-seven classes, but only for errors logged on
-         * the test thread and not caught. Do not read "durable" as "covers everything". The shape
-         * that would close both is to collect unexpected errors at log time and assert on that
-         * list at the end of the test, on the JUnit thread; that is a bigger change than this
-         * wave, and it is recorded in `answers/T-2.md`.
-         *
-         * The durable half is measured but held: `ask/T-3.md` and `answers/T-3.md` carry the
-         * numbers and the two diffs, ready for whoever has the live databases up.
+         * So the property enforced is: *a test must not pass while the plugin logs an **undeclared
+         * error on the JUnit thread**.* Anything logged off-thread reaches the console and nobody
+         * else. The shape that would close that is to collect unexpected errors at log time and
+         * assert on the list at the end of the test, on the JUnit thread; it is a bigger change than
+         * this wave and is recorded in `answers/T-2.md`.
          */
         fun errorGuardingHandler(base: Log.LogHandler, tap: (String) -> Unit): Log.LogHandler =
             Log.LogHandler { level, text ->
@@ -567,7 +574,6 @@ class PluginTest {
         }
 
         fun stopPlugin() {
-            Log.logger = baseLogHandler
             listenerBaseline?.let { baseline ->
                 eventListenerTable().forEach { entry -> entry.value.truncate(baseline[entry.key] ?: 0) }
                 listenerBaseline = null
@@ -649,6 +655,17 @@ class PluginTest {
 
             TransactionManager.defaultDatabase = null
             pluginLoaded = false
+
+            // Last, not first. This line is what keeps the error guard alive for every class
+            // after the first stopPlugin(): it used to restore the pristine logger here and
+            // nothing put the guard back, so the guard protected four classes and nothing else.
+            // It goes at the END because everything above is teardown - an error logged on this
+            // thread while the databases shut down or the data directory is walked would
+            // otherwise throw out of the middle of stopPlugin, leaving pluginLoaded true,
+            // TransactionManager.defaultDatabase un-nulled and the H2 files undeleted, which
+            // (per the comment above) surfaces three classes later as somebody else's
+            // precondition failing rather than as a fault here.
+            Log.logger = errorGuardingHandler(baseLogHandler) {}
         }
 
         fun updateTick(times: Int) {
@@ -771,9 +788,24 @@ class PluginTest {
          * 현재 유저의 권한을 변경함
          * @param group 그룹명 (visitor, user, admin, owner)
          * @param admin 관리자 유무 (true, false)
+         *
+         * **By uuid, never by name**, and it is worth the comment because most of the suite's
+         * setup calls this. `setperm` resolves its target through `withPermissionTarget`
+         * (`Commands.kt:1921`) into `PlayerLookup.findOnline`. A name two online players share
+         * makes `pick` return `Ambiguous`, and `withPermissionTarget` then reports and returns -
+         * the group is **never applied at all**, silently. A name matching nobody online falls to
+         * `scope.launch { ... Core.app.post { action(data) } }` (`Commands.kt:1936-1940`), which
+         * nothing here drains, so the caller's next line runs with the old group. Either way the
+         * failure surfaces as somebody else's assertion in another class, with nothing pointing
+         * back here. `PlayerLookup.kt:108` matches a uuid exactly and ahead of every name
+         * comparison, so an online uuid cannot reach either branch.
+         *
+         * The vanilla `admin` below stays by name on purpose: it is the engine's own command, it
+         * does not gate `Permission.check`, and it resolves by a different path entirely.
+         * Pinned by [setPermissionSurvivesADuplicateOnlineName].
          */
         fun setPermission(group: String, admin: Boolean) {
-            serverCommand.handleMessage("setperm ${player.name()} $group")
+            serverCommand.handleMessage("setperm ${player.uuid()} $group")
             if (admin) {
                 serverCommand.handleMessage("admin ${player.name()}")
             }
@@ -786,7 +818,7 @@ class PluginTest {
          * @param admin 관리자 유무 (true, false)
          */
         fun setPermission(player: Playerc, group: String, admin: Boolean) {
-            serverCommand.handleMessage("setperm ${player.name()} $group")
+            serverCommand.handleMessage("setperm ${player.uuid()} $group")
             if (admin) {
                 serverCommand.handleMessage("admin ${player.name()}")
             }
@@ -818,6 +850,99 @@ class PluginTest {
                 return
             }
             queue.run()
+        }
+
+        /** Replies `Core.app.post` has queued and [pumpApp] has not run yet. */
+        private fun postedWorkPending(): Int = try {
+            (runnablesField?.get(Core.app) as? TaskQueue)?.size() ?: 0
+        } catch (_: Exception) {
+            0
+        }
+
+        /**
+         * Transactions the plugin has in flight, over both pools, including the ones still waiting for
+         * a connection. The main pool is `maxSize(5)`, so a handful of un-awaited commands is enough to
+         * make the next one queue behind them for seconds.
+         *
+         * `ConnectionPool.getMetrics()` is an `Optional`, and reading an empty one as zero would make
+         * [drainPostedWork] return instantly while claiming to have waited - a drain that cannot see the
+         * database is worse than no drain, because it looks like one. It is not empty here:
+         * r2dbc-pool 1.0.2's constructor builds it as `Optional.ofNullable(pool.metrics())` over the
+         * reactor-pool instance, which returns itself, and neither pool in `Database.kt` is built with a
+         * configuration that could suppress it. So the absent case is a misconfiguration nobody has
+         * introduced yet, and it throws rather than reading as idle if somebody does.
+         *
+         * A null pool is skipped rather than treated as an error, and that asymmetry is deliberate:
+         * [stopPlugin] nulls both, and between a `stopPlugin()` and the next `loadGame` there is no
+         * plugin to fire a command at, so there is no in-flight reply to wait for. The blindness is
+         * the same shape as the empty-Optional one - `databaseWorkPending` reads zero without being
+         * able to see anything - but its window contains no work by construction rather than by luck.
+         */
+        private fun databaseWorkPending(): Int =
+            listOfNotNull(defaultConnectionPool, worldHistoryConnectionPool).sumOf { pool ->
+                val metrics = pool.metrics.orElseThrow {
+                    IllegalStateException("connection pool exposes no metrics: drainPostedWork cannot see the database")
+                }
+                metrics.acquiredSize() + metrics.pendingAcquireSize()
+            }
+
+        /**
+         * Waits for the asynchronous work the calling test started, so its answer belongs to it and not
+         * to whichever test runs next.
+         *
+         * Most of this plugin's commands open with `scope.launch` and answer either by writing the
+         * sender's message slot from that coroutine or through a `Core.app.post`. A test that fires one
+         * and returns without waiting leaves both behind: the queued reply lands in the next test's
+         * slot the first time that test pumps, and the coroutine goes on holding one of the main pool's
+         * five connections while the next test's own command queues behind it. Both were measured in
+         * one failure - `client_temporaryPlayerIsNotRegistered` spent its whole five-second window
+         * collecting four `/ranking` pages and an `/unban` `player.not.found` that three earlier,
+         * assertion-free command calls had left in flight, and never saw its own `/mute` reply.
+         *
+         * The wait is for two consecutive idle polls rather than one, because a `scope.launch` that has
+         * been dispatched but has not yet acquired its connection reads as idle on the first.
+         *
+         * **What that second poll is worth, exactly, and what it is not.** [waitUntil] sleeps
+         * `intervalMs` (16 ms) between turns, so the rule tolerates a gap of about 16 ms between the
+         * coroutine releasing its connection and its `Core.app.post` landing. That is a grace window
+         * sized to dispatch latency and nothing more. Three shapes fall outside it, all of them real
+         * in this codebase, so do not read this as a quiescence barrier:
+         *
+         * - **Release, then work, then post.** `/ranking` closes its transaction at `Commands.kt:1450`
+         *   and posts at `:1471` and `:1521`, after a sort over the whole result set and a page build.
+         *   On the test map that is microseconds; nothing bounds it at 16 ms in general.
+         * - **Launch, then acquire.** Nothing orders `handleMessage` returning against the first poll,
+         *   so both idle polls can fall before the coroutine has been dispatched at all, and the drain
+         *   returns `true` having waited for nothing. `assertTrue(drainPostedWork())` cannot catch
+         *   that: it is indistinguishable from having waited successfully.
+         * - **Neither posts nor queries.** `/meme router` (`Commands.kt:1215`) loops on a 500 ms
+         *   `delay` renaming the player, touching no database and posting nothing.
+         *   `ClientCommandTest.client_meme` fires it and never clears its status key, so it outlives
+         *   the test and the drain reads idle throughout.
+         *
+         * **It is a wait, not a barrier.** Work started after it returns is not covered. Returns false
+         * when it gave up, which a caller may assert on and [ClientCommandTest]'s per-test teardown
+         * deliberately does not.
+         *
+         * `postedWorkPending`'s read of `TaskQueue.size()` is unsynchronised where `TaskQueue.post` is
+         * synchronised. It is reliable here only because [waitUntil] calls [pumpApp] - which does take
+         * the queue's monitor - immediately before every check; a caller polling it without pumping
+         * first can read a stale size.
+         *
+         * **It is also not installed anywhere but [ClientCommandTest].** The arc queue is process-global,
+         * so the leak crosses class boundaries as well as test boundaries; the harness-level home for
+         * this would be one call at the top of [resetSharedState], which every class already runs. That
+         * is deliberately not done here - it changes teardown for all 90 classes and would need its own
+         * full-suite measurement to ship honestly - and it is recorded in the run notes instead.
+         */
+        fun drainPostedWork(timeoutMs: Long = 5000): Boolean {
+            var wasIdle = false
+            return waitUntil(timeoutMs) {
+                val idle = postedWorkPending() == 0 && databaseWorkPending() == 0
+                val settled = idle && wasIdle
+                wasIdle = idle
+                settled
+            }
         }
 
         /**
@@ -1073,6 +1198,47 @@ class PluginTest {
             }
         } finally {
             Log.logger = previous
+        }
+    }
+
+    /**
+     * [setPermission] must grant the group before it returns, even when another online player shares
+     * the target's name.
+     *
+     * It used to pass `player.name()` to `setperm`, which resolves through
+     * `Commands.withPermissionTarget` into `PlayerLookup.findOnline`. Two online players with the
+     * same name make `pick` return `Ambiguous`, `withPermissionTarget` reports and returns, and the
+     * group is **never applied** - silently, with the caller's next line running as though it had
+     * been. A name matching nobody online takes the `scope.launch { ... Core.app.post { ... } }`
+     * branch instead and lands whenever something later pumps. Most of the suite's setup calls this,
+     * so either outcome surfaces as an unrelated assertion failing in another class.
+     *
+     * Duplicate names are not contrived: `createPlayer` draws from Faker, `resetSharedState` empties
+     * the player list only at a class boundary, and several classes create players in a loop.
+     */
+    @Test
+    fun setPermissionSurvivesADuplicateOnlineName() {
+        loadGame(loadPlugin = true)
+
+        val (target, targetData) = newPlayer()
+        val (impostor, _) = newPlayer()
+        try {
+            // The collision, forced rather than waited for.
+            impostor.name(target.name())
+            assertEquals<String>(
+                target.name(), impostor.name(),
+                "the test did not create the duplicate name it is about to rely on"
+            )
+
+            setPermission(target, "owner", false)
+
+            assertEquals<String>(
+                "owner", Permission.groupOf(targetData.uuid, targetData.permission),
+                "setPermission returned without granting the group while another online player shared the target's name"
+            )
+        } finally {
+            runCatching { leavePlayer(impostor) }
+            runCatching { leavePlayer(target) }
         }
     }
 
