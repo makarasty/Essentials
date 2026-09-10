@@ -260,69 +260,36 @@ class ClientCommandTest {
 
     @Test
     fun client_exp() {
-        fun assertFalse(condition: Boolean): Boolean {
-            repeat(60) {
-                sleep(16)
-                if (!condition) {
-                    return true
-                }
-            }
-            return false
-        }
+        // There used to be local assertTrue(Boolean)/assertFalse(Boolean) here. They shadowed the
+        // kotlin.test imports for every parenthesised call in this method, polled a Boolean that had
+        // already been evaluated, returned instead of throwing, and every call site discarded the
+        // result - so the only test of /exp asserted nothing. Waiting is what they were reaching for
+        // and waitUntil already does it, pumping the app queue while it waits, so the wait is kept and
+        // the assertion is real.
 
-        fun assertTrue(condition: Boolean): Boolean {
-            repeat(60) {
-                sleep(16)
-                if (condition) {
-                    return true
-                }
-            }
-            return false
-        }
+        // assertHide() used to live here. It asked /ranking for page after page and looked for the
+        // name in playerData.lastReceivedMessage - but /ranking answers with player.sendMessage(), and
+        // only PlayerData.send/err/sendDirect write lastReceivedMessage. So the ranking never reached
+        // the field it was being read out of: the loop saw no change on its first pass, ended, and
+        // reported "not present" every time. assertHide(x, true) was therefore vacuously true and
+        // assertHide(x, false) was unconditionally false - which the shadowed assertTrue swallowed.
+        // It cannot be repaired from the test side; ask/T-1.md proposes the one-word change in
+        // Commands.kt that would make /ranking observable.
+        //
+        // What /ranking actually reads is PlayerTable.hideRanking, and that is asserted below
+        // instead: it is the state under test, it is checkable, and it fails when it is wrong.
 
-        fun assertHide(name: String, condition: Boolean): Boolean {
-            var next = true
-            var buffer = playerData.lastReceivedMessage
-            var count = 0
-            var exists = false
-            while (next) {
-                clientCommand.handleMessage("/ranking exp $count", player)
-                sleep(200)
-                next = playerData.lastReceivedMessage != buffer
-                buffer = playerData.lastReceivedMessage
-                count++
-                buffer.let {
-                    if (it.contains(name)) {
-                        exists = true
-                    }
-                }
+        // The previous version could not return false: the `exp != expected` case was taken by the
+        // branch above it, so the only `return false` was unreachable, and its result was discarded at
+        // all three call sites anyway. It reads the offline copy when the player has left and falls
+        // back to the row, which is what the original was trying to express.
+        fun assertExp(uuid: String, exp: Int) {
+            val reached = waitUntil(5000, 100) {
+                val cached = findPlayerData(uuid)?.exp
+                if (cached != null) cached == exp
+                else runBlocking { suspendTransaction { getPlayerData(uuid)?.exp } } == exp
             }
-            if (exists && condition) {
-                return false
-            } else if (!exists && !condition) {
-                return false
-            }
-            return true
-        }
-
-        fun assertExp(uuid: String, exp: Int): Boolean {
-            for (time in 1..10) {
-                val data = findPlayerData(uuid)
-                if (data != null) {
-                    if (findPlayerData(uuid)!!.exp != exp) {
-                        sleep(100)
-                    } else if (time == 10 && findPlayerData(uuid)!!.exp != exp) {
-                        return false
-                    }
-                } else {
-                    runBlocking {
-                        suspendTransaction {
-                            getPlayerData(uuid)?.exp == exp
-                        }
-                    }
-                }
-            }
-            return true
+            assertTrue(reached, "exp for $uuid never reached $exp")
         }
 
         // Require owner permission
@@ -344,37 +311,50 @@ class ClientCommandTest {
         sleep(100)
         assertEquals(err("command.exp.invalid"), playerData.lastReceivedMessage)
 
+        // The row, not the in-memory flag: /ranking filters on PlayerTable.hideRanking, and `/exp
+        // hide` flips the field before it awaits the write. A test that reads only the object cannot
+        // tell "hidden" from "about to be hidden".
+        fun storedHideRanking(uuid: String) = runBlocking { suspendTransaction { getPlayerData(uuid)?.hideRanking } }
+
         // Hides player's rank in the ranking list
         clientCommand.handleMessage("/exp hide", player)
-        sleep(100)
-        assertTrue(playerData.hideRanking)
-        clientCommand.handleMessage("/ranking exp", player)
-        sleep(1000)
-        assertFalse(playerData.lastReceivedMessage.contains(player.name()))
+        assertTrue(
+            waitUntil { playerData.lastReceivedMessage == Bundle()["command.exp.ranking.hide"] },
+            "/exp hide did not confirm; last message was ${playerData.lastReceivedMessage}"
+        )
+        assertTrue(playerData.hideRanking, "/exp hide did not set hideRanking")
+        assertEquals(true, storedHideRanking(player.uuid()), "/exp hide did not reach the row /ranking reads")
 
         // Un-hides player's rank in the ranking list
         clientCommand.handleMessage("/exp hide", player)
-        sleep(100)
-        assertFalse(playerData.hideRanking)
-        clientCommand.handleMessage("/ranking exp", player)
-        sleep(1000)
-        assertTrue(playerData.lastReceivedMessage.contains(player.name()))
+        assertTrue(
+            waitUntil { playerData.lastReceivedMessage == Bundle()["command.exp.ranking.unhide"] },
+            "a second /exp hide did not confirm; last message was ${playerData.lastReceivedMessage}"
+        )
+        assertFalse(playerData.hideRanking, "a second /exp hide did not clear hideRanking")
+        assertEquals(false, storedHideRanking(player.uuid()), "/exp hide did not un-hide the row /ranking reads")
 
-        // Hide other players' rankings in the ranking list
+        // Hide other players' rankings in the ranking list. This branch writes with a detached
+        // scope.launch { other.update() } and confirms before the write lands, so the row is polled.
         clientCommand.handleMessage("/exp hide ${dummy.first.name}", player)
         sleep(100)
         assertEquals(Bundle()["command.exp.ranking.hide"], playerData.lastReceivedMessage)
-        assertTrue(assertHide(dummy.first.name, true))
+        assertTrue(
+            waitUntil(5000, 100) { storedHideRanking(dummy.first.uuid()) == true },
+            "/exp hide <other> did not hide ${dummy.first.name} in the row /ranking reads"
+        )
 
         // Un-hide other players' rankings in the ranking list
         clientCommand.handleMessage("/exp hide ${findPlayerData(dummy.first.uuid())?.name}", player)
         sleep(100)
-        assertTrue(assertHide(dummy.first.name, false))
+        assertTrue(
+            waitUntil(5000, 100) { storedHideRanking(dummy.first.uuid()) == false },
+            "/exp hide <other> did not un-hide ${dummy.first.name} in the row /ranking reads"
+        )
 
         // Add exp value
         clientCommand.handleMessage("/exp add 500", player)
-        sleep(100)
-        assertTrue(playerData.exp >= 1500)
+        assertTrue(waitUntil { playerData.exp >= 1500 }, "/exp add 500 left exp at ${playerData.exp}")
 
         // Add other player exp value
         clientCommand.handleMessage("/exp add 500 ${dummy.first.name}", player)
@@ -383,13 +363,14 @@ class ClientCommandTest {
 
         // Subtract value from current experience
         clientCommand.handleMessage("/exp remove 300", player)
-        sleep(100)
-        assertTrue(playerData.exp in 1200..1499)
+        assertTrue(waitUntil { playerData.exp in 1200..1499 }, "/exp remove 300 left exp at ${playerData.exp}")
 
         // Subtract the value from another player's current experience
         clientCommand.handleMessage("/exp remove 300 ${dummy.first.name}", player)
-        sleep(100)
-        assertTrue(findPlayerData(dummy.first.uuid())?.exp in 700..999)
+        assertTrue(
+            waitUntil { findPlayerData(dummy.first.uuid())?.exp in 700..999 },
+            "/exp remove 300 <other> left exp at ${findPlayerData(dummy.first.uuid())?.exp}"
+        )
 
         // Set EXP for players who are not currently logged in
         leavePlayer(dummy.first)
