@@ -278,8 +278,15 @@ class PluginTest {
          *    thread never sees it and the test passes. One inside a `runCatching` or a broad `catch`
          *    in the plugin is swallowed outright.
          *
-         * Neither is repaired here: making it durable changes what the whole suite is allowed to log
-         * and needs its own measurement (see `ask/T-2.md`).
+         * Making it durable would fix the first and **not** the second: reinstalling the handler
+         * buys the property for sixty more classes, but only for errors logged synchronously on
+         * the test thread and not caught. Do not read "durable" as "covers everything". The shape
+         * that would close both is to collect unexpected errors at log time and assert on that
+         * list at the end of the test, on the JUnit thread; that is a bigger change than this
+         * wave, and it is recorded in `answers/T-2.md`.
+         *
+         * The durable half is measured but held: `ask/T-3.md` and `answers/T-3.md` carry the
+         * numbers and the two diffs, ready for whoever has the live databases up.
          */
         fun errorGuardingHandler(base: Log.LogHandler, tap: (String) -> Unit): Log.LogHandler =
             Log.LogHandler { level, text ->
@@ -304,6 +311,12 @@ class PluginTest {
          *
          * The allowance is global for the duration of the block, because the log line it is waiting
          * for usually arrives on another thread. Keep the block tight for that reason.
+         *
+         * **And keep it wide enough to contain the log.** The substrings are removed in a
+         * `finally`, so an error logged by work the block *started* but did not await - a
+         * `scope.launch`, a `Core.app.post` - arrives after the allowance is gone and throws
+         * anyway. If a test fails on an error it plainly declared, that is where to look: wait
+         * for the observable effect inside the block rather than outside it.
          */
         fun <T> expectingErrors(vararg substrings: String, body: () -> T): T {
             require(substrings.isNotEmpty()) { "expectingErrors needs at least one substring to allow" }
