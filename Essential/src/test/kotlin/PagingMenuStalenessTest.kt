@@ -13,10 +13,10 @@ import kotlin.test.assertEquals
 
 /**
  * task-128: /maps and /players used to page their own menu through the same PlayerData.status["page"]
- * key. registerOwnedMenu hands out a fresh, permanently-registered id per invocation (see the notes -
- * the one-shared-id fix was reverted because it created a worse hazard), so a menu opened by one
- * command and left on screen is still live when a second command opens and pages its own, differently
- * sized menu. Paging the second menu wrote a page number sized for its own prebuilt array into the
+ * key. Owned menus get an id each while they are open - the client stacks a dialog per Call.menu and
+ * hides only the one that was answered, so two menus open at once must not share one - and a menu
+ * opened by one command and left on screen is still live when a second command opens and pages its
+ * own, differently sized menu. Paging the second menu wrote a page number sized for its own prebuilt array into the
  * shared key; firing the first (still-registered) menu's listener then indexed its own, smaller
  * prebuilt array with that stale number.
  */
@@ -70,8 +70,9 @@ class PagingMenuStalenessTest {
                 if (buffer > 1.0) (buffer - 1).toInt() else 0
             }
 
-            // Opened first and never clicked: it stays registered (registerOwnedMenu leaks by design
-            // again, per that revert) and stays reachable once whatever opens next is dismissed.
+            // Opened first and never clicked, so its slot still has a dialog outstanding on it: it
+            // keeps its own id, cannot be recycled under another listener, and stays reachable once
+            // whatever opens next is dismissed. That is the property the pool exists to guarantee.
             val mapsMenu = menuOpenedBy("/maps") { clientCommand.handleMessage("/maps", player) }
 
             // Enough players that /players has strictly more pages than /maps, so paging it can drive
