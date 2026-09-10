@@ -71,8 +71,11 @@ class ClientCommandTest {
      * test's message slot and that test's own command queues behind the coroutine still holding a
      * connection - see [drainPostedWork].
      *
-     * Best effort on purpose: a test that has already failed must not be reported as a teardown
-     * failure instead, and a drain that gives up leaves the suite exactly where it was before.
+     * Best effort on purpose: the return value is discarded, so a drain that gives up leaves the
+     * suite exactly where it was rather than turning a slow test into a failing one. It is not
+     * literally throw-free - [drainPostedWork] propagates if a connection pool ever reports no
+     * metrics - but JUnit attaches an `@AfterEach` throwable as *suppressed* when the test body has
+     * already failed, so that cannot mask a real failure either.
      */
     @AfterTest
     fun settle() {
@@ -907,15 +910,23 @@ class ClientCommandTest {
         clientCommand.handleMessage("/ranking exp 1", player)
 
         // Test ranking command with invalid type parameter
-        playerData.lastReceivedMessage = "sentinel"
-        clientCommand.handleMessage("/ranking invalid", player)
         run {
             // `player.not.found` used to be accepted here too. /ranking never produces it - an
-            // unrecognised type is answered with command.ranking.wrong at Commands.kt:1392 and a
-            // throw with the same key at :1526 - so the allowance only ever matched an /unban reply
-            // that the previous test had left in flight, and it made this assertion pass in 5 ms on
-            // another test's output. drainPostedWork at the test boundary is what removes the need
-            // for it.
+            // unrecognised type is answered with command.ranking.wrong at Commands.kt:1392 and the
+            // catch-all at :1526 uses the same key - so the allowance only ever matched an /unban
+            // reply that an earlier test had left in flight, and it made this assertion pass in 5 ms
+            // on another test's output.
+            //
+            // Narrowing it alone would have swapped a vacuous pass for a race. The seven /ranking
+            // calls above each queued a `command.ranking.wait` post (Commands.kt:1396) and nothing
+            // has pumped yet, while `command.ranking.wrong` is written straight from the coroutine
+            // (Commands.kt:1392, no post, no connection) within microseconds. observeMessages only
+            // sees a value that survives from one pump to the next sample, so a batch of queued
+            // `wait` writes flushing over the answer loses it for good. Draining first empties that
+            // batch, and the sentinel makes the window start from a value this test chose.
+            drainPostedWork()
+            playerData.lastReceivedMessage = "sentinel"
+            clientCommand.handleMessage("/ranking invalid", player)
             val expected = err("command.ranking.wrong")
             val rankingSeen = observeMessages(playerData, 5000) { it == expected }
             assertTrue(rankingSeen.any { it == expected }, "ranking said: $rankingSeen")

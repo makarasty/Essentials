@@ -842,8 +842,11 @@ class PluginTest {
          * configuration that could suppress it. So the absent case is a misconfiguration nobody has
          * introduced yet, and it throws rather than reading as idle if somebody does.
          *
-         * A null pool is a different thing and is skipped, not an error: [stopPlugin] nulls both, and no
-         * database means no database work to wait for.
+         * A null pool is skipped rather than treated as an error, and that asymmetry is deliberate:
+         * [stopPlugin] nulls both, and between a `stopPlugin()` and the next `loadGame` there is no
+         * plugin to fire a command at, so there is no in-flight reply to wait for. The blindness is
+         * the same shape as the empty-Optional one - `databaseWorkPending` reads zero without being
+         * able to see anything - but its window contains no work by construction rather than by luck.
          */
         private fun databaseWorkPending(): Int =
             listOfNotNull(defaultConnectionPool, worldHistoryConnectionPool).sumOf { pool ->
@@ -869,18 +872,32 @@ class PluginTest {
          * The wait is for two consecutive idle polls rather than one, because a `scope.launch` that has
          * been dispatched but has not yet acquired its connection reads as idle on the first.
          *
-         * **What that second poll is worth, exactly.** [waitUntil] sleeps `intervalMs` (16 ms) between
-         * turns, so the rule tolerates a gap of up to about 16 ms between the coroutine releasing its
-         * connection and its `Core.app.post` landing. It is a grace window sized to dispatch latency, not
-         * a proof of quiescence: a command that releases its connection and then `delay`s before posting
-         * would slip through it. Nothing in `Commands.kt` does that today - every posting command posts
-         * either inside the transaction or on the statement after it - and the guard against it is this
-         * sentence plus [anAsyncCommandsReplyDoesNotCrossTheTestBoundary], which fails if the drain ever
-         * stops covering `/unban`'s shape.
+         * **What that second poll is worth, exactly, and what it is not.** [waitUntil] sleeps
+         * `intervalMs` (16 ms) between turns, so the rule tolerates a gap of about 16 ms between the
+         * coroutine releasing its connection and its `Core.app.post` landing. That is a grace window
+         * sized to dispatch latency and nothing more. Three shapes fall outside it, all of them real
+         * in this codebase, so do not read this as a quiescence barrier:
          *
-         * **It is a wait, not a barrier.** Work started after it returns is not covered, and neither is
-         * a coroutine that neither posts nor touches the database. Returns false when it gave up, which
-         * a caller may assert on and [ClientCommandTest]'s per-test teardown deliberately does not.
+         * - **Release, then work, then post.** `/ranking` closes its transaction at `Commands.kt:1450`
+         *   and posts at `:1471` and `:1521`, after a sort over the whole result set and a page build.
+         *   On the test map that is microseconds; nothing bounds it at 16 ms in general.
+         * - **Launch, then acquire.** Nothing orders `handleMessage` returning against the first poll,
+         *   so both idle polls can fall before the coroutine has been dispatched at all, and the drain
+         *   returns `true` having waited for nothing. `assertTrue(drainPostedWork())` cannot catch
+         *   that: it is indistinguishable from having waited successfully.
+         * - **Neither posts nor queries.** `/meme router` (`Commands.kt:1215`) loops on a 500 ms
+         *   `delay` renaming the player, touching no database and posting nothing.
+         *   `ClientCommandTest.client_meme` fires it and never clears its status key, so it outlives
+         *   the test and the drain reads idle throughout.
+         *
+         * **It is a wait, not a barrier.** Work started after it returns is not covered. Returns false
+         * when it gave up, which a caller may assert on and [ClientCommandTest]'s per-test teardown
+         * deliberately does not.
+         *
+         * `postedWorkPending`'s read of `TaskQueue.size()` is unsynchronised where `TaskQueue.post` is
+         * synchronised. It is reliable here only because [waitUntil] calls [pumpApp] - which does take
+         * the queue's monitor - immediately before every check; a caller polling it without pumping
+         * first can read a stale size.
          *
          * **It is also not installed anywhere but [ClientCommandTest].** The arc queue is process-global,
          * so the leak crosses class boundaries as well as test boundaries; the harness-level home for
