@@ -1,5 +1,6 @@
 package essential.core.service.bridge
 
+import arc.Core
 import arc.util.Log
 import arc.util.Timer
 import essential.core.service.bridge.BridgeService.Companion.conf
@@ -106,8 +107,23 @@ class Client : Runnable {
                             val message = readBridgeLine(reader)?.let(::decodeBridgePayload)
                                 ?: throw IOException("Invalid bridge message payload")
                             lastReceivedMessage = message
-                            Call.sendMessage(message)
+                            // task-104/task-174: this reader runs on scope's Dispatchers.IO, a real
+                            // thread distinct from the main loop, unlike an arc Timer.Task - calling
+                            // an engine Call straight from here races the main thread's own tick over
+                            // the same connection list. Posted, with its own try/catch, because arc's
+                            // TaskQueue.run() invokes a posted runnable bare.
+                            Core.app.post {
+                                try {
+                                    Call.sendMessage(message)
+                                } catch (e: Exception) {
+                                    Log.err("Failed to display a bridged message", e)
+                                }
+                            }
                         }
+                        // task-105: never sent by the server (its only sender, handleBanCheck, is
+                        // itself unreached, see Server.kt), and this reads the payload without
+                        // applying anything even if it arrived - the ban-sharing half of the protocol
+                        // is dead end to end. See BridgeConfig.SharingConfig.ban, read by nothing.
                         "banned" -> readBridgeLine(reader) ?: throw IOException("Missing bridge ban payload")
                         "exit" -> break
                         else -> throw IOException("Unknown bridge command: $command")
@@ -161,7 +177,31 @@ class Client : Runnable {
     fun send(command: String, vararg parameter: String?) {
         when (command) {
             "crash" -> sendPayload("crash", parameter.firstOrNull().orEmpty())
-            "exit" -> closeConnection()
+            "exit" -> {
+                // task-105: this used to map straight to closeConnection(), which never wrote the
+                // word "exit" to the wire - so the peer's own "exit" handler (Server.kt) could never
+                // fire from a clean client shutdown, only from the socket close that followed it.
+                // Written synchronously, not queued through sendPayload/messageQueue, because
+                // BridgeService.dispose() calls cancel() (which stops the writer coroutine)
+                // immediately after this returns.
+                // Accepted: send() runs on the caller's thread (dispose() calls it from the game
+                // thread) and this write has no timeout, unlike the read side's soTimeout - a stalled
+                // peer with a full TCP receive window blocks shutdown indefinitely. 5 bytes, so the
+                // exposure is narrow; upgrade path if it ever bites is moving this write onto the
+                // daemon executor with a bounded join, the way the rest of this class treats socket IO.
+                val activeWriter = writer
+                if (activeWriter != null) {
+                    try {
+                        synchronized(activeWriter) {
+                            activeWriter.write("exit")
+                            activeWriter.newLine()
+                            activeWriter.flush()
+                        }
+                    } catch (_: IOException) {
+                    }
+                }
+                closeConnection()
+            }
             else -> Log.warn("Unknown bridge command: $command")
         }
     }

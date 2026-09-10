@@ -1,11 +1,13 @@
 package essential.core.service.bridge
 
+import arc.Core
 import arc.util.Log
 import arc.util.serialization.Json
 import essential.common.rootPath
 import essential.core.service.bridge.BridgeService.Companion.bundle
 import essential.core.service.bridge.BridgeService.Companion.conf
 import mindustry.Vars
+import mindustry.gen.Call
 import mindustry.net.Administration
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -127,9 +129,32 @@ class Server(private var server: ServerSocket? = null) : Runnable {
                 Log.debug(bundle["network.server.connected", socket.inetAddress.hostAddress])
                 while (!Thread.currentThread().isInterrupted) {
                     when (val command = readBridgeLine(reader) ?: break) {
+                        // task-105: nothing in this repository ever sends "isBanned" - Client has no
+                        // caller for it, and the ban list this would propagate is what the shared-
+                        // database ban design (BridgeConfig.sharing.ban, unread anywhere) was meant to
+                        // replace. Read as the dead ancestor of that design rather than a sender to
+                        // build here; left in place, unreached, rather than deleted, since removing a
+                        // handler is a bigger claim than not adding the sender it never had.
                         "isBanned" -> handleBanCheck(readBridgeLine(reader))
                         "exit" -> break
-                        "message" -> readBridgeLine(reader)?.let(::decodeBridgePayload)?.let { sendAll("message", it) }
+                        "message" -> readBridgeLine(reader)?.let(::decodeBridgePayload)?.let {
+                            // The relay only ever wrote to sockets, so a broadcast from a client server
+                            // never showed on the bridge host itself - Commands.kt's own server branch
+                            // does both a sendAll and a local Call.sendMessage, and this path only did
+                            // the first. Posted (and before the socket write) because this handler runs
+                            // on the server's connection pool, genuinely off the game thread.
+                            Core.app.post {
+                                try {
+                                    Call.sendMessage(it)
+                                } catch (e: Exception) {
+                                    Log.err("Failed to display a bridged broadcast on the host", e)
+                                }
+                            }
+                            sendAll("message", it)
+                        }
+                        // task-105: Client.send("crash", ...) exists but nothing in the codebase calls
+                        // it - there is no crash/uncaught-exception hook anywhere in essential/core to
+                        // call it from. Building one is a new feature, not a narrow fix, so left unsent.
                         "crash" -> readBridgeLine(reader)?.let(::decodeBridgePayload)?.let(::writeCrashReport)
                         else -> {
                             Log.warn("Rejected unknown bridge command from @: @", socket.inetAddress.hostAddress, command)

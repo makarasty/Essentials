@@ -205,15 +205,18 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 val data = findPlayerData(player.uuid())
                 if (data != null) {
                     val isAdmin = Permission.check(data, "vote.pass")
-                    if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        if (voteData.starter != data) {
-                            if (Vars.state.rules.pvp && voteData.team == player.team()) {
-                                voted.add(player.uuid())
-                            } else if (!Vars.state.rules.pvp) {
-                                voted.add(player.uuid())
-                            }
-                        } else if (isAdmin) {
-                            isAdminVote = true
+                    // The starter is pre-seeded into `voted` at construction (so their own vote
+                    // counts without them having to speak), which also means the ordinary yes-branch
+                    // below - guarded on `!voted.contains` - can never see them. A starter holding
+                    // vote.pass needs its own branch to reach the instant pass at all.
+                    if (isVoting && isYes(message) && voteData.starter == data && isAdmin && !isAdminVote) {
+                        isAdminVote = true
+                        data.send("command.vote.voted")
+                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
+                        if (Vars.state.rules.pvp && voteData.team == player.team()) {
+                            voted.add(player.uuid())
+                        } else if (!Vars.state.rules.pvp) {
+                            voted.add(player.uuid())
                         }
                         data.send("command.vote.voted")
                     } else if (isVoting && isNo(message) && isAdmin) {
@@ -254,7 +257,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     }
 
     fun check(): Int {
-        return if (!isPvP) {
+        val threshold = if (!isPvP) {
             when (players.filterNot { it.afk }.size) {
                 1 -> 1
                 in 2..4 -> 2
@@ -277,6 +280,16 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 else -> 8
             }
         }
+        // Ruled in answers/9-2.md: a bare `1 -> 2` above would also block a case that works today.
+        // Not the solo `map` vote (Commands.kt's `solo` hatch there bypasses VoteSystem entirely
+        // when players.size == 1, straight to a direct Vars.world.loadMap with no threshold involved)
+        // - it is a lone vote.admin holder (Commands.kt's eligibleVoters <= 3 gate is skipped for
+        // that permission) starting any other vote type with nobody else on the server. Their own
+        // seeded vote already passes at the table's `1 -> 1`; a bare floor of 2 would make that
+        // permanently unreachable, since there is no second player who could ever supply it. The
+        // floor exists to stop one person deciding for others, so where `players` (server-wide)
+        // holds nobody else, it has nothing to do.
+        return if (players.size == 1) threshold else maxOf(2, threshold)
     }
 
     override fun cancel() {
