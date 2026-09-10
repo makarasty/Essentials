@@ -24,11 +24,30 @@ import essential.common.database.data.getPluginData
 import essential.common.database.databaseClose
 import essential.common.database.defaultDatabase
 import essential.common.database.worldHistoryDatabase
+import essential.common.isCheated
+import essential.common.isSurrender
+import essential.common.isVoting
+import essential.common.nextVoteAvailable
 import essential.common.offlinePlayers
 import essential.common.players
 import essential.common.rootPath
+import essential.common.timeSource
+import essential.common.voterCooldown
+import essential.core.Commands
 import essential.core.CoreConfig
 import essential.core.Main
+import essential.core.dpsBlocks
+import essential.core.dpsTile
+import essential.core.isGlobalMute
+import essential.core.isNotTargetMap
+import essential.core.mapRatings
+import essential.core.mapVotes
+import essential.core.maxDps
+import essential.core.playerDataRetries
+import essential.core.pvpPlayer
+import essential.core.pvpSpecters
+import essential.core.unitLimitMessageCooldown
+import essential.core.worldEditSelection
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
 import mindustry.Vars.*
@@ -61,6 +80,8 @@ import java.util.zip.ZipFile
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.test.*
 import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.ExperimentalTime
 
 /**
@@ -184,6 +205,51 @@ class PluginTest {
             }
             state.rules.limitMapArea = false
             Team.all.forEach { t -> state.rules.teams.get(t).buildAi = false }
+            resetPluginState()
+        }
+
+        /**
+         * Puts the plugin's own global state back to what a fresh JVM would hold, because the class
+         * boundary is the suite's stand-in for a server boot and the plugin has no unload path.
+         *
+         * Only state that *gates* later behaviour is reset. A leftover `isGlobalMute` silences every
+         * later class's chat; a leftover `isVoting` makes every later `/vote` answer "already voting";
+         * a `nextVoteAvailable` left in the future blocks the vote commands outright; a `dpsTile`
+         * pointing into a world that has been reloaded is healed to 100000000 health once a second by
+         * `Trigger`. None of those failures name the class that caused them.
+         *
+         * Deliberately not reset:
+         * - `pluginData`, which is `lateinit` and is reassigned by every `Main.init()`. Clearing it
+         *   without a plugin reload would leave the in-memory mirror pointing at a row the H2 delete
+         *   in [stopPlugin] has already destroyed, and reloading the plugin per class costs the whole
+         *   suite minutes. A class that needs a clean one calls `stopPlugin(); loadGame(true)`.
+         * - counters nothing branches on (`gameOverCount`, `playerNumber`, `mapStartTime`). They show
+         *   up in `/status` output and in nothing that decides anything.
+         * - state a running server would leak too. That is a production defect and belongs in a
+         *   report, not here; see the class doc.
+         */
+        private fun resetPluginState() {
+            isGlobalMute = false
+            isVoting = false
+            isCheated = false
+            isSurrender = false
+            isNotTargetMap = false
+            unitLimitMessageCooldown = 0
+            nextVoteAvailable = timeSource.markNow()
+            voterCooldown.clear()
+            dpsTile = null
+            dpsBlocks = 0f
+            maxDps = null
+            mapVotes.clear()
+            mapRatings.clear()
+            pvpSpecters.clear()
+            pvpPlayer.clear()
+            worldEditSelection.clear()
+            Commands.charsPlacing.clear()
+            // Jobs, not data: one left running re-adds a departed class's player to `players` in the
+            // middle of the next class.
+            playerDataRetries.values.forEach { job -> runCatching { job.cancel() } }
+            playerDataRetries.clear()
         }
 
         @OptIn(ExperimentalPathApi::class)
@@ -811,6 +877,61 @@ class PluginTest {
         }
 
         stopPlugin()
+    }
+
+    /**
+     * The class-entry contract for plugin state, asserted rather than described.
+     *
+     * Every one of these carried into the next class before this existed, and each of them decides
+     * something: a leftover `isGlobalMute` silences chat, a leftover `isVoting` refuses every vote, a
+     * `nextVoteAvailable` in the future blocks the vote commands, a stale `dpsTile` is healed once a
+     * second by `Trigger` in a world that has since been reloaded.
+     */
+    @OptIn(ExperimentalTime::class)
+    @Test
+    fun pluginStateResetTest_21() {
+        loadGame()
+
+        isGlobalMute = true
+        isVoting = true
+        isCheated = true
+        isSurrender = true
+        isNotTargetMap = true
+        unitLimitMessageCooldown = 99
+        nextVoteAvailable = timeSource.markNow() + 10.minutes
+        voterCooldown["probe"] = timeSource.markNow()
+        dpsTile = randomTile()
+        dpsBlocks = 42f
+        maxDps = 42f
+        mapVotes["probe"] = testMap!!
+        mapRatings["probe"] = true
+        pvpSpecters.add("probe")
+        pvpPlayer["probe"] = Team.sharded
+        worldEditSelection["probe"] = Commands.WorldEditSelection()
+        Commands.charsPlacing["probe"] = arrayOf("probe")
+
+        resetPluginState()
+
+        assertFalse(isGlobalMute, "isGlobalMute carried into the next class")
+        assertFalse(isVoting, "isVoting carried into the next class")
+        assertFalse(isCheated, "isCheated carried into the next class")
+        assertFalse(isSurrender, "isSurrender carried into the next class")
+        assertFalse(isNotTargetMap, "isNotTargetMap carried into the next class")
+        assertEquals(0, unitLimitMessageCooldown, "unitLimitMessageCooldown carried into the next class")
+        assertTrue(
+            nextVoteAvailable.elapsedNow().isPositive() || nextVoteAvailable.elapsedNow() == Duration.ZERO,
+            "nextVoteAvailable is still in the future: the next class cannot start a vote"
+        )
+        assertTrue(voterCooldown.isEmpty(), "voterCooldown carried into the next class")
+        assertNull(dpsTile, "dpsTile carried into the next class")
+        assertEquals(0f, dpsBlocks, "dpsBlocks carried into the next class")
+        assertNull(maxDps, "maxDps carried into the next class")
+        assertTrue(mapVotes.isEmpty(), "mapVotes carried into the next class")
+        assertTrue(mapRatings.isEmpty(), "mapRatings carried into the next class")
+        assertTrue(pvpSpecters.isEmpty(), "pvpSpecters carried into the next class")
+        assertTrue(pvpPlayer.isEmpty(), "pvpPlayer carried into the next class")
+        assertTrue(worldEditSelection.isEmpty(), "worldEditSelection carried into the next class")
+        assertTrue(Commands.charsPlacing.isEmpty(), "a pending /chars placement carried into the next class")
     }
 
     @Test
