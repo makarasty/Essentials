@@ -36,8 +36,27 @@ import mindustry.gen.Call
 import mindustry.entities.units.BuildPlan
 import kotlin.test.*
 
-@Ignore
-class CoverageTest {
+/**
+ * A smoke test: twenty-six commands and events are invoked and the class asserts that nothing threw.
+ *
+ * It was born `@Ignore`d in the commit that added it (`f0e9f856`) and had never run once. Under the
+ * name `CoverageTest` it was two of the suite's seven skips and claimed to measure coverage; three of
+ * its four bodies contain no assertion at all and the fourth asserts on one flag out of the fourteen
+ * commands it invokes. Renamed to what it does and enabled, because "these paths do not throw" is a
+ * real property worth holding and it costs 2.7 seconds.
+ *
+ * **Where the no-throw property is real and where it is not.** A command body that runs on the calling
+ * thread propagates its exception through `CommandHandler.handleMessage` to this test, and that is
+ * most of them. A body that opens with `scope.launch` - `mute`, `unmute`, `strict`, `reload` and
+ * `debug`, of the ones invoked here - runs on `Dispatchers.IO`, where `Main`'s
+ * `CoroutineExceptionHandler` turns the throwable into a `Log.err` on that worker. For those five
+ * "did not throw" is not observable from this thread, so do not read a green here as coverage of them.
+ *
+ * `testEventsDirect` fires engine events by hand. That is the shape that produced three false-green
+ * achievement tests elsewhere in this audit, and it is only defensible here because the claim is
+ * "the listener survives this event", not "the engine sends it".
+ */
+class CommandSmokeTest {
     companion object {
         private var done = false
     }
