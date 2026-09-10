@@ -88,10 +88,10 @@ val mapRatings = HashMap<String, Boolean>()
 val playerDataRetries = ConcurrentHashMap<String, Job>()
 
 /** PvP spectator player list */
-var pvpSpecters = mutableListOf<String>()
+val pvpSpecters = mutableListOf<String>()
 
 /** PvP player team map */
-var pvpPlayer = mutableMapOf<String, Team>()
+val pvpPlayer = mutableMapOf<String, Team>()
 
 /** Whether global chat is muted. Volatile: written from the game thread by /chat off, read from a
  *  Ktor worker by the web chat endpoint. */

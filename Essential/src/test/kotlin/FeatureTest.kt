@@ -43,9 +43,11 @@ import essential.core.mapRatings
 import essential.core.mergeTemporaryPlayerData
 import essential.core.playerDataRetries
 import essential.core.playerIpUnban
+import essential.core.selectAutoTeam
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
+import essential.core.Undo
 import essential.core.worldLoad
 import arc.Events
 import arc.func.Cons
@@ -75,6 +77,7 @@ import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.insert
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.*
 import kotlin.time.Clock
@@ -264,6 +267,14 @@ class FeatureTest {
             System.setProperty("test", "yes")
             loadGame(true)
 
+            // Menus.menuChoose fires MenuOptionChooseEvent before it dispatches, and CoreEvent's
+            // undoMenuChoose reads Undo.menuId - a lazy that registers a menu of its own. Force it here
+            // so the menu counts below measure only what the click did. InfoMenuTest and UndoTest do the
+            // same. Nothing forks the test JVM (Essential/build.gradle.kts:452 sets no forkEvery), so
+            // without this the class is green only while some earlier class, or some earlier test in
+            // this one, happens to have clicked a menu first.
+            Undo.menuId
+
             val p = newPlayer()
             player = p.first.self()
 
@@ -402,6 +413,56 @@ class FeatureTest {
         }
     }
 
+    /**
+     * The teams selectAutoTeam actually scores: active, not derelict, holding a core, and not the wave
+     * team. Not the same set as `Vars.state.teams.active`, which keeps a team that has lost every core
+     * on its remaining buildings - CoreEvent.kt:788-789 says so in its own comment.
+     */
+    /**
+     * Runs [block] with a `PlayerData` for a player that is in no scored list and never enters
+     * `players`, so it cannot move a count or an average - a stand-in for a joining player, which
+     * `selectAutoTeam` excludes by uuid anyway. The unit is removed for the reason `leavePlayer` gives:
+     * `createPlayer()` spawns one, and removing the player does not remove it.
+     */
+    private fun <T> withProbeData(block: (PlayerData) -> T): T {
+        val probe = createPlayer()
+        try {
+            return block(createTemporaryPlayerData(probe))
+        } finally {
+            probe.unit()?.takeIf { it.isValid }?.remove()
+            probe.remove()
+            Groups.player.update()
+        }
+    }
+
+    private fun playableTeamCounts(): kotlin.collections.Map<Team, Int> = Vars.state.teams.active
+        .filter {
+            it.team != Team.derelict && it.hasCore() &&
+                    !(Vars.state.rules.waves && Vars.state.rules.waveTeam == it.team)
+        }
+        .associate { td -> td.team to players.count { it.player.team() == td.team } }
+
+    /**
+     * selectAutoTeam (CoreEvent.kt:1612) promises the lowest average win rate among the teams that hold
+     * a core, unless that team already has two more members than the smallest of the others, in which
+     * case the next one by win rate that passes the same guard. Both halves are scored over the plugin's
+     * own `players` list, and that list is not this class's to control: `/changemap` goes through
+     * WorldReloader, whose begin() clears Groups.player via Logic.reset() and whose end() re-teams the
+     * saved players but never calls player.add() again. So every player of every earlier test in this
+     * class stays in `players`, invisible to Groups.player, and is counted by both the averages and the
+     * guard.
+     *
+     * Measured on a green run at 30772163, immediately after this test's own /changemap: `players=7
+     * groups=0`, and by the time the test predicted anything the four teams it believes are 2/2/2/2 were
+     * 5/4/2/2. The old assertion "the eleventh player goes to the second lowest win rate" follows from
+     * the guard only while every other team is at least two behind the lowest, and with green sitting on
+     * exactly 2 it was one leaked player away from flipping back to blue - which is the recorded flake,
+     * "Player 11 should go to second lowest win rate team expected:<green> but was:<blue>".
+     *
+     * So the rule is asserted twice below: exactly, against a list this test owns - selectAutoTeam takes
+     * the list it scores as a parameter - and end to end as the invariant the guard actually maintains
+     * whatever else is in `players`.
+     */
     @Test
     fun pvpBalanceTest() {
         setPermission("owner", true)
@@ -415,17 +476,32 @@ class FeatureTest {
         // Scenario: 4 teams (A, B, C, D) with 2 players each
         // Win rates: A=100%, B=75%, C=50%, D=25%
         val testTeams = listOf(Team.sharded, Team.crux, Team.green, Team.blue)
-        for (team in testTeams) {
-            val tile = PluginTest.randomTile()
-            tile.setNet(mindustry.content.Blocks.coreShard, team, 0)
+        // Fixed, well separated tiles rather than PluginTest.randomTile(), which is an unseeded
+        // java.util.Random over a 100x100 window. A coreShard is 3x3, so two of four random placements
+        // land on each other about one run in seventy, and the team whose core was overwritten stays in
+        // teams.active on its remaining buildings while dropping out of the set selectAutoTeam scores.
+        // Nothing here needs the placement to vary, and a fix for a flake should not leave a dice roll.
+        val corners = listOf(10 to 10, 10 to 60, 60 to 10, 60 to 60)
+        for ((i, team) in testTeams.withIndex()) {
+            val (x, y) = corners[i]
+            Vars.world.tile(x, y).setNet(mindustry.content.Blocks.coreShard, team, 0)
         }
         
         val activeTeams = Vars.state.teams.active.filter { testTeams.contains(it.team) }.toList()
         assertEquals(4, activeTeams.size, "Need 4 teams for test")
-        
+        // The candidate set is a precondition of the rule asserted below, and the old test assumed it
+        // rather than checking it. Fail here, naming the set, rather than three assertions later.
+        assertEquals(
+            testTeams.toSet(),
+            playableTeamCounts().keys,
+            "selectAutoTeam scores exactly the core-holding teams, and the rule asserted below assumes " +
+                    "those are the four this test planted"
+        )
+
         val winRates = listOf(1.0, 0.75, 0.5, 0.25)
-        
+
         // Fill teams with 2 players each
+        val seeded = mutableListOf<PlayerData>()
         for (i in activeTeams.indices) {
             val team = activeTeams[i].team
             val rate = winRates[i]
@@ -435,44 +511,86 @@ class FeatureTest {
                 p.first.team(team)
                 p.second.pvpWinCount = (rate * 100).toInt().toShort()
                 p.second.pvpLoseCount = ((1.0 - rate) * 100).toInt().toShort()
+                seeded.add(p.second)
             }
         }
 
-        // The teams should be sorted by win rate: D, C, B, A (lowest first)
-        val sortedActiveTeams = activeTeams.sortedBy { teamData ->
-            val teamPlayers = players.filter { it.player.team() == teamData.team }
-            if (teamPlayers.isEmpty()) 0.5 else teamPlayers.map {
+        // Over the seeded eight only - the whole `players` list carries earlier tests' players, which is
+        // exactly what the old assertion assumed away.
+        val byWinRate = activeTeams.map { it.team }.sortedBy { team ->
+            seeded.filter { it.player.team() == team }.map {
                 val total = it.pvpWinCount + it.pvpLoseCount
                 if (total == 0) 0.5 else it.pvpWinCount.toDouble() / total
             }.average()
         }
-        
-        val teamLowest = sortedActiveTeams[0].team
-        val teamSecondLowest = sortedActiveTeams[1].team
+        val teamLowest = byWinRate[0]
+        val teamSecondLowest = byWinRate[1]
 
-        // Add one more player - should go to teamLowest (lowest win rate)
-        val p9 = newPlayer()
-        assertEquals(teamLowest, p9.first.team(), "Player 9 should go to lowest win rate team")
+        withProbeData { joining ->
+            val byTeam = seeded.groupBy { it.player.team() }
+            // Extra members are repeats of a team's own seeded player, so they raise that team's count
+            // without moving its average - the count guard is what is under test here, not the averages.
+            fun scored(vararg extra: Pair<Team, Int>): List<PlayerData> =
+                seeded + extra.flatMap { (team, n) -> List(n) { byTeam.getValue(team).first() } }
 
-        // Add one more player - should go to teamLowest (it can have up to 2 more than others)
-        val p10 = newPlayer()
-        assertEquals(teamLowest, p10.first.team(), "Player 10 should go to lowest win rate team")
+            assertEquals(
+                teamLowest, selectAutoTeam(joining, scored()),
+                "level counts: the lowest average win rate takes the player"
+            )
+            assertEquals(
+                teamLowest, selectAutoTeam(joining, scored(teamLowest to 1)),
+                "one ahead of the smallest team is still inside the handicap the guard allows"
+            )
+            assertEquals(
+                teamSecondLowest, selectAutoTeam(joining, scored(teamLowest to 2)),
+                "two ahead of the smallest team is the handicap ceiling, so the next win rate takes the player"
+            )
+            // The recorded flake, forced. The guard compares each team against the smallest OTHER team,
+            // so once every other team is within one, the lowest win rate takes the player at +2 as well.
+            // That is the state a single leaked player from an earlier test produces, and it is why "the
+            // eleventh player goes to the second lowest win rate" was never the promise.
+            assertEquals(
+                teamLowest,
+                selectAutoTeam(
+                    joining,
+                    scored(teamLowest to 2, *byWinRate.drop(1).map { it to 1 }.toTypedArray())
+                ),
+                "the guard is about counts, not win rates: with every other team within one of it, the " +
+                        "lowest win rate takes the player at +2 as well"
+            )
+        }
 
-        // Now teamLowest has 4 players (2 initial + 2 new), others have 2. 
-        // min=2, Lowest=4. 4 < 2 + 2 is false.
-        // Next player should go to teamSecondLowest
-        val p11 = newPlayer()
-        assertEquals(teamSecondLowest, p11.first.team(), "Player 11 should go to second lowest win rate team")
+        // End to end, three real joins through the real join path. Two things are asserted per join.
+        // First, that the path actually routes through selectAutoTeam: the oracle is the same function
+        // asked, immediately beforehand and on the same list, where it would put a joiner. That covers
+        // the wiring at CoreEvent.kt:1596-1601 - a rememberTeam or spector branch swallowing a fresh
+        // join, say - without depending on what is in `players`, because both sides read the same list.
+        // Second, the invariant the guard maintains whatever else is in `players`: a joiner lands on a
+        // team that holds a core, and never on one already more than one player ahead of the smallest.
+        repeat(3) { i ->
+            val before = playableTeamCounts()
+            val oracle = withProbeData { selectAutoTeam(it, players) }
+            val joined = newPlayer().first.team()
+            assertEquals(
+                oracle, joined,
+                "join ${i + 1} landed on $joined, but selectAutoTeam asked the same question on the same " +
+                        "list a moment earlier said $oracle - the join path is not routing through it. " +
+                        "playable=$before"
+            )
+            val had = assertNotNull(
+                before[joined],
+                "join ${i + 1} went to $joined, which holds no core. playable=$before"
+            )
+            val minOthers = (before - joined).values.minOrNull() ?: had
+            assertTrue(
+                had <= minOthers + 1,
+                "join ${i + 1} went to $joined, which already had $had players while the smallest other " +
+                        "core-holding team had $minOthers; the handicap guard allows at most minOthers + 1. " +
+                        "playable=$before"
+            )
+        }
 
         clientCommand.handleMessage("/status", player)
-
-        // Verify final counts
-        val finalCounts = activeTeams.map { teamData ->
-            players.count { it.player.team() == teamData.team }
-        }
-        // The one with lowest win rate should have 4, one with second lowest should have 3, others 2.
-        assertTrue(finalCounts.contains(4))
-        assertTrue(finalCounts.contains(3))
     }
 
     @Test
@@ -566,15 +684,65 @@ class FeatureTest {
             testPlayerData.totalPlayed = 88888
             testPlayerData.blockPlaceCount = 77777
 
-            tap(TapEvent(testPlayer, tile))
+            // What the code promises is an ordering, not a latency: CoreEvent.kt:286-302 is one
+            // coroutine that awaits `data.update()` at :291 and only then fires ServerTransfer at :299
+            // and calls Call.connect at :301, so the row is durable before anything hands the player
+            // over. The old assertion polled the row for three seconds after the tap and said nothing
+            // about the transfer - it would have passed just as happily had the write landed a minute
+            // after the player left, and it reddened whenever the write took longer than its budget,
+            // which is what made it the fifth flake in the base-rate measurement. So read the row at
+            // the instant the transfer fires instead.
+            val rowAtTransfer = AtomicReference<PlayerData?>(null)
+            val readFailure = AtomicReference<Throwable?>(null)
+            val transferSeen = AtomicBoolean(false)
+            val transferListener = Cons<CustomEvents.ServerTransfer> { ev ->
+                // Three other sites fire ServerTransfer - the warpZone branch below this one at
+                // CoreEvent.kt:330, and Trigger.kt:760 and :859 - and all three are live while this test
+                // runs. Answering for somebody else's transfer would read this row at a moment the write
+                // has not happened and redden for it.
+                if (ev.player.uuid() != testPlayerData.uuid) return@Cons
+                // `handled` is the documented seam for taking over the transfer. Setting it also keeps
+                // Call.connect out of it, which under test has no net provider and throws into the
+                // coroutine's exception handler.
+                ev.handled = true
+                try {
+                    rowAtTransfer.set(runBlocking { getPlayerData(testPlayerData.uuid) })
+                } catch (e: Throwable) {
+                    // Otherwise this is swallowed by the scope's CoroutineExceptionHandler and the test
+                    // reports "never reached the transfer" twelve seconds later, which is the wrong
+                    // diagnosis for a read that blew up.
+                    readFailure.set(e)
+                }
+                transferSeen.set(true)
+            }
+            Events.on(CustomEvents.ServerTransfer::class.java, transferListener)
+            try {
+                tap(TapEvent(testPlayer, tile))
 
-            assertTrue(
-                awaitCondition {
-                    val dbData = runBlocking { getPlayerData(testPlayerData.uuid) }
-                    dbData != null && dbData.exp == 99999 && dbData.totalPlayed == 88888 && dbData.blockPlaceCount == 77777 && !dbData.isConnected
-                },
-                "WarpBlock 탭 후 대상 서버 연결 전에 playerData가 DB에 즉시 저장되어야 합니다."
-            )
+                // The write's own ceiling is the connection pool's maxAcquireTime (Database.kt:128,
+                // ten seconds), so a shorter budget than that asserts a latency the code never
+                // promised. Nothing here rides on how long it takes - the assertions below are on what
+                // the row held when the transfer fired - so the wait only has to outlast the write.
+                assertTrue(
+                    awaitCondition(12000L) { transferSeen.get() },
+                    "the WarpBlock tap never reached the server transfer"
+                )
+                readFailure.get()?.let { throw AssertionError("reading the row at the transfer failed", it) }
+                val row = assertNotNull(
+                    rowAtTransfer.get(),
+                    "WarpBlock 탭 후 대상 서버 연결 전에 playerData가 DB에 즉시 저장되어야 합니다: " +
+                            "the player had no row at all when the transfer fired"
+                )
+                assertEquals(99999, row.exp, "exp was not durable when the transfer fired")
+                assertEquals(88888, row.totalPlayed, "totalPlayed was not durable when the transfer fired")
+                assertEquals(77777, row.blockPlaceCount, "blockPlaceCount was not durable when the transfer fired")
+                assertFalse(
+                    row.isConnected,
+                    "the row still claimed the player was connected here when the transfer fired"
+                )
+            } finally {
+                Events.remove(CustomEvents.ServerTransfer::class.java, transferListener)
+            }
         } finally {
             pluginData.data.warpBlock.clear()
             pluginData.data.warpBlock.addAll(originalWarpBlocks)
