@@ -1389,7 +1389,7 @@ class Commands {
                     return@launch
                 }
 
-                Core.app.post { player.sendMessage(bundle["command.ranking.wait"]) }
+                Core.app.post { playerData.send("command.ranking.wait") }
                 val time = mutableMapOf<Pair<String, String>, Int>()
                 val exp = mutableMapOf<Pair<String, String>, Int>()
                 val attack = mutableMapOf<Pair<String, String>, Int>()
@@ -1515,7 +1515,7 @@ class Commands {
                 }
 
                 Core.app.post {
-                    player.sendMessage(string.toString())
+                    playerData.sendDirect(string.toString())
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
