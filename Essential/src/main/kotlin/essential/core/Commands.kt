@@ -1061,11 +1061,9 @@ class Commands {
             prebuilt.add(Pair(build.toString(), options))
         }
 
-        playerData.status["page"] = "0"
-
         var mainMenu = 0
+        var page = 0
         mainMenu = registerOwnedMenu(playerData) { p, select ->
-            var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
                     if (page != 0) page--
@@ -1081,11 +1079,8 @@ class Commands {
                     Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
-                else -> {
-                    playerData.status.remove("page")
-                }
+                else -> {}
             }
-            playerData.status["page"] = page.toString()
         }
         Call.menu(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
     }
@@ -1339,11 +1334,9 @@ class Commands {
             prebuilt.add(Pair(build.toString(), options))
         }
 
-        playerData.status["page"] = "0"
-
         var mainMenu = 0
+        var page = 0
         mainMenu = registerOwnedMenu(playerData) { p, select ->
-            var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
                     if (page != 0) page--
@@ -1359,11 +1352,8 @@ class Commands {
                     Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
-                else -> {
-                    playerData.status.remove("page")
-                }
+                else -> {}
             }
-            playerData.status["page"] = page.toString()
         }
         Call.menu(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
     }
