@@ -29,6 +29,20 @@ class PagingMenuStalenessTest {
             field.isAccessible = true
             return (field.get(null) as Seq<*>).size - 1
         }
+
+        /**
+         * The id the block registered, not whatever the process registered last. `menuListeners`
+         * is process-wide, so "the last id" is a question about the whole JVM; the first newly
+         * registered index is this block's own. It matters here because the two menus this test
+         * addresses are opened either side of dozens of player joins, each of which pumps the
+         * app queue.
+         */
+        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
+            val before = lastMenuId()
+            block()
+            assertTrue(lastMenuId() > before, "$what should have registered its own menu, otherwise this test proves nothing")
+            return before + 1
+        }
     }
 
     @BeforeTest
@@ -54,10 +68,7 @@ class PagingMenuStalenessTest {
 
             // Opened first and never clicked: it stays registered (registerOwnedMenu leaks by design
             // again, per that revert) and stays reachable once whatever opens next is dismissed.
-            val beforeMaps = lastMenuId()
-            clientCommand.handleMessage("/maps", player)
-            val mapsMenu = lastMenuId()
-            assertTrue(mapsMenu > beforeMaps, "/maps should have registered its own menu, otherwise this test proves nothing")
+            val mapsMenu = menuRegisteredBy("/maps") { clientCommand.handleMessage("/maps", player) }
 
             // Enough players that /players has strictly more pages than /maps, so paging it can drive
             // the shared key past the end of /maps' own, smaller prebuilt array.
@@ -65,8 +76,7 @@ class PagingMenuStalenessTest {
                 extras.add(newPlayer().first)
             }
 
-            clientCommand.handleMessage("/players", player)
-            val playersMenu = lastMenuId()
+            val playersMenu = menuRegisteredBy("/players") { clientCommand.handleMessage("/players", player) }
             assertTrue(playersMenu > mapsMenu, "/players should have registered its own, later menu")
 
             // Page /players forward past mapsPages - each click used to read and rewrite the shared

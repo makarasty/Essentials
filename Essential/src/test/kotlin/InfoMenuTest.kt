@@ -28,6 +28,20 @@ class InfoMenuTest {
             field.isAccessible = true
             return (field.get(null) as Seq<*>).size - 1
         }
+
+        /**
+         * The id the block registered, not whatever the process registered last. `menuListeners`
+         * is process-wide and a menu id is an index into it, so anything else that registers in
+         * the window moves the last index without moving the one this block took - and a click on
+         * the wrong index reaches a different listener silently, because menuChoose only
+         * range-checks. The first newly registered index is this block's whatever else is going on.
+         */
+        private fun menuRegisteredBy(what: String, block: () -> Unit): Int {
+            val before = lastMenuId()
+            block()
+            assertTrue(lastMenuId() > before, "$what should have registered a menu, otherwise this test proves nothing")
+            return before + 1
+        }
     }
 
     @BeforeTest
@@ -43,13 +57,12 @@ class InfoMenuTest {
 
     private fun admin(): Player = newPlayer().first.also { setPermission(it, "admin", true) }
 
-    private fun openInfo(admin: Player, target: Player): Int {
-        val before = lastMenuId()
-        clientCommand.handleMessage("/info ${target.name}", admin)
-        val menu = lastMenuId()
-        assertTrue(menu > before, "/info should have registered its menu, otherwise this test proves nothing")
-        return menu
-    }
+    private fun openInfo(admin: Player, target: Player): Int =
+        menuRegisteredBy("/info") { clientCommand.handleMessage("/info ${target.name}", admin) }
+
+    /** Clicking an option that opens the next menu; returns that menu's own id. */
+    private fun choose(player: Player, menu: Int, option: Int): Int =
+        menuRegisteredBy("option $option") { Menus.menuChoose(player, menu, option) }
 
     @Test
     fun infoMenu_strangerCannotOpenTheBanMenu() {
@@ -58,12 +71,14 @@ class InfoMenuTest {
         val target = newPlayer().first
 
         val infoMenu = openInfo(admin, target)
+        // The one claim here that is genuinely about the whole list: nothing at all was registered.
+        // An extra registration from elsewhere can only make this a false red, never a false green.
         val before = lastMenuId()
         Menus.menuChoose(stranger, infoMenu, 1)
         assertEquals(before, lastMenuId(), "a stranger's click must not open the admin's ban menu")
 
-        Menus.menuChoose(admin, infoMenu, 1)
-        assertTrue(lastMenuId() > before, "the admin who opened the menu must still reach the ban menu")
+        // menuRegisteredBy fails with "option 1 should have registered a menu" if it does not.
+        choose(admin, infoMenu, 1)
     }
 
     @Test
@@ -76,9 +91,8 @@ class InfoMenuTest {
         val ipBannedBefore = Vars.netServer.admins.bannedIPs.contains(ip)
 
         val infoMenu = openInfo(admin, target)
-        Menus.menuChoose(admin, infoMenu, 1)
-        Menus.menuChoose(admin, lastMenuId(), 6)
-        val confirmMenu = lastMenuId()
+        val banMenu = choose(admin, infoMenu, 1)
+        val confirmMenu = choose(admin, banMenu, 6)
 
         Menus.menuChoose(stranger, confirmMenu, 0)
         assertFalse(Vars.netServer.admins.isIDBanned(uuid), "a stranger must not answer the admin's confirmation")
