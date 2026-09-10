@@ -107,10 +107,6 @@ class OwnedMenuTest {
         // re-registers nothing - that is exactly why it is the dangerous step: it leaves the ban
         // confirmation as the newest thing this admin has registered.
         val second = openInfo(admin, target)
-        assertNotEquals(
-            stale, second,
-            "two dialogs open at once for one player must not share a menu id - that is the defect"
-        )
         val durations = choose(admin, second, 1, "the ban menu")
         val confirm = choose(admin, durations, 6, "the permanent-ban confirmation")
 
@@ -137,6 +133,16 @@ class OwnedMenuTest {
         assertTrue(
             Vars.netServer.admins.isIDBanned(uuid),
             "the confirmation's own id must still ban, or the test above proves nothing"
+        )
+
+        // Last, and deliberately not first: the assertions above are about what a click does, which
+        // is the thing that matters and the thing a future design is free to secure some other way -
+        // follow-up menus, for instance, replace by id on the client instead of stacking, so a shared
+        // id would be inert. This one pins the mechanism this fix actually uses. If it ever fails
+        // while everything above passes, that is a design change and not a regression: read it,
+        // then replace it with whatever the new mechanism makes checkable. Do not just delete it.
+        assertNotEquals(
+            stale, second, "two dialogs open at once for one player must not share a menu id"
         )
 
         Vars.netServer.admins.unbanPlayerID(uuid)
