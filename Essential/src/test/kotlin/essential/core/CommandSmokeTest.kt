@@ -37,7 +37,7 @@ import mindustry.entities.units.BuildPlan
 import kotlin.test.*
 
 /**
- * A smoke test: twenty-six commands and events are invoked and the class asserts that nothing threw.
+ * A smoke test: twenty-five commands and events are invoked and the class asserts that nothing threw.
  *
  * It was born `@Ignore`d in the commit that added it (`f0e9f856`) and had never run once. Under the
  * name `CoverageTest` it was two of the suite's seven skips and claimed to measure coverage; three of
@@ -55,6 +55,15 @@ import kotlin.test.*
  * `testEventsDirect` fires engine events by hand. That is the shape that produced three false-green
  * achievement tests elsewhere in this audit, and it is only defensible here because the claim is
  * "the listener survives this event", not "the engine sends it".
+ *
+ * **What it leaves for the next class, and what does not clean it up.** `PluginTest`'s class-entry
+ * reset reloads the world only when the map differs, and this class does not change the map - `gen`
+ * is a no-op without `DEBUG_KEY`. So `logic.runWave()`'s wave and units, the four `randomTile()`
+ * blocks, the spawned dagger, the filled core and an 80-second sandstorm all survive into the next
+ * class. `resetPluginState()` does cover the plugin-side leftovers, and `isCheated` in particular:
+ * `/js`, `/fillitems`, `/setitem` and `/spawn` all set it, it suppresses exp at game over, and
+ * `essential.core.GameOverExpTest` runs after this class. The engine-side ban, the tempban row and
+ * the permission change are keyed to a per-test random uuid and IP, so they cannot collide.
  */
 class CommandSmokeTest {
     companion object {
@@ -117,11 +126,22 @@ class CommandSmokeTest {
         // 11. tempban
         serverCommand.handleMessage("tempban ${dummyPlayer.name()} 10")
 
-        // 12. gen
+        // 12. gen - measures nothing here: the whole body is gated on System.getenv("DEBUG_KEY"),
+        // which is unset on a dev machine and in CI, so this is a no-op that is kept only because a
+        // command that starts by reading an env var is still a command that can fail to parse.
         serverCommand.handleMessage("gen")
 
-        // 13. reload
-        serverCommand.handleMessage("reload")
+        // 13. reload is deliberately NOT invoked. Its posted body does `Main.conf = Main.reloadConf()`,
+        // which re-reads config.yaml, where every module flag is false - while PluginTest.loadPlugin()
+        // forces achievement, bridge, chat, discord, protect and web on precisely so the classes that
+        // test them can run. Nothing puts that back except a stopPlugin()/loadPlugin() pair, and every
+        // class that does one runs before this one. Worse, the mutation is inside Core.app.post and
+        // this class never pumps, so it would land in whichever later class pumps first, and the
+        // failure would not name the class that caused it. Permission.load() in the same handler
+        // discards in-memory permission state for the rest of the run on top of that.
+        //
+        // Reinstating it needs Main.conf saved, the queue pumped until the swap lands, and Main.conf
+        // put back - three steps that can each be raced, for one line of smoke coverage.
 
         // 14. debug
         serverCommand.handleMessage("debug")
