@@ -1706,11 +1706,20 @@ class Commands {
      * reference, or any class this does not know how to rebuild) so the caller can refuse the restore
      * rather than hand the block a value of the wrong type.
      */
-    private fun reconstructConfig(block: mindustry.world.Block, raw: String): Any? {
+    /**
+     * [kind] is the runtime class name the row was written with, or null for a row written before
+     * that column existed. It is a **hint**, not a lookup: a class name is coupled to Mindustry's
+     * internals, so an engine release that renames or moves a config class orphans every kind
+     * recorded before it. Putting the named class first and keeping the existing order-dependent
+     * loop behind it means a stale, unknown or absent kind degrades to exactly the previous
+     * behaviour rather than failing.
+     */
+    private fun reconstructConfig(block: mindustry.world.Block, raw: String, kind: String?): Any? {
         val configClasses = mutableListOf<Class<*>>()
         block.configurations.each { configClass, _ -> configClasses += configClass }
 
-        for (configClass in configClasses) {
+        val ordered = if (kind == null) configClasses else configClasses.sortedByDescending { it.name == kind }
+        for (configClass in ordered) {
             val value = when {
                 configClass == java.lang.Boolean::class.java -> raw.toBooleanStrictOrNull()
                 configClass == java.lang.Integer::class.java -> raw.toIntOrNull()
@@ -1732,6 +1741,17 @@ class Commands {
                 WorldHistoryBuffer.flush()
                 val history = getAllWorldHistory()
 
+                // Resolved here, in the coroutine, because findExact suspends - and once, because
+                // the match below runs per history entry. Found gives the uuid; Ambiguous and
+                // NotFound leave it null and every row falls back to the name match, which is what
+                // this command did before the column existed. Ambiguous is task-140's own condition,
+                // several accounts holding one exact name, and taking it deliberately is the point:
+                // the worst case after this change is exactly the behaviour before it.
+                //
+                // findExact also resolves a raw uuid and a #entityId ahead of any name comparison,
+                // so an admin who already knows the uuid can type it and skip names entirely.
+                val targetUuid = (PlayerLookup.findExact(arg[0]) as? PlayerLookup.Result.Found)?.value?.uuid
+
                 Core.app.post {
                     try {
                         var affectedCount = 0
@@ -1746,15 +1766,27 @@ class Commands {
                             // (CoreEvent.kt's TileLog construction uses target.name, not plainName()),
                             // and a colored or group-recolored name would otherwise never match a plain
                             // admin-typed arg[0] at all, turning the command into a silent no-op.
-                            // This narrows the match; it does not close it, because the stored name is a
-                            // snapshot, not a uuid, so two entries can still share one exact name if a
-                            // later player renamed to a name an earlier one already had. See ask/9b-*.md.
-                            val hasPlayerAction = entriesUnsorted.any { Strings.stripColors(it.player).equals(arg[0], ignoreCase = true) }
+                            // Rows written since the uuid column arrived are matched by account, which
+                            // closes that: a player who renamed to a name an earlier one used cannot
+                            // have the earlier one's work reverted under their name any more.
+                            //
+                            // NEITHER HALF OF `matches` MAY BE DROPPED. `e.uuid == null` is every row
+                            // written before this deploy, and losing the name fallback would make the
+                            // first rollback after the upgrade silently revert nothing on six servers
+                            // and look like the feature broke. `targetUuid == null` is an offline or
+                            // unknown player, or an ambiguous name, where the name is all there is.
+                            // The honest summary for an admin: sound for history recorded since the
+                            // upgrade, ambiguous before it.
+                            fun matches(e: WorldHistoryData) =
+                                if (targetUuid != null && e.uuid != null) e.uuid == targetUuid
+                                else Strings.stripColors(e.player).equals(arg[0], ignoreCase = true)
+
+                            val hasPlayerAction = entriesUnsorted.any { matches(it) }
                             if (!hasPlayerAction) return@forEach
 
                             val entries = entriesUnsorted.sortedBy { it.time }
 
-                            val firstIdx = entries.indexOfFirst { Strings.stripColors(it.player).equals(arg[0], ignoreCase = true) }
+                            val firstIdx = entries.indexOfFirst { matches(it) }
                             if (firstIdx == -1) return@forEach
 
                             val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
@@ -1808,10 +1840,14 @@ class Commands {
                             }
 
                             var desiredConfig: String? = null
+                            var desiredKind: String? = null
                             for (i in (firstIdx - 1) downTo 0) {
                                 val e = entries[i]
                                 if (e.value != null) {
                                     desiredConfig = e.value
+                                    // Off the same entry, inside the same branch: the type has to
+                                    // describe the value it was stored beside, not another row's.
+                                    desiredKind = e.kind
                                     break
                                 }
                             }
@@ -1833,7 +1869,7 @@ class Commands {
                                         // simple types below (a Point2 link, a live Building reference)
                                         // cannot be reconstructed from a bare string; refuse rather than
                                         // hand the block a value of the wrong type.
-                                        val configValue = reconstructConfig(block, desiredConfig)
+                                        val configValue = reconstructConfig(block, desiredConfig, desiredKind)
                                         if (configValue != null) {
                                             targetTile.build.configure(configValue)
                                         } else {
