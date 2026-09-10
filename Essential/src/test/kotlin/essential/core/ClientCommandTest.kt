@@ -268,21 +268,21 @@ class ClientCommandTest {
         // the assertion is real.
 
         // assertHide() used to live here. It asked /ranking for page after page and looked for the
-        // name in playerData.lastReceivedMessage - but /ranking answers with player.sendMessage(), and
-        // only PlayerData.send/err/sendDirect write lastReceivedMessage. So the ranking never reached
-        // the field it was being read out of: the loop saw no change on its first pass, ended, and
-        // reported "not present" every time. assertHide(x, true) was therefore vacuously true and
-        // assertHide(x, false) was unconditionally false - which the shadowed assertTrue swallowed.
-        // It cannot be repaired from the test side; ask/T-1.md proposes the one-word change in
-        // Commands.kt that would make /ranking observable.
+        // name in playerData.lastReceivedMessage - but the ranking list is sent with
+        // player.sendMessage(), and lastReceivedMessage is written only by PlayerData.send/err/
+        // sendDirect. The list therefore never reached the field it was being read out of, `exists`
+        // stayed false however many pages were asked for, and assertHide(x, true) was vacuously true
+        // while assertHide(x, false) was unconditionally false - which the shadowed assertTrue
+        // swallowed. It could not be repaired from the test side.
         //
         // What /ranking actually reads is PlayerTable.hideRanking, and that is asserted below
         // instead: it is the state under test, it is checkable, and it fails when it is wrong.
 
         // The previous version could not return false: the `exp != expected` case was taken by the
         // branch above it, so the only `return false` was unreachable, and its result was discarded at
-        // all three call sites anyway. It reads the offline copy when the player has left and falls
-        // back to the row, which is what the original was trying to express.
+        // all three call sites anyway. findPlayerData searches `players`, the online list, so once
+        // the player has left it returns null and this falls through to the row - which is the
+        // situation all three call sites are actually in.
         fun assertExp(uuid: String, exp: Int) {
             val reached = waitUntil(5000, 100) {
                 val cached = findPlayerData(uuid)?.exp
@@ -304,33 +304,33 @@ class ClientCommandTest {
         val dummy = newPlayer()
         clientCommand.handleMessage("/exp set 500 ${dummy.first.name}", player)
         sleep(100)
-        assertTrue { findPlayerData(dummy.first.uuid())?.exp == 500 }
+        assertTrue(findPlayerData(dummy.first.uuid())?.exp == 500,
+            "/exp set 500 <other> left exp at ${findPlayerData(dummy.first.uuid())?.exp}")
 
         // If player enter wrong value
         clientCommand.handleMessage("/exp set number", player)
         sleep(100)
         assertEquals(err("command.exp.invalid"), playerData.lastReceivedMessage)
 
-        // The row, not the in-memory flag: /ranking filters on PlayerTable.hideRanking, and `/exp
-        // hide` flips the field before it awaits the write. A test that reads only the object cannot
-        // tell "hidden" from "about to be hidden".
+        // The row, not the in-memory flag: /ranking filters on PlayerTable.hideRanking. The self
+        // branch of /exp hide awaits update() before it confirms, so reading the row after the
+        // confirmation is ordered; the other-player branch detaches the write into scope.launch and
+        // confirms first, which is why only that one is polled.
         fun storedHideRanking(uuid: String) = runBlocking { suspendTransaction { getPlayerData(uuid)?.hideRanking } }
 
         // Hides player's rank in the ranking list
         clientCommand.handleMessage("/exp hide", player)
-        assertTrue(
-            waitUntil { playerData.lastReceivedMessage == Bundle()["command.exp.ranking.hide"] },
-            "/exp hide did not confirm; last message was ${playerData.lastReceivedMessage}"
-        )
+        val hideConfirm = Bundle()["command.exp.ranking.hide"]
+        val hideSeen = observeMessages(playerData) { it == hideConfirm }
+        assertTrue(hideSeen.any { it == hideConfirm }, "/exp hide did not confirm, saw: $hideSeen")
         assertTrue(playerData.hideRanking, "/exp hide did not set hideRanking")
         assertEquals(true, storedHideRanking(player.uuid()), "/exp hide did not reach the row /ranking reads")
 
         // Un-hides player's rank in the ranking list
         clientCommand.handleMessage("/exp hide", player)
-        assertTrue(
-            waitUntil { playerData.lastReceivedMessage == Bundle()["command.exp.ranking.unhide"] },
-            "a second /exp hide did not confirm; last message was ${playerData.lastReceivedMessage}"
-        )
+        val unhideConfirm = Bundle()["command.exp.ranking.unhide"]
+        val unhideSeen = observeMessages(playerData) { it == unhideConfirm }
+        assertTrue(unhideSeen.any { it == unhideConfirm }, "a second /exp hide did not confirm, saw: $unhideSeen")
         assertFalse(playerData.hideRanking, "a second /exp hide did not clear hideRanking")
         assertEquals(false, storedHideRanking(player.uuid()), "/exp hide did not un-hide the row /ranking reads")
 
@@ -359,7 +359,8 @@ class ClientCommandTest {
         // Add other player exp value
         clientCommand.handleMessage("/exp add 500 ${dummy.first.name}", player)
         sleep(100)
-        assertTrue { findPlayerData(dummy.first.uuid())?.exp!! >= 1000 }
+        assertTrue((findPlayerData(dummy.first.uuid())?.exp ?: -1) >= 1000,
+            "/exp add 500 <other> left exp at ${findPlayerData(dummy.first.uuid())?.exp}")
 
         // Subtract value from current experience
         clientCommand.handleMessage("/exp remove 300", player)
