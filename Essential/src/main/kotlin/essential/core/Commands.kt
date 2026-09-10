@@ -955,10 +955,10 @@ class Commands {
 
         fun destroy(team: Team) {
             if (Groups.unit.size() < arg[1].toInt() || arg[1].toInt() == 0) {
-                Groups.unit.forEach { if (it.type() == unit && it.team == team) it.kill() }
+                Groups.unit.each { if (it.type() == unit && it.team == team) it.kill() }
             } else {
                 var count = 0
-                Groups.unit.forEach {
+                Groups.unit.each {
                     if (it.type() == unit && it.team == team && count != arg[1].toInt()) {
                         it.kill()
                         count++
@@ -980,11 +980,7 @@ class Commands {
                     playerData.err("command.killUnit.invalid.number")
                 }
             } else {
-                for (it in Groups.unit) {
-                    if (it.type() == unit && it.team == playerData.player.team()) {
-                        it.kill()
-                    }
-                }
+                Groups.unit.each { if (it.type() == unit && it.team == playerData.player.team()) it.kill() }
             }
         } else {
             playerData.err("command.killUnit.not.found")
@@ -997,13 +993,13 @@ class Commands {
         val bundle = Bundle()
 
         fun destroy(team: Team?) {
-            if (Groups.unit.size() < arg[1].toInt() || arg[1].toInt() == 0 && team != null) {
-                Groups.unit.forEach { if (it.type() == unit && it.team == team) it.kill() }
+            if (Groups.unit.size() < arg[1].toInt() || arg[1].toInt() == 0) {
+                Groups.unit.each { if (it.type() == unit && (team == null || it.team == team)) it.kill() }
             } else {
                 // todo 완료시 count 출력
                 var count = 0
-                Groups.unit.forEach {
-                    if (it.type() == unit && count != arg[1].toInt()) {
+                Groups.unit.each {
+                    if (it.type() == unit && (team == null || it.team == team) && count != arg[1].toInt()) {
                         it.kill()
                         count++
                     }
@@ -1024,11 +1020,7 @@ class Commands {
                     Log.err(bundle["command.killUnit.invalid.number"])
                 }
             } else {
-                for (it in Groups.unit) {
-                    if (it.type() == unit) {
-                        it.kill()
-                    }
-                }
+                Groups.unit.each { if (it.type() == unit) it.kill() }
             }
         } else {
             Log.err(bundle["command.killUnit.not.found"])
