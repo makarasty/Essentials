@@ -888,8 +888,13 @@ class Commands {
             if (Permission.check(playerData, "kill.other")) {
                 val other = PlayerLookup.online(arg[0], playerData)
                 if (other != null) {
-                    other.unit().kill()
-                    playerData.send("command.kill.done", other.plainName())
+                    val unit = other.unit()
+                    if (unit != null) {
+                        unit.kill()
+                        playerData.send("command.kill.done", other.plainName())
+                    } else {
+                        playerData.err("command.kill.no.unit", other.plainName())
+                    }
                 }
             } else {
                 playerData.send("command.permission.false")
@@ -901,8 +906,13 @@ class Commands {
     fun kill(arg: Array<out String>) {
         val other = PlayerLookup.online(arg[0])
         if (other != null) {
-            other.unit().kill()
-            Log.info(Bundle()["command.kill.done", other.plainName()])
+            val unit = other.unit()
+            if (unit != null) {
+                unit.kill()
+                Log.info(Bundle()["command.kill.done", other.plainName()])
+            } else {
+                Log.warn(Bundle()["command.kill.no.unit", other.plainName()])
+            }
         }
     }
 
@@ -945,10 +955,10 @@ class Commands {
 
         fun destroy(team: Team) {
             if (Groups.unit.size() < arg[1].toInt() || arg[1].toInt() == 0) {
-                Groups.unit.forEach { if (it.type() == unit && it.team == team) it.kill() }
+                Groups.unit.each { if (it.type() == unit && it.team == team) it.kill() }
             } else {
                 var count = 0
-                Groups.unit.forEach {
+                Groups.unit.each {
                     if (it.type() == unit && it.team == team && count != arg[1].toInt()) {
                         it.kill()
                         count++
@@ -970,11 +980,7 @@ class Commands {
                     playerData.err("command.killUnit.invalid.number")
                 }
             } else {
-                for (it in Groups.unit) {
-                    if (it.type() == unit && it.team == playerData.player.team()) {
-                        it.kill()
-                    }
-                }
+                Groups.unit.each { if (it.type() == unit && it.team == playerData.player.team()) it.kill() }
             }
         } else {
             playerData.err("command.killUnit.not.found")
@@ -987,13 +993,13 @@ class Commands {
         val bundle = Bundle()
 
         fun destroy(team: Team?) {
-            if (Groups.unit.size() < arg[1].toInt() || arg[1].toInt() == 0 && team != null) {
-                Groups.unit.forEach { if (it.type() == unit && it.team == team) it.kill() }
+            if (Groups.unit.size() < arg[1].toInt() || arg[1].toInt() == 0) {
+                Groups.unit.each { if (it.type() == unit && (team == null || it.team == team)) it.kill() }
             } else {
                 // todo 완료시 count 출력
                 var count = 0
-                Groups.unit.forEach {
-                    if (it.type() == unit && count != arg[1].toInt()) {
+                Groups.unit.each {
+                    if (it.type() == unit && (team == null || it.team == team) && count != arg[1].toInt()) {
                         it.kill()
                         count++
                     }
@@ -1014,11 +1020,7 @@ class Commands {
                     Log.err(bundle["command.killUnit.invalid.number"])
                 }
             } else {
-                for (it in Groups.unit) {
-                    if (it.type() == unit) {
-                        it.kill()
-                    }
-                }
+                Groups.unit.each { if (it.type() == unit) it.kill() }
             }
         } else {
             Log.err(bundle["command.killUnit.not.found"])
@@ -1059,11 +1061,9 @@ class Commands {
             prebuilt.add(Pair(build.toString(), options))
         }
 
-        playerData.status["page"] = "0"
-
         var mainMenu = 0
+        var page = 0
         mainMenu = registerOwnedMenu(playerData) { p, select ->
-            var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
                     if (page != 0) page--
@@ -1079,11 +1079,8 @@ class Commands {
                     Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
-                else -> {
-                    playerData.status.remove("page")
-                }
+                else -> {}
             }
-            playerData.status["page"] = page.toString()
         }
         Call.menu(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
     }
@@ -1337,11 +1334,9 @@ class Commands {
             prebuilt.add(Pair(build.toString(), options))
         }
 
-        playerData.status["page"] = "0"
-
         var mainMenu = 0
+        var page = 0
         mainMenu = registerOwnedMenu(playerData) { p, select ->
-            var page = playerData.status["page"]!!.toInt()
             when (select) {
                 0 -> {
                     if (page != 0) page--
@@ -1357,11 +1352,8 @@ class Commands {
                     Call.menu(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
                 }
 
-                else -> {
-                    playerData.status.remove("page")
-                }
+                else -> {}
             }
-            playerData.status["page"] = page.toString()
         }
         Call.menu(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
     }
@@ -1572,12 +1564,22 @@ class Commands {
                         val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
                         grouped.forEach { (pos, entriesUnsorted) ->
-                            val hasPlayerAction = entriesUnsorted.any { it.player.contains(arg[0], ignoreCase = true) }
+                            // Exact, not a substring: entries.player is a player-chosen display name, and
+                            // a substring match reverted bystanders too - "Bobby" matched a rollback of
+                            // "Bob", and renaming to contain someone else's name could redirect blame.
+                            // Stripped of color markup: "place"/"break" store the raw name
+                            // (CoreEvent.kt's TileLog construction uses target.name, not plainName()),
+                            // and a colored or group-recolored name would otherwise never match a plain
+                            // admin-typed arg[0] at all, turning the command into a silent no-op.
+                            // This narrows the match; it does not close it, because the stored name is a
+                            // snapshot, not a uuid, so two entries can still share one exact name if a
+                            // later player renamed to a name an earlier one already had. See ask/9b-*.md.
+                            val hasPlayerAction = entriesUnsorted.any { Strings.stripColors(it.player).equals(arg[0], ignoreCase = true) }
                             if (!hasPlayerAction) return@forEach
 
                             val entries = entriesUnsorted.sortedBy { it.time }
 
-                            val firstIdx = entries.indexOfFirst { it.player.contains(arg[0], ignoreCase = true) }
+                            val firstIdx = entries.indexOfFirst { Strings.stripColors(it.player).equals(arg[0], ignoreCase = true) }
                             if (firstIdx == -1) return@forEach
 
                             val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
@@ -1725,7 +1727,10 @@ class Commands {
                         pluginData.hubMapName = Vars.state.map.name()
                         playerData.send("command.hub.mode.on")
                     } else if (pluginData.hubMapName != Vars.state.map.name()) {
-                        playerData.err("command.hub.mode.exists")
+                        // hubMapName is one value shared by every server (task-124, unfixed - see
+                        // ask/9b-1.md): naming it here at least tells the admin which map to look for,
+                        // and that if it is not one of this server's own, another server set it.
+                        playerData.err("command.hub.mode.exists.at", pluginData.hubMapName ?: "?")
                     } else {
                         pluginData.hubMapName = null
                         playerData.send("command.hub.mode.off")
