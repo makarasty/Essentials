@@ -103,8 +103,9 @@ import kotlin.time.ExperimentalTime
  *
  *  - An option click, which sends `menuChoose(id, option)` and then hides that dialog.
  *  - Escape or back, which arc's `Dialog.closeOnBack` turns into `menuChoose(id, -1)` and a hide.
- *    The engine range-checks the id and not the option, so -1 reaches the listener; every listener
- *    here falls through its `when`, which is why that has always been harmless.
+ *    The engine range-checks the id and not the option, so -1 reaches the dispatcher like any other
+ *    option. [dispatch] refuses it: a dismissal is not a choice, and one listener here treated it as
+ *    one.
  *
  * `Slot.open` counts the dialogs shown on a slot and [dispatch] retires one per click, so the pool
  * grows to the high-water mark of *concurrently open* owned dialogs and then stops. No id is ever
@@ -127,17 +128,12 @@ internal object OwnedMenus {
         var listener: ((Player, Int) -> kotlin.Unit)? = null
 
         /**
-         * Dialogs shown on this id that the client has not answered or dismissed yet, plus one for a
-         * slot that has been claimed and not yet shown. `/info` registers its listener and only shows
-         * it after resolving the target - which for an offline target is a database round-trip and a
-         * `Core.app.post` later - so a slot that counted only shown dialogs would be the first free
-         * slot throughout that window, and the next command would take it and leave `/info`'s late
-         * show pointing at somebody else's listener.
+         * Dialogs shown on this id that the client has not answered or dismissed yet.
+         *
+         * This counts shows, not claims, which is only safe because every caller registers and shows
+         * adjacently on the main thread - see the note on [register].
          */
         var open = 0
-
-        /** Set by [register], cleared by the first [show]; see [open]. */
-        var awaitingFirstShow = false
 
         /** Allocation order, so a caller can name the slot a block took. */
         var seq = 0L
@@ -171,13 +167,19 @@ internal object OwnedMenus {
             ?: newSlot()
         slot.owner = owner.uuid
         slot.listener = listener
-        // One, not zero: the slot is claimed from here until its first show, which is not the same
-        // instant. Resetting rather than incrementing also matters for the branch above - a slot
-        // taken from a departed owner still carries their count, and leaving it would keep that slot
-        // permanently ineligible for the first branch, so every menu the next player opened would be
-        // handed the same recycled id: the shared-id defect back again, by way of its own fix.
-        slot.open = 1
-        slot.awaitingFirstShow = true
+        // Reset rather than left alone, for the branch above: a slot taken from a departed owner
+        // still carries their count, and leaving it would keep that slot permanently ineligible for
+        // the first branch, so every menu the next player opened would be handed the same recycled
+        // id - the shared-id defect back again, by way of its own fix.
+        //
+        // Zero, not one, because a registered slot is free until it is shown. THAT IS ONLY SAFE
+        // BECAUSE EVERY CALLER SHOWS IMMEDIATELY, on the same main-thread turn. `/info` used to
+        // register at the top of the command and show only after resolving the target - a database
+        // round-trip and a `Core.app.post` away for an offline one - and the slot was the first free
+        // one for that whole window. If you add a caller that cannot show at once, do not add a
+        // reservation flag here: move the registration down to where the show is, the way `/info`
+        // did. Accounting for the gap leaks a slot for every registration that never shows.
+        slot.open = 0
         slot.seq = ++allocations
         slot.id
     }
@@ -190,7 +192,7 @@ internal object OwnedMenus {
      * so neither reuse branch will take it - and the pool grows by one per such cycle.
      */
     fun release(uuid: String) = synchronized(slots) {
-        slots.forEach { if (it.owner == uuid) { it.open = 0; it.awaitingFirstShow = false } }
+        slots.forEach { if (it.owner == uuid) it.open = 0 }
     }
 
     /**
@@ -199,13 +201,7 @@ internal object OwnedMenus {
      * that counted registrations rather than shows would be handed away with a live dialog on it.
      */
     fun show(con: NetConnection?, id: Int, title: String, message: String, options: Array<Array<String>>) {
-        synchronized(slots) {
-            slots.firstOrNull { it.id == id }?.let { slot ->
-                // The first show spends the reservation [register] made; every later one is a paging
-                // menu putting a second dialog on the same id and has to be counted.
-                if (slot.awaitingFirstShow) slot.awaitingFirstShow = false else slot.open++
-            }
-        }
+        synchronized(slots) { slots.firstOrNull { it.id == id }?.let { it.open++ } }
         Call.menu(con, id, title, message, options)
     }
 
@@ -228,6 +224,15 @@ internal object OwnedMenus {
             s to (if (player.uuid() == s.owner) s.listener else null)
         }
         listener ?: return
+        // arc's Dialog.closeOnBack turns escape into menuChoose(id, -1), so a negative option means
+        // the player dismissed the dialog rather than picking anything. No owned menu wants to act on
+        // that, and one of them very much did: /info's duration menu tested `if (s <= 5)`, which -1
+        // satisfies, so escaping out of it popped a ban confirmation whose index 0 is "ban". The slot
+        // is still retired below - the dialog did close.
+        if (option < 0) {
+            synchronized(slots) { if (slot.open > 0) slot.open-- }
+            return
+        }
         try {
             listener(player, option)
         } finally {
@@ -804,165 +809,6 @@ class Commands {
                 arrayOf(bundle[close])
             )
 
-            val mainMenu = OwnedMenus.register(playerData) { p, select ->
-                when (select) {
-                    1 if !isBanned -> {
-                        val innerMenu = OwnedMenus.register(playerData) { _, s ->
-                            val time: Int = when (s) {
-                                0 -> 10
-                                1 -> 60
-                                2 -> 1440
-                                3 -> 10080
-                                4 -> 20160
-                                5 -> 43800
-                                6 -> -1
-                                else -> 0
-                            }
-
-                            try {
-                                val timeText = bundle["info.button.tempban.${
-                                    when (s) {
-                                        0 -> "10min"
-                                        1 -> "1hour"
-                                        2 -> "1day"
-                                        3 -> "1week"
-                                        4 -> "2week"
-                                        5 -> "1month"
-                                        6 -> "permanent"
-                                        else -> ""
-                                    }
-                                }"]
-
-                                if (s <= 5) {
-                                    val tempBanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
-                                        if (i == 0) {
-                                            require(targetData != null) {
-                                                "DB error?"
-                                            }
-                                            targetData!!.banExpireDate =
-                                                Clock.System.now().plus(time.minutes).toLocalDateTime(systemTimezone)
-                                            // The ban itself is applied below regardless (banPlayerID does
-                                            // not depend on this row), so a failed write here is a durability
-                                            // problem, not a "nothing happened" one - the admin is told rather
-                                            // than the confirm silently going through. Captured now: targetData
-                                            // is a mutable var that a later /info call can repoint before this
-                                            // coroutine's Core.app.post runs.
-                                            val bannedTarget = targetData!!
-                                            scope.launch {
-                                                if (!bannedTarget.update()) {
-                                                    Core.app.post { playerData.err("command.tempBan.db.failed", bannedTarget.name) }
-                                                }
-                                            }
-                                            Events.fire(
-                                                CustomEvents.PlayerTempBanned(
-                                                    targetData!!.name,
-                                                    p.plainName(),
-                                                    Clock.System.now().plus(time.minutes).toString()
-                                                )
-                                            )
-                                            val uuid = targetData!!.uuid
-                                            val label = Undo.label(uuid)
-                                            // As in the server /tempban path: banPlayerID returns false when the
-                                            // target was already banned and did nothing, so an undo entry that
-                                            // reverts via Undo.unban must not be recorded here — it would fully
-                                            // lift a ban that predates this menu action.
-                                            val freshBan = Vars.netServer.admins.banPlayerID(uuid)
-                                            if (targetData!!.player.con() != null) {
-                                                targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
-                                            }
-                                            if (freshBan) {
-                                                Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
-                                            } else {
-                                                playerData.send(
-                                                    "command.tempBan.already.banned",
-                                                    targetData!!.name,
-                                                    targetData!!.banExpireDate.toString()
-                                                )
-                                            }
-                                        }
-                                    }
-                                    OwnedMenus.show(
-                                        p.con(),
-                                        tempBanConfirmMenu,
-                                        bundle["info.tempBan.title"],
-                                        bundle["info.tempBan.confirm", timeText] + lineBreak,
-                                        arrayOf(arrayOf(bundle[ban], bundle[cancel]))
-                                    )
-                                } else if (s == 6) {
-                                    val banConfirmMenu = OwnedMenus.register(playerData) { _, i ->
-                                        if (i == 0) {
-                                            val uuid = targetData!!.uuid
-                                            val label = Undo.label(uuid)
-                                            val ipBanned = Undo.ban(uuid)
-                                            Undo.record(playerData, "ban", uuid, label) { Undo.unban(it, ipBanned) }
-                                        }
-                                    }
-                                    // 영구 차단
-                                    OwnedMenus.show(
-                                        p.con(),
-                                        banConfirmMenu,
-                                        bundle["info.ban.title"],
-                                        bundle["info.ban.confirm"] + lineBreak,
-                                        arrayOf(arrayOf(bundle[ban], bundle[cancel]))
-                                    )
-                                }
-                            } catch (_: MissingResourceException) {
-                            }
-                        }
-                        OwnedMenus.show(
-                            p.con(),
-                            innerMenu,
-                            bundle["info.tempBan.title"],
-                            bundle["info.tempBan.confirm"] + lineBreak,
-                            banMenus
-                        )
-                    }
-
-                    1 -> {
-                        val unbanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
-                            if (i == 0) {
-                                targetData!!.banExpireDate = null
-                                // Captured now: targetData is a mutable var a later /info call can repoint
-                                // before this coroutine's Core.app.post runs. The unban itself (below) does
-                                // not depend on this write succeeding; only its durability does.
-                                val unbannedTarget = targetData!!
-                                scope.launch {
-                                    if (!unbannedTarget.update()) {
-                                        Core.app.post { playerData.err("command.unban.db.failed", unbannedTarget.name) }
-                                    }
-                                }
-                                unbanPlayer(targetData)
-                                Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
-                                playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
-                                val uuid = targetData!!.uuid
-                                Undo.record(
-                                    playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
-                                ) { Undo.ban(it) }
-                            }
-                        }
-                        OwnedMenus.show(
-                            p.con(),
-                            unbanConfirmMenu,
-                            bundle["info.unban.title"],
-                            bundle["info.unban.confirm", targetData!!.name] + lineBreak,
-                            arrayOf(arrayOf(bundle["info.button.unban"], bundle[cancel]))
-                        )
-                    }
-
-                    2 -> {
-                        if (targetData != null && targetData!!.player.con() != null) {
-                            val uuid = targetData!!.uuid
-                            val label = Undo.label(uuid)
-                            targetData!!.player.kick(Packets.KickReason.kick)
-                            Undo.record(
-                                playerData, "kick", uuid, label,
-                                alternativeKey = "command.undo.button.ban", alternative = { Undo.ban(it) }
-                            ) { Undo.liftKick(it) }
-                        }
-                    }
-                }
-            }
-
             fun open(other: PlayerData) {
                 val info = Vars.netServer.admins.getInfo(other.uuid)
                 isBanned = Vars.netServer.admins.isIDBanned(other.uuid) || Vars.netServer.admins.isIPBanned(info.lastIP)
@@ -977,6 +823,175 @@ class Commands {
                     unbanControlMenus
                 }
                 targetData = other
+                // Registered here rather than at the top of the command, and that placement is
+                // the fix rather than a tidy-up: a menu id is free until it is shown, and this
+                // is the only place that shows one. Registering above meant every /info that
+                // never resolved a target - a typo, an ambiguous prefix, a temporary account -
+                // left an id claimed by a menu that would never appear, and every /info on an
+                // offline target left one claimed across a database round-trip that the next
+                // command could take. Register and show are one main-thread turn apart now.
+                val mainMenu = OwnedMenus.register(playerData) { p, select ->
+                    when (select) {
+                        1 if !isBanned -> {
+                            val innerMenu = OwnedMenus.register(playerData) { _, s ->
+                                val time: Int = when (s) {
+                                    0 -> 10
+                                    1 -> 60
+                                    2 -> 1440
+                                    3 -> 10080
+                                    4 -> 20160
+                                    5 -> 43800
+                                    6 -> -1
+                                    else -> 0
+                                }
+
+                                try {
+                                    val timeText = bundle["info.button.tempban.${
+                                        when (s) {
+                                            0 -> "10min"
+                                            1 -> "1hour"
+                                            2 -> "1day"
+                                            3 -> "1week"
+                                            4 -> "2week"
+                                            5 -> "1month"
+                                            6 -> "permanent"
+                                            else -> ""
+                                        }
+                                    }"]
+
+                                    if (s <= 5) {
+                                        val tempBanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
+                                            if (i == 0) {
+                                                require(targetData != null) {
+                                                    "DB error?"
+                                                }
+                                                targetData!!.banExpireDate =
+                                                    Clock.System.now().plus(time.minutes).toLocalDateTime(systemTimezone)
+                                                // The ban itself is applied below regardless (banPlayerID does
+                                                // not depend on this row), so a failed write here is a durability
+                                                // problem, not a "nothing happened" one - the admin is told rather
+                                                // than the confirm silently going through. Captured now: targetData
+                                                // is a mutable var that a later /info call can repoint before this
+                                                // coroutine's Core.app.post runs.
+                                                val bannedTarget = targetData!!
+                                                scope.launch {
+                                                    if (!bannedTarget.update()) {
+                                                        Core.app.post { playerData.err("command.tempBan.db.failed", bannedTarget.name) }
+                                                    }
+                                                }
+                                                Events.fire(
+                                                    CustomEvents.PlayerTempBanned(
+                                                        targetData!!.name,
+                                                        p.plainName(),
+                                                        Clock.System.now().plus(time.minutes).toString()
+                                                    )
+                                                )
+                                                val uuid = targetData!!.uuid
+                                                val label = Undo.label(uuid)
+                                                // As in the server /tempban path: banPlayerID returns false when the
+                                                // target was already banned and did nothing, so an undo entry that
+                                                // reverts via Undo.unban must not be recorded here — it would fully
+                                                // lift a ban that predates this menu action.
+                                                val freshBan = Vars.netServer.admins.banPlayerID(uuid)
+                                                if (targetData!!.player.con() != null) {
+                                                    targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
+                                                }
+                                                if (freshBan) {
+                                                    Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
+                                                } else {
+                                                    playerData.send(
+                                                        "command.tempBan.already.banned",
+                                                        targetData!!.name,
+                                                        targetData!!.banExpireDate.toString()
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        OwnedMenus.show(
+                                            p.con(),
+                                            tempBanConfirmMenu,
+                                            bundle["info.tempBan.title"],
+                                            bundle["info.tempBan.confirm", timeText] + lineBreak,
+                                            arrayOf(arrayOf(bundle[ban], bundle[cancel]))
+                                        )
+                                    } else if (s == 6) {
+                                        val banConfirmMenu = OwnedMenus.register(playerData) { _, i ->
+                                            if (i == 0) {
+                                                val uuid = targetData!!.uuid
+                                                val label = Undo.label(uuid)
+                                                val ipBanned = Undo.ban(uuid)
+                                                Undo.record(playerData, "ban", uuid, label) { Undo.unban(it, ipBanned) }
+                                            }
+                                        }
+                                        // 영구 차단
+                                        OwnedMenus.show(
+                                            p.con(),
+                                            banConfirmMenu,
+                                            bundle["info.ban.title"],
+                                            bundle["info.ban.confirm"] + lineBreak,
+                                            arrayOf(arrayOf(bundle[ban], bundle[cancel]))
+                                        )
+                                    }
+                                } catch (_: MissingResourceException) {
+                                    // Dead: Bundle.get returns the key when the bundle does not
+                                    // contain it (Bundle.kt:49-50) rather than throwing. Left in
+                                    // place because deleting it is churn unrelated to this
+                                    // change, and it costs nothing here.
+                                }
+                            }
+                            OwnedMenus.show(
+                                p.con(),
+                                innerMenu,
+                                bundle["info.tempBan.title"],
+                                bundle["info.tempBan.confirm"] + lineBreak,
+                                banMenus
+                            )
+                        }
+
+                        1 -> {
+                            val unbanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
+                                if (i == 0) {
+                                    targetData!!.banExpireDate = null
+                                    // Captured now: targetData is a mutable var a later /info call can repoint
+                                    // before this coroutine's Core.app.post runs. The unban itself (below) does
+                                    // not depend on this write succeeding; only its durability does.
+                                    val unbannedTarget = targetData!!
+                                    scope.launch {
+                                        if (!unbannedTarget.update()) {
+                                            Core.app.post { playerData.err("command.unban.db.failed", unbannedTarget.name) }
+                                        }
+                                    }
+                                    unbanPlayer(targetData)
+                                    Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
+                                    playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
+                                    val uuid = targetData!!.uuid
+                                    Undo.record(
+                                        playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                                    ) { Undo.ban(it) }
+                                }
+                            }
+                            OwnedMenus.show(
+                                p.con(),
+                                unbanConfirmMenu,
+                                bundle["info.unban.title"],
+                                bundle["info.unban.confirm", targetData!!.name] + lineBreak,
+                                arrayOf(arrayOf(bundle["info.button.unban"], bundle[cancel]))
+                            )
+                        }
+
+                        2 -> {
+                            if (targetData != null && targetData!!.player.con() != null) {
+                                val uuid = targetData!!.uuid
+                                val label = Undo.label(uuid)
+                                targetData!!.player.kick(Packets.KickReason.kick)
+                                Undo.record(
+                                    playerData, "kick", uuid, label,
+                                    alternativeKey = "command.undo.button.ban", alternative = { Undo.ban(it) }
+                                ) { Undo.liftKick(it) }
+                            }
+                        }
+                    }
+                }
                 OwnedMenus.show(
                     playerData.player.con(),
                     mainMenu,

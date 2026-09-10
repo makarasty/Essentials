@@ -152,30 +152,66 @@ class OwnedMenuTest {
     }
 
     /**
-     * A slot is claimed by `register`, not by the show that follows it, and the two are not the same
-     * instant. `/info` registers its listener at the top and shows it only after resolving the
-     * target - which for an offline target is a database round-trip on `Dispatchers.IO` and a
-     * `Core.app.post` later. If a slot were free during that window the next command would take it,
-     * and `/info`'s late show would put its dialog under somebody else's listener: an admin running
-     * `/info offlineA` then `/info onlineB` would ban B by clicking A's menu.
+     * A menu id is free until it is shown, so a command must register one only where it shows it.
      *
-     * Driven directly rather than through the two commands, because the point is the window itself
-     * and reproducing it through `/info` means racing a coroutine.
+     * `/info` used to register at the top and show only after resolving the target, and
+     * `PlayerLookup.offline` returns null for a name nobody has, for an ambiguous prefix, and for a
+     * `temporary` account - so those `/info` calls opened no menu at all and their id belonged to
+     * nothing that would ever appear. An id held by a menu that never shows is an id the pool cannot
+     * hand out and the engine cannot prune: one permanent listener per mistyped `/info`, which is the
+     * leak this class exists to close.
      */
     @Test
-    fun aClaimedMenuIdIsNotHandedOutAgainBeforeItIsShown() {
-        val (player, data) = newPlayer()
+    fun anInfoThatNeverResolvesATargetRegistersNothing() {
+        val admin = admin()
         try {
-            val claimed = OwnedMenus.register(data) { _, _ -> }
-            val next = OwnedMenus.register(data) { _, _ -> }
-            assertNotEquals(
-                claimed, next,
-                "a registered menu must keep its id until it is shown, or a command that resolves its " +
-                    "target slowly has its dialog opened under the next command's listener"
+            val before = menuListenerCount()
+            val allocationsBefore = OwnedMenus.allocationCount
+
+            repeat(5) { clientCommand.handleMessage("/info no-such-player-${System.nanoTime()}", admin) }
+
+            assertEquals(
+                allocationsBefore, OwnedMenus.allocationCount,
+                "an /info that resolves no target must not claim a menu id"
+            )
+            assertEquals(
+                before, menuListenerCount(),
+                "...and must not leave the pool registering a fresh engine listener for the next menu"
             )
         } finally {
-            leavePlayer(player)
+            leavePlayer(admin)
         }
+    }
+
+    /**
+     * Escape is not a choice. arc's `Dialog.closeOnBack` turns it into `menuChoose(id, -1)`, and the
+     * engine range-checks the id but not the option, so -1 reaches the listener like any other.
+     *
+     * `/info`'s duration menu tested `if (s <= 5)` to decide "a timed ban rather than a permanent
+     * one", which -1 satisfies. So backing out of the ban menu opened a ban confirmation the admin
+     * never asked for, with `time` of 0 - and index 0 on it is "ban", which is the click this whole
+     * class exists to stop being dangerous.
+     */
+    @Test
+    fun escapingTheBanDurationMenuDoesNotOpenAConfirmation() {
+        val admin = admin()
+        val target = newPlayer().first
+        val uuid = target.uuid()
+
+        val infoMenu = openInfo(admin, target)
+        val durations = choose(admin, infoMenu, 1, "the ban menu")
+
+        val before = OwnedMenus.allocationCount
+        Menus.menuChoose(admin, durations, -1)
+
+        assertEquals(
+            before, OwnedMenus.allocationCount,
+            "escaping out of the ban menu must not open anything, least of all a ban confirmation"
+        )
+        assertFalse(
+            Vars.netServer.admins.isIDBanned(uuid),
+            "and it must certainly not ban"
+        )
     }
 
     /**
