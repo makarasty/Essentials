@@ -288,25 +288,29 @@ class PluginTest {
          * code logged, this threw, and the test failed for a reason unrelated to its assertion. That
          * is a large part of why the error paths this audit found defective had no coverage.
          *
-         * Two limits worth knowing before you trust it, both measured rather than argued:
+         * **It is live for the whole run.** It used to guard only the classes before the first
+         * `stopPlugin()` - installed here on the cold-boot path, which runs once per JVM, and taken
+         * off again by `stopPlugin` restoring the pristine logger, which nothing undid. Chip T
+         * measured that split as 39 tests of 360 guarded. [stopPlugin] now reinstalls it, on its
+         * last line, and the cost was measured over a full suite with all three databases up:
+         * exactly one test failed, `WorldHistoryBufferBoundsTest.aFailedWriteKeepsItsRowsForTheNextFlush`,
+         * which declares its deliberate error with [expectingErrors] and is the only opt-in here.
          *
-         * 1. **It is not live for most of the suite.** It is installed here, on the cold-boot path,
-         *    which runs once per JVM; [stopPlugin] puts `baseLogHandler` back and nothing reinstalls
-         *    it. So it guards only the classes that run before the first `stopPlugin()`.
-         * 2. **The throw lands wherever the log call was.** A `Log.err` from a coroutine worker throws
-         *    on that worker and prints `Exception in thread "DefaultDispatcher-worker-N"`; the test
-         *    thread never sees it and the test passes. One inside a `runCatching` or a broad `catch`
-         *    in the plugin is swallowed outright.
+         * **The limit durability does not fix, and you must not read past it.** The throw lands on
+         * whichever thread logged. A `Log.err` from a coroutine worker throws on that worker and
+         * prints `Exception in thread "DefaultDispatcher-worker-N"` - the test thread never sees it
+         * and the test passes. One inside a `runCatching` or a broad `catch` in the plugin is
+         * swallowed outright. Both are real here, not hypothetical: the certifying run detected
+         * undeclared errors in `PermissionOfflineApplyTest` and `FeatureTest` and failed neither, and
+         * the plugin's own `CoroutineExceptionHandler` (`Main.kt:66-68`) logs a second error line when
+         * the first throw escapes a `scope.launch`, so one defect can appear twice and still fail
+         * nothing.
          *
-         * Making it durable would fix the first and **not** the second: reinstalling the handler
-         * buys the property for the other seventy-seven classes, but only for errors logged on
-         * the test thread and not caught. Do not read "durable" as "covers everything". The shape
-         * that would close both is to collect unexpected errors at log time and assert on that
-         * list at the end of the test, on the JUnit thread; that is a bigger change than this
-         * wave, and it is recorded in `answers/T-2.md`.
-         *
-         * The durable half is measured but held: `ask/T-3.md` and `answers/T-3.md` carry the
-         * numbers and the two diffs, ready for whoever has the live databases up.
+         * So the property enforced is: *a test must not pass while the plugin logs an **undeclared
+         * error on the JUnit thread**.* Anything logged off-thread reaches the console and nobody
+         * else. The shape that would close that is to collect unexpected errors at log time and
+         * assert on the list at the end of the test, on the JUnit thread; it is a bigger change than
+         * this wave and is recorded in `answers/T-2.md`.
          */
         fun errorGuardingHandler(base: Log.LogHandler, tap: (String) -> Unit): Log.LogHandler =
             Log.LogHandler { level, text ->
@@ -569,7 +573,6 @@ class PluginTest {
         }
 
         fun stopPlugin() {
-            Log.logger = errorGuardingHandler(baseLogHandler) {}
             listenerBaseline?.let { baseline ->
                 eventListenerTable().forEach { entry -> entry.value.truncate(baseline[entry.key] ?: 0) }
                 listenerBaseline = null
@@ -651,6 +654,17 @@ class PluginTest {
 
             TransactionManager.defaultDatabase = null
             pluginLoaded = false
+
+            // Last, not first. This line is what keeps the error guard alive for every class
+            // after the first stopPlugin(): it used to restore the pristine logger here and
+            // nothing put the guard back, so the guard protected four classes and nothing else.
+            // It goes at the END because everything above is teardown - an error logged on this
+            // thread while the databases shut down or the data directory is walked would
+            // otherwise throw out of the middle of stopPlugin, leaving pluginLoaded true,
+            // TransactionManager.defaultDatabase un-nulled and the H2 files undeleted, which
+            // (per the comment above) surfaces three classes later as somebody else's
+            // precondition failing rather than as a fault here.
+            Log.logger = errorGuardingHandler(baseLogHandler) {}
         }
 
         fun updateTick(times: Int) {

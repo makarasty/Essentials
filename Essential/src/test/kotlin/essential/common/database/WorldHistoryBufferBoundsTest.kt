@@ -37,10 +37,18 @@ class WorldHistoryBufferBoundsTest {
 
     @AfterTest
     fun teardown() {
-        previousLogger?.let { Log.logger = it }
-        previousLogger = null
+        // Table first, logger last. The flush loop runs every FLUSH_INTERVAL_MS (200 ms) on
+        // Dispatchers.IO and `aStalledDatabaseBoundsTheQueueAndSaysSoOnce` leaves 20050 rows queued
+        // against a dropped table, so restoring the guard before the table put a live guard in front
+        // of a tick that is guaranteed to fail. It never fired - the test and its teardown take about
+        // 28 ms, inside one tick - but that is timing, not correctness, and this box runs several
+        // sessions at once. When it did fire the throw would land on the IO worker, fail nothing, and
+        // skip `requeueOldest` in WorldHistoryBuffer.flushBatch, destroying the batch this class
+        // exists to prove is kept.
         runCatching { runBlocking { restoreTable() } }
         runCatching { runBlocking { WorldHistoryBuffer.discard() } }
+        previousLogger?.let { Log.logger = it }
+        previousLogger = null
     }
 
     private suspend fun dropTable() = suspendTransaction(db = worldHistoryDatabase) {
@@ -70,10 +78,14 @@ class WorldHistoryBufferBoundsTest {
         // deliberately provokes it. Declared rather than silenced - every other error line still
         // throws inside the block.
         //
-        // The allowance opens at the drop and closes once the table is back, rather than wrapping the
-        // forced flush alone: `WorldHistoryBuffer.start` runs a flush loop every FLUSH_INTERVAL_MS
-        // (200 ms) on Dispatchers.IO, so while the table is gone the ticker logs the same line on its
-        // own schedule, outside any single call this test makes.
+        // The allowance spans the drop through the restore rather than the forced flush alone, so
+        // that a flush loop tick landing while the table is gone is covered too.
+        //
+        // Be careful reading a green here as proof this ran. `flushBatch` gates that line behind
+        // `allowedNow(lastFlushWarn)` - WARN_INTERVAL_MS is 60000 against a process-global AtomicLong
+        // (WorldHistoryBuffer.kt:50, :62, :313) - so the whole JVM emits it at most once a minute.
+        // Whether this test provokes it at all depends on what earlier classes already spent that
+        // budget on, which makes the underlying failure order-dependent rather than deterministic.
         expectingErrors("[WorldHistoryBuffer] flush failed") {
             runBlocking { dropTable() }
 
