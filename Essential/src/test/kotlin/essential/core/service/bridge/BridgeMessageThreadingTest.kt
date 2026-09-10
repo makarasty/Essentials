@@ -1,6 +1,7 @@
 package essential.core.service.bridge
 
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.pumpApp
 import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
@@ -11,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -70,6 +72,10 @@ class BridgeMessageThreadingTest {
             client.cancel()
             server.shutdown()
             serverThread.interrupt()
+            // The received message posts a Call.sendMessage to Core.app's queue, which nothing in
+            // this test pumps - drain it here rather than leave it to run against whatever class the
+            // suite happens to load next, where a failure would log through that class's guard.
+            pumpApp()
         }
     }
 
@@ -88,6 +94,13 @@ class BridgeMessageThreadingTest {
 
         try {
             socket = Socket("127.0.0.1", freePort)
+            // readBridgeLine blocks indefinitely by design - it is also the client/server's normal
+            // read loop, which legitimately waits forever for the next message. On this test's own
+            // thread, with no server response coming, that turned a broken assertion into a wedged
+            // JVM (confirmed: reverting the server's relay to prove the assertion below is real hung
+            // this test rather than failing it, and outlived the test process itself). A per-socket
+            // read timeout keeps a real defect here a fast, named failure instead.
+            socket.soTimeout = 5000
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
             val writer = BufferedWriter(OutputStreamWriter(socket.getOutputStream()))
 
@@ -107,11 +120,21 @@ class BridgeMessageThreadingTest {
             writer.flush()
 
             // The relay's local display runs on the game thread via Core.app.post, which nothing
-            // pumps in this test - so what is checked here is that adding it did not make the
-            // handler throw or close the connection, not that a display actually rendered.
-            // `server.clients` holds the server's own accepted Socket, never identical to this
-            // test's client-side `socket`, so non-empty (there is only ever one client here) is the
-            // right check rather than an `===` match that could never hold either way.
+            // pumps in this test - so what is checked here is not that a display actually rendered,
+            // but that the handler ran to completion and the relay it always did still works: this
+            // raw socket is itself in `server.clients` (added at connect time), so sendAll's echo
+            // sends the relayed message straight back to it. Reading that echo back, rather than
+            // only checking the connection survived, is load-bearing - a version of this test that
+            // asserted `server.clients.isNotEmpty()` alone stayed green with the entire "message"
+            // branch deleted, an opus reviewer caught it in the earlier commit that added it.
+            val echoedCommand = readBridgeLine(reader)
+            assertEquals("message", echoedCommand, "the server must still echo the relayed command back")
+            val echoedPayload = readBridgeLine(reader)?.let(::decodeBridgePayload)
+            assertEquals(
+                "host-display-probe",
+                echoedPayload,
+                "the server must still relay the broadcast payload unchanged after the local-display fix"
+            )
             assertTrue(
                 waitFor(2000) { server.clients.isNotEmpty() },
                 "the connection must still be tracked as an open client after a relayed broadcast"
@@ -120,6 +143,8 @@ class BridgeMessageThreadingTest {
             socket?.close()
             server.shutdown()
             serverThread.interrupt()
+            // Same reason as the test above: the relay posts its own Call.sendMessage.
+            pumpApp()
         }
     }
 

@@ -184,6 +184,11 @@ class Client : Runnable {
                 // Written synchronously, not queued through sendPayload/messageQueue, because
                 // BridgeService.dispose() calls cancel() (which stops the writer coroutine)
                 // immediately after this returns.
+                // Accepted: send() runs on the caller's thread (dispose() calls it from the game
+                // thread) and this write has no timeout, unlike the read side's soTimeout - a stalled
+                // peer with a full TCP receive window blocks shutdown indefinitely. 5 bytes, so the
+                // exposure is narrow; upgrade path if it ever bites is moving this write onto the
+                // daemon executor with a bounded join, the way the rest of this class treats socket IO.
                 val activeWriter = writer
                 if (activeWriter != null) {
                     try {

@@ -280,10 +280,15 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 else -> 8
             }
         }
-        // Ruled in answers/9-2.md: a bare `1 -> 2` above would also block the one case that works
-        // today, a single player alone on the whole server voting `map` (the `solo` hatch at
-        // Commands.kt). The floor exists to stop one person deciding for others, so where `players`
-        // (server-wide) holds nobody else, it has nothing to do.
+        // Ruled in answers/9-2.md: a bare `1 -> 2` above would also block a case that works today.
+        // Not the solo `map` vote (Commands.kt's `solo` hatch there bypasses VoteSystem entirely
+        // when players.size == 1, straight to a direct Vars.world.loadMap with no threshold involved)
+        // - it is a lone vote.admin holder (Commands.kt's eligibleVoters <= 3 gate is skipped for
+        // that permission) starting any other vote type with nobody else on the server. Their own
+        // seeded vote already passes at the table's `1 -> 1`; a bare floor of 2 would make that
+        // permanently unreachable, since there is no second player who could ever supply it. The
+        // floor exists to stop one person deciding for others, so where `players` (server-wide)
+        // holds nobody else, it has nothing to do.
         return if (players.size == 1) threshold else maxOf(2, threshold)
     }
 
