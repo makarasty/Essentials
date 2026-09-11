@@ -191,90 +191,89 @@ object Trigger {
                             }
 
                             val memory = mutableListOf<Pair<Playerc, Triple<String, Float, Float>>>()
-                            val iterator = data.warpBlock.iterator()
-                            while (iterator.hasNext()) {
-                                val value = iterator.next()
-                                if (Vars.state.map.name() == value.mapName) {
-                                    val tile = Vars.world.tile(value.x, value.y)
-                                    if (tile.block() == Blocks.air) {
-                                        iterator.remove()
-                                    } else {
-                                        var margin = 0f
-                                        var isDup = false
-                                        val x = tile.build.getX()
+                            val warpBlocks = data.warpBlock.toList()
+                            for (value in warpBlocks) {
+                                if (Vars.state.map.name() != value.mapName) continue
+                                val tile = Vars.world.tile(value.x, value.y)
+                                if (tile.block() == Blocks.air) {
+                                    data.warpBlock.remove(value)
+                                    continue
+                                }
 
-                                        when (value.size) {
-                                            1 -> margin = 8f
-                                            2 -> {
-                                                margin = 16f
-                                                isDup = true
-                                            }
+                                var margin = 0f
+                                var isDup = false
+                                val x = tile.build.getX()
 
-                                            3 -> margin = 16f
-                                            4 -> {
-                                                margin = 24f
-                                                isDup = true
-                                            }
-
-                                            5 -> margin = 24f
-                                            6 -> {
-                                                margin = 32f
-                                                isDup = true
-                                            }
-
-                                            7 -> margin = 32f
-                                        }
-
-                                        var y = tile.build.getY() + if (isDup) margin - 8 else margin
-
-                                        var alive = false
-                                        var alivePlayer = 0
-                                        var currentMap = ""
-                                        serverInfo.forEach {
-                                            try {
-                                                val address = InetAddress.getByName(value.ip).hostAddress
-                                                if ((it.address == value.ip || it.address == address) && it.port == value.port) {
-                                                    alive = true
-                                                    alivePlayer = it.players
-                                                    currentMap = it.mapname
-                                                }
-                                            } catch (_: UnknownHostException) {
-                                                Log.warn("Could not find a matching address $value.ip:$value.port")
-                                            } catch (_: Exception) {
-
-                                            }
-                                        }
-
-                                        if (alive) {
-                                            if (isDup) y += 4
-                                            Groups.player.forEach { a ->
-                                                memory.add(
-                                                    a to Triple(
-                                                        "$currentMap\n[white][yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
-                                                        x,
-                                                        y
-                                                    )
-                                                )
-                                            }
-                                            value.online = true
-                                        } else {
-                                            Groups.player.forEach { a ->
-                                                memory.add(
-                                                    a to Triple(
-                                                        Bundle(a.locale)["event.server.warp.offline"],
-                                                        x,
-                                                        y
-                                                    )
-                                                )
-                                            }
-                                            value.online = false
-                                        }
-
-                                        if (isDup) margin -= 4
-                                        Groups.player.forEach { a ->
-                                            memory.add(a to Triple(value.description, x, tile.build.getY() - margin))
-                                        }
+                                when (value.size) {
+                                    1 -> margin = 8f
+                                    2 -> {
+                                        margin = 16f
+                                        isDup = true
                                     }
+
+                                    3 -> margin = 16f
+                                    4 -> {
+                                        margin = 24f
+                                        isDup = true
+                                    }
+
+                                    5 -> margin = 24f
+                                    6 -> {
+                                        margin = 32f
+                                        isDup = true
+                                    }
+
+                                    7 -> margin = 32f
+                                }
+
+                                var y = tile.build.getY() + if (isDup) margin - 8 else margin
+
+                                var alive = false
+                                var alivePlayer = 0
+                                var currentMap = ""
+                                serverInfo.forEach {
+                                    try {
+                                        val address = InetAddress.getByName(value.ip).hostAddress
+                                        if ((it.address == value.ip || it.address == address) && it.port == value.port) {
+                                            alive = true
+                                            alivePlayer = it.players
+                                            currentMap = it.mapname
+                                        }
+                                    } catch (_: UnknownHostException) {
+                                        Log.warn("Could not find a matching address $value.ip:$value.port")
+                                    } catch (_: Exception) {
+
+                                    }
+                                }
+
+                                if (alive) {
+                                    if (isDup) y += 4
+                                    Groups.player.forEach { a ->
+                                        memory.add(
+                                            a to Triple(
+                                                "$currentMap\n[white][yellow]$alivePlayer[] ${Bundle(a.locale)["event.server.warp.players"]}",
+                                                x,
+                                                y
+                                            )
+                                        )
+                                    }
+                                    value.online = true
+                                } else {
+                                    Groups.player.forEach { a ->
+                                        memory.add(
+                                            a to Triple(
+                                                Bundle(a.locale)["event.server.warp.offline"],
+                                                x,
+                                                y
+                                            )
+                                        )
+                                    }
+                                    value.online = false
+                                }
+
+                                if (isDup) margin -= 4
+                                Groups.player.forEach { a ->
+                                    memory.add(a to Triple(value.description, x, tile.build.getY() - margin))
                                 }
                             }
 
