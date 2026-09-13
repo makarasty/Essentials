@@ -39,26 +39,32 @@ object Config {
         }
     }
 
-    fun hasMissingKeys(userNode: YamlNode, canonicalNode: YamlNode): Boolean {
-        if (userNode is YamlMap && canonicalNode is YamlMap) {
-            val userKeys = userNode.entries.keys.map { it.content }.toSet()
-            for ((keyNode, canonicalValue) in canonicalNode.entries) {
-                val key = keyNode.content
-                if (key !in userKeys) {
-                    return true
-                }
-                val userValue = userNode.entries.entries.find { it.key.content == key }?.value
-                if (userValue == null) {
-                    return true
-                }
-                if (hasMissingKeys(userValue, canonicalValue)) {
-                    return true
-                }
-            }
-        } else if (canonicalNode is YamlMap) {
-            return true
+    fun hasMissingKeys(userNode: YamlNode, canonicalNode: YamlNode): Boolean =
+        missingKeys(userNode, canonicalNode).isNotEmpty()
+
+    /**
+     * Keys the canonical content carries that the user's file does not, by their full path.
+     *
+     * Worth naming rather than counting, because a missing key is not always the harmless "this build
+     * added a setting" it looks like. A default is an expression, not a constant: `BridgeConfig.port`
+     * rolls a fresh random port and `WebConfig.sessionSecret` a fresh secret every time one of them is
+     * used to fill an absent key, and the migration re-save then writes that new value to disk. The
+     * operator sees a bridge that stopped pairing, or every web session logged out, and nothing in the
+     * log connects it to the key that went missing.
+     */
+    fun missingKeys(userNode: YamlNode, canonicalNode: YamlNode, path: String = ""): List<String> {
+        if (userNode !is YamlMap || canonicalNode !is YamlMap) {
+            // A section the user wrote as something other than a block of settings counts as missing
+            // whole, root included - which is what the boolean this replaced answered there too.
+            return if (canonicalNode is YamlMap) listOf(path.ifEmpty { "(whole file)" }) else emptyList()
         }
-        return false
+        val user = userNode.entries.entries.associate { it.key.content to it.value }
+        return canonicalNode.entries.entries.flatMap { (keyNode, canonicalValue) ->
+            val key = keyNode.content
+            val full = if (path.isEmpty()) key else "$path.$key"
+            val userValue = user[key]
+            if (userValue == null) listOf(full) else missingKeys(userValue, canonicalValue, full)
+        }
     }
 
     /**
@@ -186,17 +192,29 @@ object Config {
                 if (unknownKeys.isNotEmpty()) {
                     Log.warn(bundle["config.unknown.keys", name, unknownKeys.joinToString(", ")])
                 }
-                if (hasMissingKeys(userNode, canonicalNode) || hasMissingComments(content, canonicalContent)) {
+                val absentKeys = missingKeys(userNode, canonicalNode)
+                if (absentKeys.isNotEmpty()) {
+                    Log.warn(bundle["config.missing.keys", name, absentKeys.joinToString(", ")])
+                }
+                if (absentKeys.isNotEmpty() || hasMissingComments(content, canonicalContent)) {
                     // The re-save writes the whole file from the parsed object, so the comments,
                     // ordering and quoting in it go with it.
                     val lostComments = extraComments(content, canonicalContent)
                     if (lostComments.isNotEmpty()) {
                         Log.warn(bundle["config.rewrite.comments", name, lostComments.size.toString()])
                     }
+                    var rewritable = true
                     if (unknownKeys.isNotEmpty() || lostComments.isNotEmpty()) {
-                        backup(name, content)?.let { Log.warn(bundle["config.rewrite.backup", name, it]) }
+                        // Whether one was already there decides what a failed copy means: with an
+                        // earlier backup the operator's file is preserved either way, without one the
+                        // rewrite would be exactly the unrecoverable case backup() exists to prevent.
+                        val kept = rootPath.child("config/$name.bak").exists()
+                        val copied = backup(name, content)
+                        copied?.let { Log.warn(bundle["config.rewrite.backup", name, it]) }
+                        rewritable = copied != null || kept
+                        if (!rewritable) Log.err(bundle["config.rewrite.skipped", name])
                     }
-                    save(name, serializer, config)
+                    if (rewritable) save(name, serializer, config)
                 }
             } catch (e: Exception) {
                 Log.err("Error migrating config $name: ${e.message}")

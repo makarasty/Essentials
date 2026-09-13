@@ -113,8 +113,16 @@ fun runEverySecond() {
         if (conf.pvp.peace.enabled && Vars.state.rules.pvp && Vars.state.isPlaying && pvpCount > 0) {
             pvpCount--
             if (pvpCount == 0) {
-                Vars.state.rules.blockDamageMultiplier = originalBlockMultiplier
-                Vars.state.rules.unitDamageMultiplier = originalUnitMultiplier
+                // Only restore what is still zeroed. The cached pair is what the rules held before
+                // peace started, and peace lasts minutes: anything that set a multiplier in the
+                // meantime - another plugin, a rules edit - owns it now, and writing the cache back
+                // over it would revert a change nobody asked to revert.
+                if (Vars.state.rules.blockDamageMultiplier == 0f) {
+                    Vars.state.rules.blockDamageMultiplier = originalBlockMultiplier
+                }
+                if (Vars.state.rules.unitDamageMultiplier == 0f) {
+                    Vars.state.rules.unitDamageMultiplier = originalUnitMultiplier
+                }
                 // The rules reach a client once, with the world snapshot. Without this the client
                 // keeps predicting the peace multipliers and shows damage the server discards.
                 Call.setRules(Vars.state.rules)

@@ -45,6 +45,20 @@ class APMTracker {
         private val lastTapTimes = ConcurrentHashMap<String, Long>()
         val playerPlans = ConcurrentHashMap<String, HashSet<PlanKey>>()
 
+        /**
+         * Stands in for "this player has no build plans", so the tick loop below does not allocate a
+         * fresh empty set per player per tick for everybody who is not building. Never mutated: the
+         * loop replaces the stored set, it never adds to one.
+         */
+        private val NO_PLANS = HashSet<PlanKey>(0)
+
+        /** Hoisted out of [updatePlayerAPM], which runs once a second per player and on every action. */
+        private val APM_LEVELS = listOf(
+            50 to Achievement.APM50,
+            100 to Achievement.APM100,
+            200 to Achievement.APM200
+        )
+
         private var initialized = false
 
         init {
@@ -95,12 +109,19 @@ class APMTracker {
                     }
 
                     val currentPlans = unit.plans() ?: continue
-                    val currentSet = HashSet<PlanKey>(currentPlans.size)
-                    for (plan in currentPlans) {
-                        currentSet.add(PlanKey(plan.x, plan.y, plan.breaking, plan.block, plan.rotation))
-                    }
-
                     val prev = playerPlans[data.uuid]
+                    val currentSet = if (currentPlans.isEmpty()) {
+                        NO_PLANS
+                    } else {
+                        HashSet<PlanKey>(currentPlans.size).apply {
+                            for (plan in currentPlans) {
+                                add(PlanKey(plan.x, plan.y, plan.breaking, plan.block, plan.rotation))
+                            }
+                        }
+                    }
+                    // Nothing queued this tick and nothing queued last tick: the two diff walks below
+                    // have nothing to walk and the store would write back what is already there.
+                    if (prev === currentSet) continue
                     if (prev != null) {
                         // Check additions (each 1 buildPlan added to queue)
                         for (plan in currentSet) {
@@ -193,21 +214,16 @@ class APMTracker {
                 return
             }
 
-            val recentTimestamps = data.apmTimestamps.filter { currentTime - it <= APM_WINDOW_SIZE }
+            // count, not filter: this walks up to MAX_ACTION_TIMESTAMPS entries once a second per
+            // player and on every tracked action, and only the size of the result was ever used.
+            val recent = data.apmTimestamps.count { currentTime - it <= APM_WINDOW_SIZE }
             val windowSizeMinutes = APM_WINDOW_SIZE / (60.0 * 1000.0)
-            val apm = if (recentTimestamps.isNotEmpty()) (recentTimestamps.size / windowSizeMinutes).toInt() else 0
 
-            data.apm = apm
-
-            val levels = listOf(
-                Pair(50, Achievement.APM50),
-                Pair(100, Achievement.APM100),
-                Pair(200, Achievement.APM200)
-            )
+            data.apm = if (recent > 0) (recent / windowSizeMinutes).toInt() else 0
 
             val playerStarts = thresholdStartTimes.computeIfAbsent(data.uuid) { mutableMapOf() }
 
-            for ((threshold, achievement) in levels) {
+            for ((threshold, achievement) in APM_LEVELS) {
                 if (data.apm >= threshold) {
                     val startTime = playerStarts[threshold]
                     if (startTime == null) {
@@ -241,10 +257,8 @@ class APMTracker {
             }
 
             val currentTime = System.currentTimeMillis()
-            val recentTimestamps = data.apmTimestamps.filter { currentTime - it <= APM_WINDOW_SIZE }
-
             val windowSizeMinutes = APM_WINDOW_SIZE / (60.0 * 1000.0)
-            val totalActions = recentTimestamps.size
+            val totalActions = data.apmTimestamps.count { currentTime - it <= APM_WINDOW_SIZE }
 
             return "APM: ${data.apm} (${totalActions} actions in last ${windowSizeMinutes.toInt()} minutes)"
         }

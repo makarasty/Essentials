@@ -84,7 +84,10 @@ class AchievementController {
         val completed = getPlayerAchievements(dbData).map { it.achievementName.lowercase() }.toSet()
 
         // Load achievement names/descriptions in the account's language.
-        val bundle = resolveAchievementBundle(Locale.forLanguageTag(dbData.languageTag.replace("_", "-")))
+        // localeTag, so a /lang choice reaches the web page too. The row is detached from any
+        // connection here, so it resolves to the stored tag or the server language, never to
+        // whichever client happens to be online.
+        val bundle = resolveAchievementBundle(Locale.forLanguageTag(dbData.localeTag().replace("_", "-")))
 
         fun localized(prefix: String, key: String, fallback: String): String = try {
             bundle.getString("$prefix.$key")

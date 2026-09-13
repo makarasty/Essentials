@@ -462,6 +462,17 @@ object Permission {
     }
 
     /**
+     * Commands every group may run, whatever permission.yaml says.
+     *
+     * permission.yaml is written once, on the boot that finds it missing, and never gains a node
+     * afterwards - so a command added in a later build is denied to everybody on every server that
+     * has been running for a while. For most commands that is the safe direction. `/lang` only
+     * changes which language the server answers its caller in, and a player who cannot read the
+     * server has no way to ask an operator for the node.
+     */
+    private val ALWAYS_ALLOWED = setOf("lang")
+
+    /**
      * Whether the group [data] resolves to holds the node [command], or the wildcard `all`. A group
      * name no role in permission.yaml defines answers false.
      *
@@ -489,6 +500,7 @@ object Permission {
      * setperm into a non-admin group strips a vanilla admin's flag.
      */
     fun check(data: PlayerData, command: String): Boolean {
+        if (command in ALWAYS_ALLOWED) return true
         val group = main[this[data].group]
         return if (group != null) {
             val passed = group.permission.contains(command) || group.permission.contains("all")

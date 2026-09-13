@@ -19,7 +19,14 @@ class WebService : Plugin() {
                 require(config != null) {
                     Log.err(bundle["event.plugin.load.failed"])
                 }
-                config
+                if (config.sessionSecret.isBlank()) {
+                    val minted = config.copy(sessionSecret = generateSessionSecret())
+                    Config.save("config_web.yaml", WebConfig.serializer(), minted)
+                    Log.info("[Web] A session secret was generated and written to config_web.yaml. Keep it: replacing it signs every open session out.")
+                    minted
+                } else {
+                    config
+                }
             }
         }
     }

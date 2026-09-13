@@ -52,6 +52,7 @@ user:
     - effect
     - help
     - info
+    - lang
     - maps
     - me
     - motd
@@ -80,5 +81,6 @@ visitor:
   default: true
   permission:
     - help
+    - lang
     - login
     - reg

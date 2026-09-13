@@ -54,6 +54,9 @@ import kotlin.time.Clock
 import kotlin.time.Instant
 import essential.common.database.data.update
 
+/** Mindustry colour tags, stripped before a name is re-coloured. Compiled once: [Trigger] used to
+ *  build this inside the one-second loop, so it was recompiled per animated player per second. */
+private val colorTag = Regex("\\[(.*?)]")
 
 class Trigger {
     companion object {
@@ -621,12 +624,14 @@ class Trigger {
         var trackTick = 0
 
         Events.run(EventType.Trigger.update) {
-            val stale = players.filter { it.player.con() == null || it.player.con().hasDisconnected }
-            if (stale.isNotEmpty()) {
-                players.removeAll(stale.toSet())
-                return@run
-            }
+            // removeIf rather than filter + removeAll: this runs 60 times a second and the list it
+            // was building is empty on all but the tick a player actually drops.
+            if (players.removeIf { it.player.con() == null || it.player.con().hasDisconnected }) return@run
             trackTick++
+            // Read once per tick, not once per player per warp zone. Null when no zone is defined,
+            // which is what skips the walk entirely on the servers that have none.
+            val warpZones = pluginData.data.warpZone
+            val warpMapName = if (warpZones.isEmpty()) null else Vars.state.map.name()
             for (data in players) {
                 val registeredTeam = pvpPlayer[data.uuid]
                 if (Vars.state.rules.pvp
@@ -735,15 +740,16 @@ class Trigger {
 
                 // A player with no unit (dead on a team that has no core left to respawn from) keeps
                 // unit() at null indefinitely, and tileOn() is nullable in its own right.
-                val unitTile = data.player.unit()?.tileOn()
-                for (two in pluginData.data.warpZone) {
-                    if (unitTile == null || two.mapName != Vars.state.map.name() || two.click) continue
+                // Last thing this loop does for a player, so both guards are a plain continue.
+                val unitTile = data.player.unit()?.tileOn() ?: continue
+                if (warpMapName == null) continue
+                for (two in warpZones) {
+                    if (two.mapName != warpMapName || two.click) continue
                     val start = two.startTile ?: continue
                     val finish = two.finishTile ?: continue
                     if (isUnitInside(unitTile, start, finish)) {
                         Log.info(Bundle()["log.warp.move", data.player.plainName(), two.ip, two.port.toString()])
 
-                        val currentMapName = Vars.state.map.name()
                         val hubMapName = pluginData.hubMapName
                         scope.launch {
                             data.lastPlayedWorldName = Vars.state.map.plainName()
@@ -752,7 +758,7 @@ class Trigger {
                             data.isConnected = false
                             data.update()
 
-                            if (hubMapName != null && currentMapName == hubMapName) {
+                            if (hubMapName != null && warpMapName == hubMapName) {
                                 val targetServerName = "${two.ip}:${two.port}"
                                 val hubConnectionTime = Instant.fromEpochMilliseconds(data.player.con().connectTime).toLocalDateTime(systemTimezone)
                                 grantRoutingPermission(data.player.uuid(), hubMapName, targetServerName, two.port, hubConnectionTime)
@@ -814,7 +820,7 @@ class Trigger {
                 it.currentPlayTime++
 
                 if (it.animatedName) {
-                    val name = it.name.replace("\\[(.*?)]".toRegex(), "")
+                    val name = it.name.replace(colorTag, "")
                     it.player.name(rainbow(name))
                 } else if (conf.feature.name.restoreStored && !it.status.containsKey("router")) {
                     // Off by default: this used to overwrite the player's nickname every
@@ -903,15 +909,23 @@ class Trigger {
             if (conf.feature.motd.enabled) {
                 messageCount += 60
                 if (messageCount >= conf.feature.motd.time) {
+                    // One read per language present, not one per player: a full server used to do
+                    // dozens of exists()+readString() calls on the game thread for the same file.
+                    // Scoped to this pass, so an edited file is still picked up next time round.
+                    // Empty string stands for "no file for this language": getOrPut treats a null
+                    // value as absent and would read the disk again for every player without one.
+                    val perLocale = HashMap<String, String>()
                     players.forEach {
-                        val message = if (rootPath.child("messages/${it.player.locale()}.txt").exists()) {
-                            rootPath.child("messages/${it.player.locale()}.txt").readString()
-                        } else if (rootPath.child("messages").list().isNotEmpty()) {
-                            val file = rootPath.child("messages/en.txt")
-                            if (file.exists()) file.readString() else null
-                        } else {
-                            null
-                        }
+                        val message = perLocale.getOrPut(it.player.locale()) {
+                            if (rootPath.child("messages/${it.player.locale()}.txt").exists()) {
+                                rootPath.child("messages/${it.player.locale()}.txt").readString()
+                            } else if (rootPath.child("messages").list().isNotEmpty()) {
+                                val file = rootPath.child("messages/en.txt")
+                                if (file.exists()) file.readString() else ""
+                            } else {
+                                ""
+                            }
+                        }.ifEmpty { null }
                         if (message != null) {
                             val c = message.lines()
 

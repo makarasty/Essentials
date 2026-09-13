@@ -29,6 +29,8 @@ import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.LocalDateTime
@@ -56,7 +58,11 @@ import mindustry.type.Item
 import mindustry.type.UnitType
 import mindustry.ui.Menus
 import mindustry.world.Tile
+import org.jetbrains.exposed.v1.core.Column
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.r2dbc.deleteWhere
@@ -64,6 +70,7 @@ import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mindrot.jbcrypt.BCrypt
+import java.util.Locale
 import java.util.MissingResourceException
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
@@ -1210,6 +1217,35 @@ class Commands {
         }
     }
 
+    @ClientCommand("lang", "[language/auto]", "Choose the language this server writes to you in.")
+    fun lang(playerData: PlayerData, arg: Array<out String>) {
+        val available = Bundle.translations.joinToString(", ")
+        if (arg.isEmpty()) {
+            playerData.send("command.lang.current", playerData.localeTag(), available)
+            return
+        }
+
+        if (arg[0].equals("auto", true)) {
+            playerData.languageChoice = null
+            scope.launch { playerData.update() }
+            // Read after clearing the choice, so it names the language they are actually getting now.
+            playerData.send("command.lang.auto", playerData.localeTag())
+            return
+        }
+
+        val tag = parseLocaleOrDefault(arg[0])
+        if (tag == null || !Bundle.translated(Locale.forLanguageTag(tag.replace('_', '-')))) {
+            playerData.err("command.lang.unknown", arg[0], available)
+            return
+        }
+
+        playerData.languageChoice = tag
+        scope.launch { playerData.update() }
+        // Sent after the choice is set, so the confirmation itself is in the language they picked -
+        // which is the only way to tell a wrong pick apart from a broken bundle.
+        playerData.send("command.lang.set", tag)
+    }
+
     @ClientCommand("log", description = "Enable block history view mode")
     fun log(playerData: PlayerData) {
         playerData.viewHistoryMode = !playerData.viewHistoryMode
@@ -1573,128 +1609,125 @@ class Commands {
                 }
 
                 Core.app.post { playerData.send("command.ranking.wait") }
-                val time = mutableMapOf<Pair<String, String>, Int>()
-                val exp = mutableMapOf<Pair<String, String>, Int>()
-                val attack = mutableMapOf<Pair<String, String>, Int>()
-                val placeBlock = mutableMapOf<Pair<String, String>, Int>()
-                val breakBlock = mutableMapOf<Pair<String, String>, Int>()
-                val pvp = mutableMapOf<Pair<String, String>, Triple<Short, Short, Short>>()
 
-                suspendTransaction {
-                    if (arg[0].lowercase() == "pvp") {
-                        PlayerTable.select(
-                            PlayerTable.name,
-                            PlayerTable.uuid,
-                            PlayerTable.hideRanking,
-                            PlayerTable.pvpWinCount,
-                            PlayerTable.pvpLoseCount,
-                            PlayerTable.pvpEliminatedCount
-                        ).collect {
-                            if (!it[PlayerTable.hideRanking]) {
-                                pvp[Pair(it[PlayerTable.name], it[PlayerTable.uuid])] = Triple(
-                                    it[PlayerTable.pvpWinCount],
-                                    it[PlayerTable.pvpLoseCount],
-                                    it[PlayerTable.pvpEliminatedCount]
-                                )
-                            }
-                        }
-                    } else {
-                        val type = when (arg[0].lowercase()) {
-                            "time" -> PlayerTable.totalPlayed
-                            "exp" -> PlayerTable.exp
-                            "attack" -> PlayerTable.attackClear
-                            "place" -> PlayerTable.blockPlaceCount
-                            "break" -> PlayerTable.blockBreakCount
-                            else -> PlayerTable.uuid // dummy
-                        }
-                        PlayerTable.select(PlayerTable.name, PlayerTable.uuid, PlayerTable.hideRanking, type).collect {
-                            if (!it[PlayerTable.hideRanking]) {
-                                when (arg[0].lowercase()) {
-                                    "time" -> time[Pair(it[PlayerTable.name], it[PlayerTable.uuid])] =
-                                        it[PlayerTable.totalPlayed]
-
-                                    "exp" -> exp[Pair(it[PlayerTable.name], it[PlayerTable.uuid])] = it[PlayerTable.exp]
-                                    "attack" -> attack[Pair(it[PlayerTable.name], it[PlayerTable.uuid])] =
-                                        it[PlayerTable.attackClear]
-
-                                    "place" -> placeBlock[Pair(it[PlayerTable.name], it[PlayerTable.uuid])] =
-                                        it[PlayerTable.blockPlaceCount]
-
-                                    "break" -> breakBlock[Pair(it[PlayerTable.name], it[PlayerTable.uuid])] =
-                                        it[PlayerTable.blockBreakCount]
-                                }
-                            }
-                        }
-                    }
+                val kind = arg[0].lowercase()
+                // The ordering column. Every ranking is "highest first" on exactly one column, so the
+                // database can do the sorting and the paging: this used to pull every row of every
+                // account on the shared database into a map, sort it in Kotlin and keep eight.
+                val sortColumn: Column<*> = when (kind) {
+                    "time" -> PlayerTable.totalPlayed
+                    "exp" -> PlayerTable.exp
+                    "attack" -> PlayerTable.attackClear
+                    "place" -> PlayerTable.blockPlaceCount
+                    "break" -> PlayerTable.blockBreakCount
+                    else -> PlayerTable.pvpWinCount
                 }
 
-                val d = when (arg[0].lowercase()) {
-                    "time" -> time.toList().sortedWith(compareBy { -it.second })
-                    "exp" -> exp.toList().sortedWith(compareBy { -it.second })
-                    "attack" -> attack.toList().sortedWith(compareBy { -it.second })
-                    "place" -> placeBlock.toList().sortedWith(compareBy { -it.second })
-                    "break" -> breakBlock.toList().sortedWith(compareBy { -it.second })
-                    "pvp" -> pvp.toList().sortedWith(compareBy { -it.second.first })
-                    else -> {
-                        return@launch
-                    }
-                }
-
-                val string = StringBuilder()
                 val per = 8
                 var page = if (arg.size == 2) abs(Strings.parseInt(arg[1])) else 1
-                val pages = Mathf.ceil(d.size.toFloat() / per)
                 page--
+
+                val total = suspendTransaction {
+                    PlayerTable.selectAll().where { PlayerTable.hideRanking eq false }.count()
+                }
+                val pages = Mathf.ceil(total.toFloat() / per)
 
                 if (page !in 0..<pages) {
                     Core.app.post { playerData.err("command.page.range", pages) }
                     return@launch
                 }
+
+                data class Rank(val name: String, val uuid: String, val value: Int, val lose: Int, val eliminated: Int)
+
+                val rows = suspendTransaction {
+                    PlayerTable.select(
+                        PlayerTable.name,
+                        PlayerTable.uuid,
+                        sortColumn,
+                        PlayerTable.pvpLoseCount,
+                        PlayerTable.pvpEliminatedCount
+                    ).where { PlayerTable.hideRanking eq false }
+                        .orderBy(sortColumn, SortOrder.DESC)
+                        .limit(per)
+                        .offset(page.toLong() * per)
+                        .map {
+                            Rank(
+                                it[PlayerTable.name],
+                                it[PlayerTable.uuid],
+                                when (kind) {
+                                    "time" -> it[PlayerTable.totalPlayed]
+                                    "exp" -> it[PlayerTable.exp]
+                                    "attack" -> it[PlayerTable.attackClear]
+                                    "place" -> it[PlayerTable.blockPlaceCount]
+                                    "break" -> it[PlayerTable.blockBreakCount]
+                                    else -> it[PlayerTable.pvpWinCount].toInt()
+                                },
+                                it[PlayerTable.pvpLoseCount].toInt(),
+                                it[PlayerTable.pvpEliminatedCount].toInt()
+                            )
+                        }.toList()
+                }
+
+                fun format(rank: Rank): String = when (kind) {
+                    "time" -> timeFormat(rank.value.toLong())
+                    "exp" -> "Lv.${Exp.calculateLevel(rank.value)} - ${rank.value}"
+                    else -> rank.value.toString()
+                }
+
+                fun pvpLine(position: Int, rank: Rank): String {
+                    val rate = round((rank.value.toFloat() / (rank.lose.toFloat() + rank.eliminated.toFloat())) * 100)
+                    return "[white]$position[] ${rank.name}[white] [yellow]-[] [green]${rank.value}${bundle["command.ranking.pvp.win"]}[] / [scarlet]${rank.lose}${bundle["command.ranking.pvp.lose"]}[] ($rate%)"
+                }
+
+                val string = StringBuilder()
                 string.append(bundle[firstMessage, page + 1, pages] + "\n")
 
-                for (a in per * page until (per * (page + 1)).coerceAtMost(d.size)) {
-                    if (arg[0].lowercase() == "pvp") {
-                        val rank = d[a].second as Triple<*, *, *>
-                        val win = (rank.first as Short).toInt()
-                        val defeat = (rank.second as Short).toInt()
-                        val elimination = (rank.third as Short).toInt()
-                        val rate = round((win.toFloat() / (defeat.toFloat() + elimination.toFloat())) * 100)
-                        string.append("[white]$a[] ${d[a].first.first}[white] [yellow]-[] [green]$win${bundle["command.ranking.pvp.win"]}[] / [scarlet]$defeat${bundle["command.ranking.pvp.lose"]}[] ($rate%)\n")
+                rows.forEachIndexed { index, rank ->
+                    val position = per * page + index
+                    if (kind == "pvp") {
+                        string.append(pvpLine(position, rank) + "\n")
                     } else {
-                        val text = if (arg[0].lowercase() == "time") {
-                            timeFormat(d[a].second.toString().toLong())
-                        } else if (arg[0].lowercase() == "exp") {
-                            "Lv.${Exp.calculateLevel(d[a].second as Int)} - ${d[a].second}"
-                        } else {
-                            d[a].second
-                        }
-                        string.append("[white]${a + 1}[] ${d[a].first.first}[white] [yellow]-[] $text\n")
+                        string.append("[white]${position + 1}[] ${rank.name}[white] [yellow]-[] ${format(rank)}\n")
                     }
                 }
-                string.substring(0, string.length - 1)
+
                 if (!playerData.hideRanking) {
-                    string.append("[purple]=======================================[]\n")
-                    for (a in d.indices) {
-                        if (d[a].first.second == player.uuid()) {
-                            if (d[a].second is HashMap<*, *>) {
-                                val rank = d[a].second as HashMap<*, *>
-                                val rate = round(
-                                    (rank.keys.first().toString().toFloat() / (rank.keys.first().toString()
-                                        .toFloat() + rank.keys.first().toString().toFloat())) * 100
-                                )
-                                string.append("[white]${a + 1}[] ${d[a].first.first}[white] [yellow]-[] [green]${rank.keys.first()}${bundle["command.ranking.pvp.win"]}[] / [scarlet]${rank.values.first()}${bundle["command.ranking.pvp.lose"]}[] ($rate%)")
-                            } else {
-                                val text = if (arg[0].lowercase() == "time") {
-                                    timeFormat(d[a].second.toString().toLong())
-                                } else if (arg[0].lowercase() == "exp") {
-                                    "Lv.${Exp.calculateLevel(d[a].second as Int)} - ${d[a].second}"
-                                } else {
-                                    d[a].second
-                                }
-                                string.append("[white]${a + 1}[] ${d[a].first.first}[white] [yellow]-[] $text")
-                            }
-                        }
+                    // The caller's own position, counted in the database rather than by walking the
+                    // whole table: everyone ahead of them on this column, plus one.
+                    val own = when (kind) {
+                        "time" -> playerData.totalPlayed
+                        "exp" -> playerData.exp
+                        "attack" -> playerData.attackClear
+                        "place" -> playerData.blockPlaceCount
+                        "break" -> playerData.blockBreakCount
+                        else -> playerData.pvpWinCount.toInt()
                     }
+                    val ahead = suspendTransaction {
+                        PlayerTable.selectAll()
+                            .where {
+                                (PlayerTable.hideRanking eq false) and when (kind) {
+                                    "time" -> PlayerTable.totalPlayed greater own
+                                    "exp" -> PlayerTable.exp greater own
+                                    "attack" -> PlayerTable.attackClear greater own
+                                    "place" -> PlayerTable.blockPlaceCount greater own
+                                    "break" -> PlayerTable.blockBreakCount greater own
+                                    else -> PlayerTable.pvpWinCount greater own.toShort()
+                                }
+                            }
+                            .count()
+                    }
+                    val self = Rank(
+                        playerData.name,
+                        playerData.uuid,
+                        own,
+                        playerData.pvpLoseCount.toInt(),
+                        playerData.pvpEliminatedCount.toInt()
+                    )
+                    string.append("[purple]=======================================[]\n")
+                    string.append(
+                        if (kind == "pvp") pvpLine((ahead + 1).toInt(), self)
+                        else "[white]${ahead + 1}[] ${self.name}[white] [yellow]-[] ${format(self)}"
+                    )
                 }
 
                 Core.app.post {
@@ -3579,16 +3612,38 @@ class Commands {
             return BASE_XP + BASE_XP * level.toDouble().pow(EXPONENT)
         }
 
+        /** How far the precomputed table below reaches. Past it the old summation still works. */
+        private const val TABLE_LEVELS = 1000
+
+        /**
+         * Total XP needed to reach each level, summed once.
+         *
+         * [Exp.get] runs once a second for every online player, and both functions below used to
+         * replay the whole `pow()` series from level zero on every call - so a level 500 player cost
+         * a few hundred `Math.pow` calls a second, for ever, and [calculateLevel] squared that.
+         */
+        private val cumulativeXp = DoubleArray(TABLE_LEVELS + 1).also { table ->
+            var sum = 0.0
+            for (i in 0..TABLE_LEVELS) {
+                sum += calcXpForLevel(i)
+                table[i] = sum
+            }
+        }
+
         fun calculateFullTargetXp(level: Int): Double {
-            var requiredXP = 0.0
-            for (i in 0..level) requiredXP += calcXpForLevel(i)
+            // The summation this replaces walked 0..level, so a negative level summed nothing.
+            if (level < 0) return 0.0
+            if (level <= TABLE_LEVELS) return cumulativeXp[level]
+            var requiredXP = cumulativeXp[TABLE_LEVELS]
+            for (i in TABLE_LEVELS + 1..level) requiredXP += calcXpForLevel(i)
             return requiredXP
         }
 
         fun calculateLevel(xp: Int): Int {
-            var level = 0
-            var maxXp = calcXpForLevel(0)
-            do maxXp += calcXpForLevel(++level) while (maxXp < xp)
+            // From one, as the do/while this replaces did: a player below the first threshold is
+            // level 1, not level 0.
+            var level = 1
+            while (calculateFullTargetXp(level) < xp) level++
             return level
         }
 

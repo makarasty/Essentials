@@ -10,6 +10,7 @@ import essential.common.database.table.PlayerTable
 import essential.common.database.thisServerId
 import essential.common.playerNumber
 import essential.common.systemTimezone
+import essential.core.Main
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.SerializationException
@@ -95,6 +96,7 @@ data class PlayerData(
     var name: String,
     var uuid: String,
     var languageTag: String = "en",
+    var languageChoice: String? = null,
     var blockPlaceCount: Int = 0,
     var blockBreakCount: Int = 0,
     var level: Int = 0,
@@ -214,9 +216,23 @@ data class PlayerData(
         }
     }
 
-    val bundle: Bundle get() = Bundle(
-        if (player.con() != null && !player.locale().isNullOrBlank()) player.locale() else languageTag
-    )
+    /**
+     * The language this player is written to in.
+     *
+     * A language they picked with `/lang` first, because that is the only one of the three anybody
+     * actually asked for. Otherwise their client's own language, but only when a translation for it
+     * ships - the base bundle is English, and answering a German client in English is better than the
+     * silence a half-missing bundle gives. Otherwise the server's own `plugin.lang`, which is the
+     * language its operator writes the rest of the server in.
+     */
+    fun localeTag(): String {
+        languageChoice?.let { return it }
+        val known = if (player.con() != null) player.locale().orEmpty() else languageTag
+        if (known.isNotBlank() && Bundle.translated(Locale.forLanguageTag(known.replace('_', '-')))) return known
+        return Main.conf.plugin.lang
+    }
+
+    val bundle: Bundle get() = Bundle(localeTag())
 
     fun send(bundle: Bundle, key: String, vararg args: Any) = send(
         bundle.get(key, *args)

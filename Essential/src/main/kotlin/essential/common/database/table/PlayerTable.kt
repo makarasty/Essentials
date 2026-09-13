@@ -9,6 +9,16 @@ object PlayerTable : Table("players") {
     val name = varchar("name", 256).uniqueIndex("name")
     val uuid = varchar("uuid", 25).uniqueIndex("uuid")
     val languageTag = varchar("language_tag", 10).default("en")
+
+    /**
+     * The language the player picked with `/lang`, or null while they are letting their client decide.
+     *
+     * Deliberately not [languageTag]: that column is written from whatever locale the client asks for,
+     * so it cannot tell a choice from a guess - which is exactly how a chosen language would end up
+     * silently replaced by the client's. Null on every row that predates this column, which is the
+     * same thing as "never chose one".
+     */
+    val languageChoice = varchar("language_choice", 10).nullable().default(null)
     val blockPlaceCount = integer("block_place_count").default(0)
     val blockBreakCount = integer("block_break_count").default(0)
     val level = integer("level").default(0)

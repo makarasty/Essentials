@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 import java.security.SecureRandom
 import java.util.Base64
 
-private fun generateSessionSecret(): String =
+internal fun generateSessionSecret(): String =
     ByteArray(48).also(SecureRandom()::nextBytes).let(Base64.getUrlEncoder().withoutPadding()::encodeToString)
 
 @Serializable
@@ -14,8 +14,12 @@ data class WebConfig (
     val port: Int = 32000,
     @YamlComment("Directory path where uploaded map files are stored")
     val uploadPath: String = "config/maps",
-    @YamlComment("At least 32 characters of secret material used to encrypt and sign session cookies")
-    val sessionSecret: String = generateSessionSecret(),
+    @YamlComment("At least 32 characters of secret material used to encrypt and sign session cookies; generated on first load when left blank")
+    // Blank, not a generated value. A default is an expression, and kotlinx.serialization evaluates it
+    // every time it fills an absent key - so a config_web.yaml that lost this line minted a fresh
+    // secret, which Config.load's migration re-save then wrote to disk, logging out every open
+    // session. WebService.reloadConf mints it once instead, and says so when it does.
+    val sessionSecret: String = "",
     @YamlComment("Only send session cookies over HTTPS")
     val secureCookie: Boolean = true,
     @YamlComment("Session validity duration in seconds (1 hour = 3600 seconds)")

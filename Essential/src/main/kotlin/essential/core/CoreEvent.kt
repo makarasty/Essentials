@@ -1242,6 +1242,10 @@ fun worldLoad(event: WorldLoadEvent) {
     Rtv.reset()
     isCheated = false
     mapRatings.clear()
+    // Vote cooldowns are minutes long and only ever dropped by the player they belong to asking for
+    // another vote, so the map kept an entry for everyone who has ever voted on this process. Expired
+    // ones only - an unexpired cooldown still has time to run and a map change does not pay it off.
+    voterCooldown.values.removeIf { it.hasPassedNow() }
     // The coordinates in here are tile positions on the map that is being replaced.
     worldEditSelection.clear()
     // A Tile from the replaced world keeps its old build reference, so the liveness check on the read
@@ -1532,6 +1536,11 @@ fun configFileModified(event: CustomEvents.ConfigFileModified) {
                     Log.info(Bundle()["config.reloaded"])
                 }
             }
+
+            // Every file under config/ is watched, but only this one is re-read. An operator who had
+            // just watched config.yaml reload live got nothing at all for config_chat.yaml and the
+            // rest - not even a line saying the edit is sitting there unapplied.
+            else -> Log.info("[Config] ${event.paths} changed. Only config.yaml reloads by itself; restart the server to apply this one.")
         }
     }
 }
@@ -1554,6 +1563,12 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     val isDayPassed = playerData.lastLoginDate.date.daysUntil(currentTime.date)
     if (isDayPassed >= 1) playerData.attendanceDays += 1
     playerData.lastLoginDate = currentTime
+
+    // The client's own language, refreshed on every join. The column was written once, when the row
+    // was created, and never again - so the chat format and the web achievement page both kept
+    // answering with whatever language the player happened to install the game in years ago. What
+    // they picked with /lang is a different column and is not touched here.
+    parseLocaleOrDefault(player.locale())?.let { playerData.languageTag = it }
 
     // Set nickname and admin permissions based on configured roles
     val group = Permission.groupOf(playerData.uuid, playerData.permission)

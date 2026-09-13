@@ -17,6 +17,36 @@ class Bundle {
         /** Resolves a bundle without the JVM default locale standing in for a missing translation. */
         fun resolve(baseName: String, locale: Locale): ResourceBundle =
             ResourceBundle.getBundle(baseName, locale, CONTROL)
+
+        /**
+         * Whether a translation of its own ships for [locale], rather than it falling through to the
+         * base bundle.
+         *
+         * English is the base bundle and has no `bundle_en.properties` of its own, so it has to be
+         * named here; every other language is answered by asking what [resolve] actually landed on.
+         */
+        fun translated(locale: Locale): Boolean =
+            locale.language == "en" || resolve("bundles/common/bundle", locale).locale.language.isNotEmpty()
+
+        /**
+         * Language tags this build ships a translation for, English included.
+         *
+         * Read off the resources rather than listed by hand: adding a `bundle_xx.properties` is all
+         * TRANSLATING.md asks a translator to do, and a list here would be the one step nobody
+         * remembers. Walking every locale the JVM knows is not cheap, so it is done once, on the
+         * first `/lang` of the process.
+         */
+        val translations: List<String> by lazy {
+            Locale.getAvailableLocales()
+                .asSequence()
+                .map { resolve("bundles/common/bundle", it).locale }
+                .filter { it.language.isNotEmpty() }
+                .map { it.toLanguageTag() }
+                .plus("en")
+                .distinct()
+                .sorted()
+                .toList()
+        }
     }
 
     var resource: ResourceBundle

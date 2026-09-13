@@ -45,7 +45,9 @@ object ChatFormatResolver {
         "%player.pvpEliminated" to { data: PlayerData -> data.pvpEliminatedCount.toString() },
         "%player.pvpMvp" to { data: PlayerData -> data.pvpMvpCount.toString() },
         "%player.attendance" to { data: PlayerData -> data.attendanceDays.toString() },
-        "%player.language" to { data: PlayerData -> data.languageTag },
+        // The language they are actually written to, not the raw column: that one holds whatever
+        // their client asked for, which is only the answer when they have not picked one.
+        "%player.language" to { data: PlayerData -> data.localeTag() },
         "%player.world" to { data: PlayerData -> data.lastPlayedWorldName ?: "unknown" },
         "%player.worldMode" to { data: PlayerData -> data.lastPlayedWorldMode ?: "unknown" }
     )
@@ -57,6 +59,10 @@ object ChatFormatResolver {
     fun resolve(format: String, data: PlayerData, message: String): String {
         var resolved = format
         for ((key, value) in placeholders) {
+            // Ask the format first. This runs on every chat message, and a format naming two
+            // placeholders was still evaluating all seventeen - a database field read and a
+            // toString each - and scanning the string seventeen times to replace nothing.
+            if (!resolved.contains(key)) continue
             resolved = resolved.replace(key, value(data))
         }
         resolved = resolved.replace("%chat", message)
