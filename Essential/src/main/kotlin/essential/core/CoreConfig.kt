@@ -156,7 +156,7 @@ data class Description(
         "Placeholders: {players} {playerLimit} {wave} {map} {mode} {playTime} {matchTime} {uptime} {peace}",
         "{playTime} counts from the map load, {matchTime} from the moment the map is actually",
         "being played - on PvP that means two teams with a core and a player on them",
-        "A `config desc` value that contains a placeholder becomes the template automatically; this field overrides it when set",
+        "Any `config desc` an operator sets becomes the template, placeholders or not; this field overrides it when set",
         "Vanilla Mindustry cuts the description at 100 characters in the server list, long templates need a build without that limit",
     )
     val template: String = "",

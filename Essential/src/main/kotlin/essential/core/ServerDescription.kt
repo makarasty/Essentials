@@ -12,6 +12,7 @@ import mindustry.net.Administration
 
 object ServerDescription {
     private const val TEMPLATE_KEY = "essentials-description-template"
+    private const val RENDERED_KEY = "essentials-description-rendered"
     private val placeholder = Regex("\\{([a-zA-Z]+)}")
 
     val placeholders: MutableMap<String, () -> String> = mutableMapOf(
@@ -34,6 +35,7 @@ object ServerDescription {
     private var timer: Timer.Task? = null
     private var pending = false
     private var tooLongWarned: String? = null
+    private var cacheNoted: String? = null
 
     fun start() {
         timer?.cancel()
@@ -57,13 +59,43 @@ object ServerDescription {
         }
     }
 
+    /**
+     * The text [render] last wrote to the description.
+     *
+     * Kept in settings rather than in a field, so a restart does not make this object's own
+     * output from before it look like something an operator typed. The first call on a server
+     * that upgraded from a build without the key assumes exactly that: whatever is in the
+     * description right now is ours, because adopting a rendered line as the template would
+     * freeze every value in it.
+     */
+    private fun lastRendered(): String {
+        if (!Core.settings.has(RENDERED_KEY)) Core.settings.put(RENDERED_KEY, Administration.Config.desc.string())
+        return Core.settings.getString(RENDERED_KEY, "")
+    }
+
     fun template(): String {
         val current = Administration.Config.desc.string()
-        if (hasPlaceholders(current)) {
+        // Anything in the description that this object did not write itself is an operator's
+        // `config desc`, placeholders or not - a plain description has to be able to replace a
+        // template that was cached earlier, and comparing against the last rendered text is what
+        // tells the two apart.
+        if (hasPlaceholders(current) || (current.isNotBlank() && current != lastRendered())) {
             Core.settings.put(TEMPLATE_KEY, current)
             return current
         }
-        return conf.feature.description.template.ifBlank { Core.settings.getString(TEMPLATE_KEY, "") }
+        val configured = conf.feature.description.template
+        if (configured.isNotBlank()) return configured
+        val cached = Core.settings.getString(TEMPLATE_KEY, "")
+        // The cache lives in settings.bin, not in config.yaml, so say where the description
+        // nobody configured comes from and how to replace it.
+        if (cached.isNotBlank() && cached != cacheNoted) {
+            cacheNoted = cached
+            Log.info(
+                "[Description] feature.description.template is blank, using the template remembered " +
+                    "from an earlier `config desc`: $cached - run `config desc <text>` to replace it."
+            )
+        }
+        return cached
     }
 
     /**
@@ -90,5 +122,6 @@ object ServerDescription {
             )
         }
         if (text != Administration.Config.desc.string()) Administration.Config.desc.set(text)
+        if (text != lastRendered()) Core.settings.put(RENDERED_KEY, text)
     }
 }
