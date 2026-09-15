@@ -1,12 +1,10 @@
 package essential.common.database
 
 import arc.util.Log
-import essential.common.bundle
 import essential.common.database.data.getPluginData
 import essential.common.database.data.update
 import essential.common.database.table.*
 import essential.common.rootPath
-import essential.core.Main
 import io.asyncer.r2dbc.mysql.MySqlConnectionConfiguration
 import io.asyncer.r2dbc.mysql.MySqlConnectionFactory
 import io.r2dbc.h2.H2ConnectionConfiguration
@@ -37,7 +35,6 @@ import org.jetbrains.exposed.v1.r2dbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mariadb.r2dbc.MariadbConnectionConfiguration
 import org.mariadb.r2dbc.MariadbConnectionFactory
-import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
 import java.time.Duration
 
@@ -106,7 +103,25 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     TransactionManager.defaultDatabase = defaultDatabase!!
 
-    upgradeLegacyDatabase()
+    val legacyDatabaseVersion = findLegacyDatabaseVersion()
+    if (legacyDatabaseVersion != null && legacyDatabaseVersion < LEGACY_BASELINE_VERSION) {
+        val migratedVersion = runFlywayMigration(
+            databaseType,
+            r2dbcUrl,
+            user,
+            pass,
+            legacyDatabaseVersion.toString(),
+            LEGACY_BASELINE_VERSION.toString(),
+        )
+
+        val migratedDbVersion = migratedVersion?.toUByteOrNull()
+        if (migratedDbVersion != null) {
+            updatePluginVersion(migratedDbVersion)
+        }
+        if (migratedVersion != null && legacyDatabaseVersion < 4u) {
+            migrateStatusToAchievements()
+        }
+    }
 
     suspendTransaction {
         val tablesToCreate = listOf(
@@ -131,7 +146,14 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 /**
  * Execute Flyway migrations
  */
-fun runFlywayMigration(databaseType: String, r2dbcUrl: String, user: String, pass: String): String? {
+fun runFlywayMigration(
+    databaseType: String,
+    r2dbcUrl: String,
+    user: String,
+    pass: String,
+    baselineVersion: String = "5",
+    targetVersion: String? = null,
+): String? {
     return try {
         val migrationClass = Class.forName("essential.core.service.migration.FlywayMigration")
         migrationClass.getMethod(
@@ -140,7 +162,9 @@ fun runFlywayMigration(databaseType: String, r2dbcUrl: String, user: String, pas
             String::class.java,
             String::class.java,
             String::class.java,
-        ).invoke(null, databaseType, r2dbcUrl, user, pass) as? String
+            String::class.java,
+            String::class.java,
+        ).invoke(null, databaseType, r2dbcUrl, user, pass, baselineVersion, targetVersion) as? String
     } catch (_: ClassNotFoundException) {
         Log.info("Flyway migration module is not included; database migration was skipped.")
         null
@@ -241,7 +265,7 @@ private suspend fun updatePluginVersion(version: UByte) {
 
 private const val LEGACY_BASELINE_VERSION: UByte = 5u
 
-private suspend fun upgradeLegacyDatabase() {
+private suspend fun findLegacyDatabaseVersion(): UByte? {
     try {
         var currentVersion: UByte?
 
@@ -266,68 +290,13 @@ private suspend fun upgradeLegacyDatabase() {
             } catch (_: Throwable) {
                 false
             }
-            if (found != null || dbExists) 3u else null
+            if (dbExists) 3u else null
         }
 
-        if (currentVersion == null) {
-            return
-        }
-
-        if (currentVersion < LEGACY_BASELINE_VERSION) {
-            Log.info(bundle["database.upgrade.start", currentVersion, LEGACY_BASELINE_VERSION])
-
-            for (v in (currentVersion.toUInt() + 1u)..LEGACY_BASELINE_VERSION.toUInt()) {
-                val version = v.toUByte()
-                val dialectSuffix = when (defaultDatabase!!.config.explicitDialect) {
-                    is H2Dialect -> "_h2"
-                    is PostgreSQLDialect -> "_postgres"
-                    is MariaDBDialect -> "_mariadb"
-                    is MysqlDialect -> "_mysql"
-                    else -> ""
-                }
-                val sqlFiles = listOf("v${version}${dialectSuffix}.sql", "v${version}_h2.sql", "v${version}.sql")
-
-                for (sqlFile in sqlFiles) {
-                    val inputStream = Main::class.java.classLoader.getResourceAsStream("sql/$sqlFile")
-                    if (inputStream != null) {
-                        try {
-                            val sqlScript = inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-                            Log.info(bundle["database.upgrade.execute", sqlFile])
-
-                            suspendTransaction {
-                                sqlScript.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { statement ->
-                                    try {
-                                        exec(statement)
-                                    } catch (e: Throwable) {
-                                        val isCritical = statement.contains("plugin_data", true) ||
-                                            statement.contains("players", true)
-                                        if (isCritical) {
-                                            throw IllegalStateException("Critical statement failed: $statement", e)
-                                        }
-                                        Log.warn("Failed to execute statement: $statement. Reason: ${e.message}")
-                                    }
-                                }
-
-                                updatePluginVersion(version)
-                                
-                                if (version == 4u.toUByte()) {
-                                    migrateStatusToAchievements()
-                                }
-                            }
-                            break
-                        } catch (e: Throwable) {
-                            e.printStackTrace()
-                            throw e
-                        }
-                    }
-                }
-            }
-
-            updatePluginVersion(LEGACY_BASELINE_VERSION)
-            Log.info(bundle["database.upgrade.end"])
-        }
+        return currentVersion
     } catch (e: Exception) {
-        e.printStackTrace()
+        Log.warn("Unable to determine legacy database version", e)
+        return null
     }
 }
 

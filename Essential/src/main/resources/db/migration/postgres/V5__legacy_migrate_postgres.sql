@@ -35,10 +35,22 @@ WHERE id IN (
 /* Fix NULL last_login_date left by v4 migration */
 UPDATE players SET last_login_date = CURRENT_TIMESTAMP WHERE last_login_date IS NULL;
 
+CREATE TABLE IF NOT EXISTS map_ratings (
+    id BIGSERIAL PRIMARY KEY,
+    map_name VARCHAR(100) NOT NULL,
+    map_hash VARCHAR(100) NOT NULL,
+    player_uuid VARCHAR(25) NOT NULL,
+    difficulty INT DEFAULT 3,
+    rating INT DEFAULT 3,
+    is_upvote BOOLEAN
+);
 ALTER TABLE map_ratings DROP CONSTRAINT IF EXISTS map_ratings_map_hash_unique;
-ALTER TABLE map_ratings ADD COLUMN IF NOT EXISTS difficulty INT DEFAULT 3;
-ALTER TABLE map_ratings ADD COLUMN IF NOT EXISTS rating INT DEFAULT 3;
-UPDATE map_ratings SET difficulty = 3, rating = CASE WHEN is_upvote = TRUE THEN 5 ELSE 1 END;
+ALTER TABLE map_ratings ADD COLUMN IF NOT EXISTS difficulty INT;
+ALTER TABLE map_ratings ADD COLUMN IF NOT EXISTS rating INT;
+UPDATE map_ratings
+SET difficulty = 3,
+    rating = CASE WHEN is_upvote = TRUE THEN 5 ELSE 1 END
+WHERE difficulty IS NULL OR rating IS NULL;
 ALTER TABLE map_ratings DROP COLUMN IF EXISTS is_upvote;
 
 /* 판당 기여도 점수 테이블 */
