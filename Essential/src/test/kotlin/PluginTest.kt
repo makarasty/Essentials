@@ -45,6 +45,7 @@ import net.datafaker.Faker
 import org.jetbrains.exposed.v1.core.vendors.PostgreSQLDialect
 import org.jetbrains.exposed.v1.r2dbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
+import org.junit.Assume.assumeTrue
 import org.junit.FixMethodOrder
 import org.junit.runners.MethodSorters
 import org.testcontainers.postgresql.PostgreSQLContainer
@@ -53,6 +54,7 @@ import java.lang.Thread.sleep
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.*
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.test.*
@@ -64,6 +66,7 @@ class PluginTest {
     companion object {
         private lateinit var main: Main
         private val r = Random()
+        private val playerCounter = java.util.concurrent.atomic.AtomicLong(0)
         lateinit var player: Playerc
         lateinit var path: Fi
         val serverCommand: CommandHandler = CommandHandler("")
@@ -234,6 +237,12 @@ class PluginTest {
         fun loadPlugin(force: Boolean = false) {
             if (pluginLoaded && !force) return
 
+            essential.common.eventListeners.forEach { (eventType, listener) ->
+                @Suppress("UNCHECKED_CAST")
+                Events.remove(eventType as Class<Any>, listener as arc.func.Cons<Any>)
+            }
+            essential.common.eventListeners.clear()
+
             Main.conf = Main.conf.copy(
                 module = Main.conf.module.copy(
                     achievement = true,
@@ -258,6 +267,11 @@ class PluginTest {
 
         fun stopPlugin() {
             Log.logger = baseLogHandler
+            essential.common.eventListeners.forEach { (eventType, listener) ->
+                @Suppress("UNCHECKED_CAST")
+                Events.remove(eventType as Class<Any>, listener as arc.func.Cons<Any>)
+            }
+            essential.common.eventListeners.clear()
             runBlocking {
                 listOfNotNull(defaultDatabase, worldHistoryDatabase).forEach { db ->
                     try {
@@ -333,7 +347,7 @@ class PluginTest {
                     return
                 }
             }
-            val name = faker.name().lastName() + Clock.System.now().toEpochMilliseconds()
+            val name = faker.name().lastName() + Clock.System.now().toEpochMilliseconds() + playerCounter.incrementAndGet()
             player.name(name)
             player.con.uuid = getSaltString()
             player.con.usid = getSaltString()
@@ -515,9 +529,22 @@ class PluginTest {
         stopPlugin()
     }
 
+    private fun isDockerAvailable(): Boolean {
+        return runCatching {
+            val process = ProcessBuilder("docker", "version").start()
+            val completed = process.waitFor(5, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroy()
+                return@runCatching false
+            }
+            process.exitValue() == 0
+        }.getOrDefault(false)
+    }
+
     @Test
     fun dbUpgradeTest_20_postgres() {
         if (Core.app != null) stopPlugin()
+        assumeTrue("Docker is required for this test", isDockerAvailable())
 
         loadGame(deleteConfig = false)
         val originalConf = Main.conf

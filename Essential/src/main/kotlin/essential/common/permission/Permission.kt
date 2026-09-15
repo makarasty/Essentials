@@ -54,16 +54,20 @@ object Permission {
         """.trimIndent()
 
     init {
+        load()
+    }
+
+    fun load() {
         if (!mainFile.exists()) {
-            mainFile.write(this::class.java.getResourceAsStream("/permission_default.yaml")!!, false)
+            this::class.java.getResourceAsStream("/permission_default.yaml")?.use { input ->
+                mainFile.write(input, false)
+            }
         }
 
         if (!userFile.exists()) {
             userFile.writeString(comment)
         }
-    }
 
-    fun load() {
         val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
         
         try {

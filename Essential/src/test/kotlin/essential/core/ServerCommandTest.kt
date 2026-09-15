@@ -25,7 +25,6 @@ class ServerCommandTest {
     fun setup() {
         if (!done) {
             loadGame(true)
-
             done = true
         }
     }
@@ -74,9 +73,17 @@ class ServerCommandTest {
 
         serverCommand.handleMessage("delete $uuid")
 
+        assertTrue(waitUntil(5000) { runBlocking { getPlayerData(uuid) == null } })
         val afterDelete = runBlocking { getPlayerData(uuid) }
         assertNull(afterDelete)
 
+        assertTrue(waitUntil(5000) {
+            runBlocking {
+            suspendTransaction {
+                AchievementTable.selectAll().where { AchievementTable.playerId eq target.second.id }.count()
+            }
+            } == 0L
+        })
         val achievementsCount = runBlocking {
             suspendTransaction {
                 AchievementTable.selectAll().where { AchievementTable.playerId eq target.second.id }.count()
@@ -97,6 +104,7 @@ class ServerCommandTest {
 
         serverCommand.handleMessage("delete $id")
 
+        assertTrue(waitUntil(5000) { runBlocking { getPlayerData(uuid) == null } })
         val afterDelete = runBlocking { getPlayerData(uuid) }
         assertNull(afterDelete)
     }
@@ -114,6 +122,11 @@ class ServerCommandTest {
         }
 
         serverCommand.handleMessage("delete multipleplayer")
+        assertTrue(waitUntil(5000) {
+            runBlocking {
+                getPlayerData(target1.first.uuid()) != null && getPlayerData(target2.first.uuid()) != null
+            }
+        })
 
         val afterDelete1 = runBlocking { getPlayerData(target1.first.uuid()) }
         assertNotNull(afterDelete1)
@@ -121,9 +134,10 @@ class ServerCommandTest {
         assertNotNull(afterDelete2)
 
         serverCommand.handleMessage("delete ${target1.second.id}")
-
+        assertTrue(waitUntil(5000) { runBlocking { getPlayerData(target1.first.uuid()) == null } })
         val afterDeleteId1 = runBlocking { getPlayerData(target1.first.uuid()) }
         assertNull(afterDeleteId1)
+        assertNotNull(runBlocking { getPlayerData(target2.first.uuid()) })
         val afterDeleteId2 = runBlocking { getPlayerData(target2.first.uuid()) }
         assertNotNull(afterDeleteId2)
 

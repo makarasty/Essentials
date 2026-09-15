@@ -82,8 +82,23 @@ var offlinePlayers = mutableListOf<PlayerData>()
 /** Plugin data */
 lateinit var pluginData: PluginData
 
+/** Event listener registry that tracks all registered event listeners */
+class EventListenerRegistry : Iterable<Pair<Class<*>, Cons<*>>> {
+    private val listeners = CopyOnWriteArrayList<Pair<Class<*>, Cons<*>>>()
+
+    operator fun set(key: Class<*>, value: Cons<*>) {
+        listeners.add(key to value)
+    }
+
+    override fun iterator(): Iterator<Pair<Class<*>, Cons<*>>> = listeners.iterator()
+
+    fun clear() {
+        listeners.clear()
+    }
+}
+
 /** Event listeners registered by the plugin */
-val eventListeners: HashMap<Class<*>, Cons<*>> = hashMapOf()
+val eventListeners = EventListenerRegistry()
 
 /** Print plugin data summary */
 fun getPluginDataInfo(): String {

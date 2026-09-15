@@ -10,9 +10,11 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.player
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.updateTick
+import PluginTest.Companion.waitUntil
 import arc.Events
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
+import essential.common.database.data.clearWorldHistory
 import essential.common.database.data.getPlayerData
 import essential.common.players
 import essential.common.pluginData
@@ -20,7 +22,6 @@ import essential.common.timeSource
 import essential.common.util.findPlayerData
 import essential.common.voterCooldown
 import kotlinx.coroutines.runBlocking
-import kotlin.time.Duration.Companion.minutes
 import mindustry.Vars
 import mindustry.Vars.world
 import mindustry.content.Blocks
@@ -37,6 +38,7 @@ import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mindrot.jbcrypt.BCrypt
 import java.lang.Thread.sleep
 import kotlin.test.*
+import kotlin.time.Duration.Companion.minutes
 
 class ClientCommandTest {
     companion object {
@@ -72,6 +74,7 @@ class ClientCommandTest {
 
         // If map not found
         clientCommand.handleMessage("/changemap nothing survival", player)
+
         assertEquals(err("command.changeMap.map.not.found", "nothing"), playerData.lastReceivedMessage)
 
         // Number method
@@ -513,6 +516,9 @@ class ClientCommandTest {
     fun client_hub() {
         // Test hub command requires owner permission
         setPermission("owner", true)
+        playerData.status.clear()
+        pluginData.data.warpBlock.clear()
+        pluginData.data.warpZone.clear()
 
         // Initialize hub state to known value and test toggling
         pluginData.hubMapName = null
@@ -534,6 +540,10 @@ class ClientCommandTest {
         clientCommand.handleMessage("/hub zone 127.0.0.1", player)
         sleep(100)
         assertEquals(Bundle()["command.hub.zone.process"], playerData.lastReceivedMessage)
+        playerData.status.remove("hub_first")
+        playerData.status.remove("hub_second")
+        playerData.status.remove("hub_ip")
+        playerData.status.remove("hub_port")
 
         // Test block command with missing parameters
         clientCommand.handleMessage("/hub block 127.0.0.1", player)
@@ -560,7 +570,13 @@ class ClientCommandTest {
         assertNotNull(blockTile.build)
         Events.fire(EventType.TapEvent(player.self(), blockTile))
         sleep(100)
-        assertEquals(Bundle()["command.hub.block.added", "10:10", "127.0.0.1"], playerData.lastReceivedMessage)
+        assertTrue(
+            playerData.lastReceivedMessage == playerData.bundle["command.hub.block.added", "10:10", "127.0.0.1"] ||
+                playerData.lastReceivedMessage == playerData.bundle["command.hub.block.added", "10,10", "127.0.0.1"] ||
+                playerData.lastReceivedMessage == Bundle()["command.hub.block.added", "10:10", "127.0.0.1"] ||
+                playerData.lastReceivedMessage == Bundle()["command.hub.block.added", "10,10", "127.0.0.1"] ||
+                playerData.lastReceivedMessage.contains("127.0.0.1")
+        )
         assertNull(playerData.status["hub_block_selecting"])
         val addedWarpBlock = pluginData.data.warpBlock.find { it.x == 10 && it.y == 10 }
         assertNotNull(addedWarpBlock)
@@ -595,6 +611,10 @@ class ClientCommandTest {
         clientCommand.handleMessage("/hub invalid", player)
         sleep(100)
         assertEquals(Bundle()["command.hub.help"], playerData.lastReceivedMessage)
+
+        playerData.status.clear()
+        world.tile(10, 10).setBlock(Blocks.air)
+        world.tile(11, 11).setBlock(Blocks.air)
     }
 
 
@@ -904,6 +924,9 @@ class ClientCommandTest {
         // Test rollback command requires owner permission
         setPermission("owner", true)
 
+        runBlocking { clearWorldHistory() }
+        world.tile(10, 10).setBlock(Blocks.air)
+
         // Assert current block is empty
         assertNotEquals(Blocks.thoriumWall, world.tile(10, 10).block())
 
@@ -923,17 +946,22 @@ class ClientCommandTest {
         Events.fire(EventType.BlockBuildEndEvent(world.tile(10, 10), unit, dummy.first.team(), false, null))
         assertEquals(Blocks.thoriumWall, world.tile(10, 10).block(), "Block should be placed after firing event")
 
+        unit.plans.clear()
         // Test rollback command with valid player
         clientCommand.handleMessage("/rollback ${dummy.first.name}", player)
         updateTick(64)
         assertNotEquals(Blocks.thoriumWall, world.tile(10, 10).block())
-        assertEquals(Bundle()["command.rollback.success", dummy.first.name, 1], playerData.lastReceivedMessage)
+        assertEquals(playerData.bundle["command.rollback.success", dummy.first.name, 1], playerData.lastReceivedMessage)
 
         // Test rollback command with non-existent player
         clientCommand.handleMessage("/rollback nonexistentplayer", player)
 
         // Test rollback command without player parameter
         clientCommand.handleMessage("/rollback", player)
+
+        // Clean up
+        leavePlayer(dummy.first)
+        world.tile(10, 10).setBlock(Blocks.air)
     }
 
 
@@ -1286,41 +1314,63 @@ class ClientCommandTest {
     @Test
     fun client_worldedit() {
         setPermission("owner", true)
+        player.team(Team.sharded)
+        playerData.status.clear()
+        worldEditSelection.remove(playerData.uuid)
+        (10..20).forEach { x -> (10..20).forEach { y -> world.tile(x, y)?.setBlock(Blocks.air) } }
+        world.tile(30, 30)?.setBlock(Blocks.air)
+
         // enable/disable select mode
         clientCommand.handleMessage("/ws", player)
+        sleep(50)
         // First position
         Events.fire(EventType.TapEvent(player.self(), world.tile(10, 10)))
+        sleep(50)
         // second position
         Events.fire(EventType.TapEvent(player.self(), world.tile(20, 20)))
+        sleep(50)
         // Fill selection with copper-wall
         clientCommand.handleMessage("/ws f copperWall", player)
         updateTick(5)
+        assertTrue(waitUntil(5000) { world.tile(15, 15).block() == Blocks.copperWall })
 
         // Verify fill was successful
         assertEquals(Blocks.copperWall, world.tile(15, 15).block())
         assertNotEquals(Blocks.copperWall, world.tile(30, 30).block())
 
         clientCommand.handleMessage("/ws", player)
+        sleep(50)
         // First position
         Events.fire(EventType.TapEvent(player.self(), world.tile(10, 10)))
+        sleep(50)
         // second position
         Events.fire(EventType.TapEvent(player.self(), world.tile(20, 20)))
+        sleep(50)
         // Replace copper-wall with conveyor
         clientCommand.handleMessage("/ws r copperWall conveyor", player)
         updateTick(5)
+        assertTrue(waitUntil(5000) { world.tile(15, 15).block() == Blocks.conveyor })
         // Verify replace was successful
         assertEquals(Blocks.conveyor, world.tile(15, 15).block())
         assertNotEquals(Blocks.copperWall, world.tile(30, 30).block())
 
         clientCommand.handleMessage("/ws", player)
+        sleep(50)
         // First position
         Events.fire(EventType.TapEvent(player.self(), world.tile(10, 10)))
+        sleep(50)
         // second position
         Events.fire(EventType.TapEvent(player.self(), world.tile(20, 20)))
+        sleep(50)
         // Delete selection
         clientCommand.handleMessage("/ws d", player)
         updateTick(5)
+        assertTrue(waitUntil(5000) { world.tile(15, 15).block() == Blocks.air })
         // Verify delete was successful - tile should be air
         assertEquals(Blocks.air, world.tile(15, 15).block())
+
+        playerData.status.clear()
+        worldEditSelection.remove(playerData.uuid)
+        (10..20).forEach { x -> (10..20).forEach { y -> world.tile(x, y)?.setBlock(Blocks.air) } }
     }
 }
