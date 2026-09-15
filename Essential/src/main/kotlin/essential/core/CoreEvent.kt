@@ -3,7 +3,6 @@ package essential.core
 import arc.ApplicationListener
 import arc.Core
 import arc.Events
-import arc.func.Cons
 import arc.graphics.Color
 import arc.util.Log
 import arc.util.Strings
@@ -90,7 +89,6 @@ private var unitLimitMessageCooldown = 0
 /** Whether server routing is forced - becomes true when isNotTargetMap is false */
 var isNotTargetMap = false
 
-val eventListeners: HashMap<Class<*>, Cons<*>> = hashMapOf()
 val coreListeners: ArrayList<ApplicationListener> = arrayListOf()
 lateinit var actionFilter: Administration.ActionFilter
 
@@ -239,7 +237,7 @@ fun tap(event: TapEvent) {
         }
 
         pluginData.data.warpBlock.forEach { two ->
-            if (two.mapName == Vars.state.map.name() && event.tile.block().name == two.tileName && event.tile.build.tileX() == two.x && event.tile.build.tileY() == two.y) {
+            if (two.mapName == Vars.state.map.name() && event.tile.build != null && event.tile.block().name == two.tileName && event.tile.build.tileX() == two.x && event.tile.build.tileY() == two.y) {
                 if (two.online) {
                     players.forEach { p ->
                         p.send("event.tap.server", event.player.plainName(), two.description)
@@ -534,50 +532,6 @@ fun serverLoad(event: ServerLoadEvent) {
         }
     })
 
-    if (!conf.module.protect) {
-        Events.on(PlayerJoin::class.java, Cons<PlayerJoin> {
-            it.player.admin(false)
-
-            val player = it.player
-            val uuid = player.uuid()
-            val name = player.name
-            val locale = player.locale()
-            val con = player.con
-
-            scope.launch {
-                val data = getPlayerData(uuid)
-
-                if (data == null) {
-                    val nameExists = suspendTransaction {
-                        PlayerTable.select(PlayerTable.name).where { PlayerTable.name eq name }.empty().not()
-                    }
-                    if (!nameExists) {
-                        val newData = createPlayerData(player)
-                        newData.permission = "user"
-                        newData.player = player
-                        Core.app.post {
-                            val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
-                            if (activePlayer != null) {
-                                Events.fire(CustomEvents.PlayerDataLoad(newData))
-                            }
-                        }
-                    } else {
-                        Core.app.post {
-                            Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
-                        }
-                    }
-                } else {
-                    data.player = player
-                    Core.app.post {
-                        val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
-                        if (activePlayer != null) {
-                            Events.fire(CustomEvents.PlayerDataLoad(data))
-                        }
-                    }
-                }
-            }
-        }.also { listener -> eventListeners[PlayerJoin::class.java] = listener })
-    }
 }
 
 @Event
@@ -841,6 +795,48 @@ fun playerJoin(event: PlayerJoin) {
         LogType.Player,
         Bundle()["log.joined", event.player.plainName(), event.player.uuid(), event.player.con.address]
     )
+
+    if (conf.module.protect) return
+    event.player.admin(false)
+
+    val player = event.player
+    val uuid = player.uuid()
+    val name = player.name
+    val locale = player.locale()
+    val con = player.con
+
+    scope.launch {
+        val data = getPlayerData(uuid)
+
+        if (data == null) {
+            val nameExists = suspendTransaction {
+                PlayerTable.select(PlayerTable.name).where { PlayerTable.name eq name }.empty().not()
+            }
+            if (!nameExists) {
+                val newData = createPlayerData(player)
+                newData.permission = "user"
+                newData.player = player
+                Core.app.post {
+                    val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
+                    if (activePlayer != null) {
+                        Events.fire(CustomEvents.PlayerDataLoad(newData))
+                    }
+                }
+            } else {
+                Core.app.post {
+                    Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
+                }
+            }
+        } else {
+            data.player = player
+            Core.app.post {
+                val activePlayer = Groups.player.find { p -> p.uuid() == uuid }
+                if (activePlayer != null) {
+                    Events.fire(CustomEvents.PlayerDataLoad(data))
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalTime::class)
@@ -879,7 +875,7 @@ fun playerLeave(event: PlayerLeave) {
             }
         }
         players.removeIf { it.uuid == data.uuid }
-        worldEditSelection[data.uuid]
+        worldEditSelection.remove(data.uuid)
     }
 }
 
