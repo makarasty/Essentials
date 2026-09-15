@@ -21,6 +21,7 @@
 
 -keepattributes RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations,AnnotationDefault,Signature,InnerClasses,EnclosingMethod,Exceptions,Record
 -keep class kotlin.Metadata { *; }
+-keep class org.slf4j.** { *; }
 
 -keep class essential.core.Main { *; }
 
