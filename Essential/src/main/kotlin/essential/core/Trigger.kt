@@ -9,12 +9,9 @@ import arc.util.Log
 import arc.util.Time
 import arc.util.Timer
 import essential.common.bundle.Bundle
-import essential.common.database.data.PlayerData
-import essential.common.database.data.PluginData
-import essential.common.event.CustomEvents
-import essential.common.database.data.cleanupExpiredRoutingPermissions
-import essential.common.database.data.grantRoutingPermission
+import essential.common.database.data.*
 import essential.common.database.data.plugin.WarpCount
+import essential.common.event.CustomEvents
 import essential.common.permission.Permission
 import essential.common.players
 import essential.common.pluginData
@@ -50,7 +47,6 @@ import kotlin.math.floor
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.Instant
-import essential.common.database.data.update
 
 
 object Trigger {
@@ -776,7 +772,7 @@ object Trigger {
         if (connection.hasDisconnected) return
         val team = player.team()
         if (data.uuid !in pvpPlayer && data.uuid !in pvpSpecters
-            && team != Team.derelict && player.unit() != null && team.data().hasCore()
+            && team != Team.derelict && team.data().hasCore()
             && !(Vars.state.rules.waves && team == Vars.state.rules.waveTeam)
         ) {
             pvpPlayer[data.uuid] = team
@@ -790,14 +786,14 @@ object Trigger {
         if (connection.hasDisconnected) return
         val team = player.team()
         if (team == Team.derelict || pvpPlayer[data.uuid] != team
-            || player.unit() == null || team.data().hasCore()
+            || team.data().hasCore()
         ) return
 
         pvpPlayer.remove(data.uuid)
+        pvpSpecters.add(data.uuid)
         data.pvpLoseCount++
         if (conf.feature.pvp.spector) {
             player.team(Team.derelict)
-            pvpSpecters.add(data.uuid)
         }
 
         val score = data.currentPlayTime + 5000

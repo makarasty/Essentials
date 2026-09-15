@@ -620,9 +620,13 @@ fun gameOver(event: GameOverEvent) {
 
     if (!Vars.state.rules.infiniteResources) {
         if (Vars.state.rules.pvp) {
-            for (data in players) {
-                if (data.player.team() == event.winner) {
-                    data.pvpWinCount++
+            if (event.winner != null && event.winner != Team.derelict) {
+                for (data in players) {
+                    if (data.player.team() == event.winner) {
+                        data.pvpWinCount++
+                    } else if (data.player.team() != Team.derelict && data.uuid !in pvpSpecters) {
+                        data.pvpLoseCount++
+                    }
                 }
             }
         } else if (Vars.state.rules.attackMode) {
@@ -1214,6 +1218,14 @@ fun playerDataLoad(event: CustomEvents.PlayerDataLoad) {
                 if (bestTeam != null) {
                     player.team(bestTeam)
                     pvpPlayer[playerData.uuid] = bestTeam
+                }
+            }
+
+            else -> {
+                if (player.team() != Team.derelict && player.team().data().hasCore()
+                    && !(Vars.state.rules.waves && player.team() == Vars.state.rules.waveTeam)
+                ) {
+                    pvpPlayer[playerData.uuid] = player.team()
                 }
             }
         }
