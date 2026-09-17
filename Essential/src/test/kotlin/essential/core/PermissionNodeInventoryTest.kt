@@ -65,9 +65,11 @@ class PermissionNodeInventoryTest {
          *   elsewhere, so "nobody but the owner builds here" is the intent, not a defect. An operator
          *   whose admins maintain the hub adds it to `admin` in their own file.
          * - `votekick` adds a second route to something `user` already has through `vote.kick`, so
-         *   granting it doubles the surface for no new capability. See also task-172: vanilla's own
-         *   `/votekick` survives because `CommandRegistry.registered("votekick")` resolves to the
-         *   prefixed name.
+         *   granting it doubles the surface for no new capability. That holds only while vanilla's
+         *   own `/votekick` is there to be the route players actually type - task-172 removes that
+         *   one too when `feature.vote.enableVotekick` is off, and then neither route exists and
+         *   `/votekick` answers "Unknown command". An operator who turns the feature on and wants
+         *   the plugin's version under that name grants `votekick` in their own file.
          *
          * A command added without a grant, or a grant added without removing its entry here, fails
          * this test rather than shipping quietly.

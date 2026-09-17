@@ -100,11 +100,17 @@ class Main : Plugin() {
             ModuleRuntime.registerClientCommands(handler)
             removeBannedCommands(handler)
 
-            // "vote" and "votekick" are vanilla names. CommandRegistry renames our own commands
-            // to "evote"/"evotekick" because vanilla already holds the unprefixed name, so
-            // removing only the resolved (renamed) name leaves vanilla's own /vote and /votekick
-            // fully functional - disabling the feature removed the plugin's command and nothing
-            // else.
+            // "vote" and "votekick" are vanilla names, so CommandRegistry renames our own
+            // commands to "evote"/"evotekick". Both names go: the resolved (renamed) one and the
+            // literal vanilla one, because turning the feature off has to mean the server has no
+            // vote command at all - removing only ours would leave vanilla's running the vote an
+            // operator just switched off.
+            //
+            // What that costs the player is the plain "Unknown command. Check /help.": with
+            // neither name registered, vanilla's suggester finds nothing within edit distance 3
+            // of what they typed, so there is no "did you mean" to hint the feature is disabled
+            // rather than missing. Switching enableVotekick off is therefore switching /votekick
+            // off for everyone, not moving it to another name.
             if (!conf.feature.vote.enabled) {
                 handler.removeCommand(CommandRegistry.registered("vote"))
                 handler.removeCommand("vote")
