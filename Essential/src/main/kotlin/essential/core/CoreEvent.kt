@@ -19,6 +19,7 @@ import essential.common.event.CustomEvents
 import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.permission.Permission
+import essential.common.util.changeTeam
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
 import essential.core.Commands.WorldEditSelection
@@ -1303,18 +1304,18 @@ fun worldLoad(event: WorldLoadEvent) {
 
         for (data in players) {
             if (isSpectator(data)) {
-                data.player.team(Team.derelict)
+                data.player.changeTeam(Team.derelict)
             }
         }
 
         if (hasActiveTeams) {
             val nonSpectators = players.filter { !isSpectator(it) }
             if (conf.feature.pvp.autoTeam) {
-                nonSpectators.forEach { it.player.team(Team.derelict) }
+                nonSpectators.forEach { it.player.changeTeam(Team.derelict) }
                 nonSpectators.forEach { data ->
                     val bestTeam = selectAutoTeam(data)
                     if (bestTeam != null) {
-                        data.player.team(bestTeam)
+                        data.player.changeTeam(bestTeam)
                         pvpPlayer[data.uuid] = bestTeam
                     }
                 }
@@ -1327,7 +1328,7 @@ fun worldLoad(event: WorldLoadEvent) {
                             players.count { it.player.team() == teamData.team }
                         }?.team
                         if (bestTeam != null) {
-                            data.player.team(bestTeam)
+                            data.player.changeTeam(bestTeam)
                             pvpPlayer[data.uuid] = bestTeam
                         }
                     } else {
@@ -1634,7 +1635,7 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         when {
             // If this player previously joined a team, reassign them to that team
             conf.feature.pvp.rememberTeam && pvpPlayer.containsKey(playerData.uuid) -> {
-                player.team(pvpPlayer[playerData.uuid])
+                player.changeTeam(pvpPlayer.getValue(playerData.uuid))
             }
 
             // If PvP spectator is enabled and the player is a spectator or has spectator permission, set to the spectator team
@@ -1642,14 +1643,14 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
                 playerData,
                 "pvp.spector"
             )) -> {
-                player.team(Team.derelict)
+                player.changeTeam(Team.derelict)
             }
 
 
             conf.feature.pvp.autoTeam -> {
                 val bestTeam = selectAutoTeam(playerData)
                 if (bestTeam != null) {
-                    player.team(bestTeam)
+                    player.changeTeam(bestTeam)
                     pvpPlayer[playerData.uuid] = bestTeam
                 }
             }

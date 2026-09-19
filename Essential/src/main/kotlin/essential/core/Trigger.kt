@@ -22,6 +22,7 @@ import essential.common.players
 import essential.common.pluginData
 import essential.common.rootPath
 import essential.common.systemTimezone
+import essential.common.util.changeTeam
 import essential.common.util.findPlayerData
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
@@ -642,7 +643,7 @@ class Trigger {
                 ) {
                     data.pvpLoseCount++
                     if (conf.feature.pvp.spector) {
-                        data.player.team(Team.derelict)
+                        data.player.changeTeam(Team.derelict)
                         pvpSpecters.add(data.uuid)
                     }
                     pvpPlayer.remove(data.uuid)

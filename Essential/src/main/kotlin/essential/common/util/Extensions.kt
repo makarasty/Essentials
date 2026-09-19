@@ -42,3 +42,25 @@ val <T : mindustry.gen.Entityc> mindustry.entities.EntityGroup<T>.size: Int
 
 /** Escape the LIKE wildcards so a value with `%` or `_` in it matches only itself; pair with `LikePattern(..., '\\')`. */
 fun String.escapeLike(): String = replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+/**
+ * Put this player on [team] and respawn them at that team's core.
+ *
+ * `Player.team(Team)` only repaints the unit the player is already sitting in - it never moves or
+ * replaces it. The engine spawns a joining player's unit on its own (`NetServer.connectConfirm`
+ * arms `deathTimer`, then `Player.update()` calls `bestCore().requestSpawn`), and every team change
+ * this plugin makes lands after that, so a bare `team()` call leaves the player standing inside the
+ * core of the team they were just taken off - on the new team's colours, inside the old team's base.
+ * It corrects itself only on their next death, because `bestCore()` reads the team field.
+ *
+ * This is vanilla's own "put the player back in a core unit now" idiom from
+ * `CoreBlock.CoreBuild.onControlSelect`. The released unit was spawned by a core, so it despawns
+ * itself next tick instead of being left behind under AI control. A team with no core (derelict,
+ * a defeated team) leaves the player without a unit, which is exactly what spectating is.
+ */
+fun mindustry.gen.Playerc.changeTeam(team: mindustry.game.Team) {
+    if (team() == team) return
+    clearUnit()
+    team(team)
+    deathTimer(61f)
+}

@@ -11,6 +11,7 @@ import essential.common.log.writeLog
 import essential.common.permission.Permission
 import essential.common.players
 import essential.common.timeSource
+import essential.common.util.changeTeam
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
 import essential.core.Main.Companion.scope
@@ -234,7 +235,7 @@ object Undo {
     }
 
     fun team(uuid: String, team: Team) {
-        Groups.player.find { it.uuid() == uuid }?.team(team)
+        Groups.player.find { it.uuid() == uuid }?.changeTeam(team)
     }
 
     private fun prune(adminUuid: String, stack: ArrayDeque<UndoEntry>) {

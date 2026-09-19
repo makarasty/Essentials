@@ -23,6 +23,7 @@ import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.permission.Permission
 import essential.common.util.PlayerLookup
+import essential.common.util.changeTeam
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
 import essential.core.Main.Companion.conf
@@ -2431,12 +2432,12 @@ class Commands {
         val team = selectTeam(arg[0])
 
         if (arg.size == 1) {
-            playerData.player.team(team)
+            playerData.player.changeTeam(team)
         } else if (Permission.check(playerData, "team.other")) {
             val other = PlayerLookup.online(arg[1], playerData)
             if (other != null) {
                 val previous = other.team()
-                other.team(team)
+                other.changeTeam(team)
                 Undo.record(playerData, "team", other.uuid(), Undo.label(other.uuid())) { Undo.team(it, previous) }
             }
         }
@@ -2448,7 +2449,7 @@ class Commands {
         val other = PlayerLookup.online(arg[1])
         if (other != null) {
             val previous = other.team()
-            other.team(team)
+            other.changeTeam(team)
             Undo.record(null, "team", other.uuid(), Undo.label(other.uuid())) { Undo.team(it, previous) }
         }
     }
