@@ -48,7 +48,7 @@ object PlayerLookup {
         return if (plain.length > MAX_NAME_LENGTH) plain.take(MAX_NAME_LENGTH - 1) + "…" else plain
     }
 
-    fun sessionId(uuid: String): Int? = players.find { it.uuid == uuid }?.entityId
+    fun sessionId(uuid: String): Int? = findPlayerData(uuid)?.entityId
 
     private fun normalize(query: String) = Strings.stripColors(query).trim()
 
@@ -129,7 +129,7 @@ object PlayerLookup {
         }
 
         text.toIntOrNull()?.let { id -> players.find { it.entityId == id }?.let { return Result.Found(it) } }
-        players.find { it.uuid == text }?.let { return Result.Found(it) }
+        findPlayerData(text)?.let { return Result.Found(it) }
 
         val (rows, truncated, capped) = offlineRows(text)
         rows.find { it.uuid == text }?.let { return Result.Found(it) }
@@ -210,7 +210,7 @@ object PlayerLookup {
     private fun onlineDataOf(query: String, sender: PlayerData?): PlayerData? {
         val result = findOnline(query)
         if (result is Result.Found) {
-            val data = players.find { it.uuid == result.value.uuid() }
+            val data = findPlayerData(result.value.uuid())
             if (data == null || data.temporary) return report(Result.NotFound(), query, sender, NOT_REGISTERED)
             return data
         }

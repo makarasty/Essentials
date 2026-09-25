@@ -15,6 +15,7 @@ import essential.common.command.CommandRegistry
 import essential.common.database.data.PlayerData
 import essential.common.database.table.PlayerTable
 import essential.common.players
+import essential.common.util.findPlayerData
 import essential.common.rootPath
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.CancellationException
@@ -385,7 +386,7 @@ object Permission {
     fun applyGroup(uuid: String, group: String) {
         syncVanillaAdmin(uuid, group)
 
-        players.find { data -> data.uuid == uuid }?.let { data ->
+        findPlayerData(uuid)?.let { data ->
             data.permission = group
             data.player.admin(isAdmin(uuid, group))
         }

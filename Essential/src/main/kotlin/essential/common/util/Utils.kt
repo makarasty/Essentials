@@ -16,6 +16,4 @@ fun currentTime(): String {
 
 
 /** Get player information by UUID from the plugin */
-fun findPlayerData(uuid: String): PlayerData? {
-    return players.find { data -> data.uuid == uuid }
-}
+fun findPlayerData(uuid: String): PlayerData? = players.byUuid(uuid)

@@ -19,6 +19,7 @@ import essential.common.log.initLogFiles
 import essential.common.log.stopLogWriter
 import essential.common.permission.Permission
 import essential.common.service.fileWatchService
+import essential.common.util.findPlayerData
 import essential.core.generated.registerGeneratedClientCommands
 import essential.core.generated.registerGeneratedEventHandlers
 import essential.core.generated.registerGeneratedServerCommands
@@ -243,7 +244,7 @@ class Main : Plugin() {
 
             override fun allow(e: Administration.PlayerAction): Boolean {
                 if (e.player == null) return true
-                val data = players.find { it.uuid == e.player.uuid() }
+                val data = findPlayerData(e.player.uuid())
                 val isHub = pluginData.hubMapName
 
                 if (!isNotTargetMap) {

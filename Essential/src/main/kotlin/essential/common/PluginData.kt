@@ -69,7 +69,58 @@ var isCheated = false
 var isSurrender = false
 
 /** Player data list */
-val players = CopyOnWriteArrayList<PlayerData>()
+val players = PlayerList()
+
+/**
+ * The online players, plus a uuid index every mutator keeps in step, so [byUuid] - behind
+ * findPlayerData, which nearly every player action goes through - is a map lookup and not a scan.
+ *
+ * The index is rebuilt whole after each change rather than patched: changes are a join or a leave on
+ * a list a few dozen long, and a rebuild keeps the answer `find` gave when a uuid is in the list
+ * twice (the first one). Mutation and rebuild share one lock so two threads cannot interleave them;
+ * readers see the last published index without taking it.
+ */
+class PlayerList : CopyOnWriteArrayList<PlayerData>() {
+    private val lock = Any()
+
+    @Volatile
+    private var index: Map<String, PlayerData> = emptyMap()
+
+    /** The first player in the list with [uuid], as `find { it.uuid == uuid }` would return. */
+    fun byUuid(uuid: String): PlayerData? {
+        val hit = index[uuid] ?: return null
+        // A PlayerData's uuid is a var (an account login moves it to the device's uuid); a moved one
+        // is found the slow way rather than under the uuid it was indexed by.
+        return if (hit.uuid == uuid) hit else find { it.uuid == uuid }
+    }
+
+    private inline fun <T> mutate(change: () -> T): T = synchronized(lock) {
+        val result = change()
+        val next = HashMap<String, PlayerData>(size * 2)
+        for (data in this) next.putIfAbsent(data.uuid, data)
+        index = next
+        result
+    }
+
+    override fun add(element: PlayerData): Boolean = mutate { super.add(element) }
+    override fun add(index: Int, element: PlayerData) = mutate { super.add(index, element) }
+    override fun addAll(elements: Collection<PlayerData>): Boolean = mutate { super.addAll(elements) }
+    override fun addAll(index: Int, elements: Collection<PlayerData>): Boolean = mutate { super.addAll(index, elements) }
+    override fun addIfAbsent(element: PlayerData): Boolean = mutate { super.addIfAbsent(element) }
+    override fun addAllAbsent(c: Collection<PlayerData>): Int = mutate { super.addAllAbsent(c) }
+    override fun set(index: Int, element: PlayerData): PlayerData = mutate { super.set(index, element) }
+    override fun remove(element: PlayerData): Boolean = mutate { super.remove(element) }
+    override fun removeAt(index: Int): PlayerData = mutate { super.removeAt(index) }
+    override fun removeAll(elements: Collection<PlayerData>): Boolean = mutate { super.removeAll(elements) }
+    override fun retainAll(elements: Collection<PlayerData>): Boolean = mutate { super.retainAll(elements) }
+    override fun clear() = mutate { super.clear() }
+    override fun replaceAll(operator: java.util.function.UnaryOperator<PlayerData>) = mutate { super.replaceAll(operator) }
+
+    // Called 60 times a second by Trigger with nothing to remove: only a real removal pays the rebuild.
+    override fun removeIf(filter: java.util.function.Predicate<in PlayerData>): Boolean = synchronized(lock) {
+        super.removeIf(filter).also { removed -> if (removed) mutate { } }
+    }
+}
 
 /** System time zone */
 val systemTimezone = TimeZone.currentSystemDefault()

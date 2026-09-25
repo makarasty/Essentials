@@ -1167,7 +1167,7 @@ fun playerLeave(event: PlayerLeave) {
     // Their dialogs went with their connection, so the menu ids they held can be handed out again.
     OwnedMenus.release(event.player.uuid())
     cancelPlayerDataRetry(event.player.uuid())
-    val data = players.find { e -> e.uuid == event.player.uuid() }
+    val data = findPlayerData(event.player.uuid())
     if (data != null) {
         data.lastPlayedWorldName = Vars.state.map.plainName()
         data.lastPlayedWorldMode = Vars.state.rules.modeName
