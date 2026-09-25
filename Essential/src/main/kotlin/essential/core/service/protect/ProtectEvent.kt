@@ -153,6 +153,10 @@ fun update() {
 
 @Event
 fun playerJoin(e: EventType.PlayerJoin) {
+    // Registered at boot and never removed, so after a config reload switches the module off this
+    // still ran next to core's fallback join handler: two loads per join, and the second saw the row
+    // the first had just created under the player's own name and kicked them as a duplicate.
+    if (!coreConf.module.protect) return
     // The vanilla admin flag stays as it is; the group sync on data load adjusts it.
     val player = e.player
     val uuid = player.uuid()

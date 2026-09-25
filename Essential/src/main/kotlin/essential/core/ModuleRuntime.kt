@@ -32,6 +32,9 @@ object ModuleRuntime {
 
     private val loadedServices = mutableMapOf<String, Plugin>()
 
+    /** Whether the service was actually loaded, which a config switched on after boot does not do. */
+    fun isLoaded(id: String): Boolean = id in loadedServices
+
     fun initEnabledServices() {
         serviceDescriptors
             .filter { it.enabled() }

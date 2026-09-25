@@ -604,7 +604,9 @@ private var protectFallbackJoinListener: Cons<PlayerJoin>? = null
  * serverLoad and again from every config reload so the running state always matches the config.
  */
 fun syncProtectFallbackJoinListener() {
-    val shouldRun = !conf.module.protect
+    // The protect service only loads at boot, so switching it on later leaves nobody else to load
+    // player data: the fallback stays until the service is really there.
+    val shouldRun = !(conf.module.protect && ModuleRuntime.isLoaded("protect"))
     val current = protectFallbackJoinListener
     if (shouldRun == (current != null)) return
 
