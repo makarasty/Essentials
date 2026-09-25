@@ -1774,6 +1774,28 @@ class Commands {
         return null
     }
 
+    /**
+     * Whether a history row was the rollback target's own action.
+     *
+     * Exact, not a substring: the stored player is a player-chosen display name, and a substring match
+     * reverted bystanders too - "Bobby" matched a rollback of "Bob", and renaming to contain someone
+     * else's name could redirect blame. Stripped of color markup: "place"/"break" store the raw name
+     * (CoreEvent.kt's TileLog construction uses target.name, not plainName()), and a colored or
+     * group-recolored name would otherwise never match a plain admin-typed name at all, turning the
+     * command into a silent no-op. Rows written since the uuid column arrived are matched by account,
+     * which closes that: a player who renamed to a name an earlier one used cannot have the earlier
+     * one's work reverted under their name any more.
+     *
+     * NEITHER HALF MAY BE DROPPED. `e.uuid == null` is every row written before the uuid column, and
+     * losing the name fallback would make the first rollback after the upgrade silently revert nothing
+     * and look like the feature broke. `targetUuid == null` is an offline or unknown player, or an
+     * ambiguous name, where the name is all there is. The honest summary for an admin: sound for
+     * history recorded since the upgrade, ambiguous before it.
+     */
+    private fun matchesRollbackTarget(e: WorldHistoryData, targetUuid: String?, name: String) =
+        if (targetUuid != null && e.uuid != null) e.uuid == targetUuid
+        else Strings.stripColors(e.player).equals(name, ignoreCase = true)
+
     @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
         scope.launch {
@@ -1792,41 +1814,22 @@ class Commands {
                 // so an admin who already knows the uuid can type it and skip names entirely.
                 val targetUuid = (PlayerLookup.findExact(arg[0]) as? PlayerLookup.Result.Found)?.value?.uuid
 
+                // Everything below that only reads the history - grouping every row by tile, keeping the
+                // tiles this player touched, sorting them - happens here, off the game thread. What reaches
+                // the game thread is only the world edit itself, still applied in one post, so no tick runs
+                // between the first restored tile and the last.
+                val touched = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }.mapNotNull { (pos, entries) ->
+                    if (entries.none { matchesRollbackTarget(it, targetUuid, arg[0]) }) null
+                    else pos to entries.sortedBy { it.time }
+                }
+
                 Core.app.post {
                     try {
                         var affectedCount = 0
                         val unrestoredConfigs = mutableListOf<String>()
-                        val grouped = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }
 
-                        grouped.forEach { (pos, entriesUnsorted) ->
-                            // Exact, not a substring: entries.player is a player-chosen display name, and
-                            // a substring match reverted bystanders too - "Bobby" matched a rollback of
-                            // "Bob", and renaming to contain someone else's name could redirect blame.
-                            // Stripped of color markup: "place"/"break" store the raw name
-                            // (CoreEvent.kt's TileLog construction uses target.name, not plainName()),
-                            // and a colored or group-recolored name would otherwise never match a plain
-                            // admin-typed arg[0] at all, turning the command into a silent no-op.
-                            // Rows written since the uuid column arrived are matched by account, which
-                            // closes that: a player who renamed to a name an earlier one used cannot
-                            // have the earlier one's work reverted under their name any more.
-                            //
-                            // NEITHER HALF OF `matches` MAY BE DROPPED. `e.uuid == null` is every row
-                            // written before this deploy, and losing the name fallback would make the
-                            // first rollback after the upgrade silently revert nothing on six servers
-                            // and look like the feature broke. `targetUuid == null` is an offline or
-                            // unknown player, or an ambiguous name, where the name is all there is.
-                            // The honest summary for an admin: sound for history recorded since the
-                            // upgrade, ambiguous before it.
-                            fun matches(e: WorldHistoryData) =
-                                if (targetUuid != null && e.uuid != null) e.uuid == targetUuid
-                                else Strings.stripColors(e.player).equals(arg[0], ignoreCase = true)
-
-                            val hasPlayerAction = entriesUnsorted.any { matches(it) }
-                            if (!hasPlayerAction) return@forEach
-
-                            val entries = entriesUnsorted.sortedBy { it.time }
-
-                            val firstIdx = entries.indexOfFirst { matches(it) }
+                        touched.forEach { (pos, entries) ->
+                            val firstIdx = entries.indexOfFirst { matchesRollbackTarget(it, targetUuid, arg[0]) }
                             if (firstIdx == -1) return@forEach
 
                             val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
