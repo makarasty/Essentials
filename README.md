@@ -1,5 +1,8 @@
 # Essentials (makarasty fork)
 [![CI](https://github.com/makarasty/Essentials/actions/workflows/ci.yml/badge.svg)](https://github.com/makarasty/Essentials/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/makarasty/Essentials?style=flat-square)](https://github.com/makarasty/Essentials/releases/latest)
+![Downloads](https://img.shields.io/github/downloads/makarasty/Essentials/total?style=flat-square)
+![Downloads of the latest release](https://img.shields.io/github/downloads/makarasty/Essentials/latest/total?style=flat-square)
 
 A Mindustry server plugin that adds moderation, accounts, voting, statistics, achievements, server
 hubs and a lot of admin tooling. This is a fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials)
@@ -18,9 +21,11 @@ Currently based on upstream **v22** for **Mindustry v160.4** (8.0).
 
 ## Installation
 
-The fork does not publish release jars yet, so build one (see [Building](#building)) and put
-`Essential/build/libs/Essential-all.jar` into `<server>/config/mods`. On the first start the plugin writes
-its configuration to `<server>/config/mods/Essentials/`.
+Download `Essential-all.jar` from the [latest release](https://github.com/makarasty/Essentials/releases/latest)
+and put it into `<server>/config/mods`. On the first start the plugin writes its configuration to
+`<server>/config/mods/Essentials/`. The [dev build](https://github.com/makarasty/Essentials/releases/tag/dev)
+is the newest commit on `main`, rebuilt on every push; you can also build the jar yourself (see
+[Building](#building)).
 
 - [Config reference](.github/Config.md): every key of `config.yaml` and the module config files.
 - [Permissions](.github/Permission.md): groups, nodes and `permission_user.yaml`.
@@ -151,6 +156,16 @@ be left out is still inside. For a modular build, `test` runs a headless boot sm
 the sources packaged in that jar; the full suite targets the full distribution.
 
 Most modules can also be switched off in `config.yaml` under `module:` without rebuilding.
+
+### Releasing
+
+Push a tag that starts with `v`. CI writes the tag into `plugin.json` (the update check compares the two),
+runs the tests and publishes a release with `Essential-all.jar` and notes generated from the commits.
+Every push to `main` replaces the jar of the `dev` prerelease.
+
+```shell
+git tag v22-fork.1 && git push origin v22-fork.1
+```
 
 ### Deploying to a server folder
 

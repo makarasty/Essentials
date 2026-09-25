@@ -1,0 +1,40 @@
+name: Upstream watch
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Keeps a single open issue while Kieaer/Essentials has commits this fork has not merged, and closes it
+    # once they are in.
+    - name: Compare with upstream
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GH_REPO: ${{ github.repository }}
+      run: |
+        ahead=$(gh api "repos/$GH_REPO/compare/main...Kieaer:main" --jq .ahead_by)
+        release=$(gh api repos/Kieaer/Essentials/releases/latest --jq .tag_name)
+        issue=$(gh issue list --state open --search '"Merge upstream" in:title' --json number --jq '.[0].number // empty')
+
+        if [ "$ahead" -eq 0 ]; then
+          [ -z "$issue" ] || gh issue close "$issue" --comment "Upstream is merged."
+          exit 0
+        fi
+
+        body="Kieaer/Essentials \`main\` has **$ahead** commits that are not in this fork.
+        Latest upstream release: [$release](https://github.com/Kieaer/Essentials/releases/tag/$release)
+
+        https://github.com/$GH_REPO/compare/main...Kieaer:Essentials:main"
+        if [ -n "$issue" ]; then
+          gh issue edit "$issue" --body "$body"
+        else
+          gh issue create --title "Merge upstream Kieaer/Essentials" --body "$body"
+        fi

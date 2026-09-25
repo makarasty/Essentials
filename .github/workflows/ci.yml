@@ -3,9 +3,19 @@ name: CI
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
+  # Dependabot's PRs: build and test only, the publish steps below are limited to main and tags.
+  pull_request:
 
+# Publishing a release and moving the dev tag both write to the repository.
 permissions:
-  contents: read
+  contents: write
+
+# One run per ref at a time. A newer push to main waits for the running one instead of cancelling it
+# halfway through swapping the dev build's jar; queued runs collapse to the newest.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -27,14 +37,37 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
+    # The plugin's update check compares the latest release's tag with plugin.json's version, so a release
+    # jar has to carry its own tag. The tag is the only place a version is written down.
+    - name: Stamp the tag into plugin.json
+      if: github.ref_type == 'tag'
+      run: |
+        f=Essential/src/main/resources/plugin.json
+        jq --arg v "$GITHUB_REF_NAME" '.version = $v' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+
     # build, not just shadowJar: the test run used to live in the SonarCloud workflow, which was
     # removed with the scanner it existed for. Nothing else runs the suite on a push.
     - name: Build and run tests
       run: ./gradlew build shadowJar
 
-    - name: Upload shadowJar artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: Mindustry-Plugin-Essentials
-        path: Essential/build/libs/Essential-all.jar
-        retention-days: 30
+    # Same file name as on the servers, so a download replaces the installed jar instead of loading twice.
+    - name: Publish the release
+      if: github.ref_type == 'tag'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" Essential/build/libs/Essential-all.jar \
+          --title "Essentials $GITHUB_REF_NAME" --latest --generate-notes \
+          --notes "![Downloads](https://img.shields.io/github/downloads/$GITHUB_REPOSITORY/$GITHUB_REF_NAME/total)"
+
+    # A rolling prerelease: the update check reads releases/latest, which skips prereleases.
+    - name: Publish the dev build
+      if: github.ref == 'refs/heads/main'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        git tag -f dev && git push -f origin refs/tags/dev
+        notes="Latest build of main ($GITHUB_SHA), replaced on every push. Servers should run a versioned release."
+        gh release edit dev --notes "$notes" \
+          || gh release create dev --prerelease --title "Dev build" --notes "$notes"
+        gh release upload dev Essential/build/libs/Essential-all.jar --clobber

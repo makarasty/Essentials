@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # One grouped PR a week, tested by CI. Mindustry and Arc stay pinned to the version the servers run.
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "Anuken:*"
+      - dependency-name: "com.github.Anuken*"
+    groups:
+      gradle:
+        patterns: [ "*" ]
