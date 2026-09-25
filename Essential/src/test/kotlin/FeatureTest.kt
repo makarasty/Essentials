@@ -534,15 +534,15 @@ class FeatureTest {
                 seeded + extra.flatMap { (team, n) -> List(n) { byTeam.getValue(team).first() } }
 
             assertEquals(
-                teamLowest, selectAutoTeam(joining, scored()),
+                teamLowest, selectAutoTeam(joining.uuid, scored()),
                 "level counts: the lowest average win rate takes the player"
             )
             assertEquals(
-                teamLowest, selectAutoTeam(joining, scored(teamLowest to 1)),
+                teamLowest, selectAutoTeam(joining.uuid, scored(teamLowest to 1)),
                 "one ahead of the smallest team is still inside the handicap the guard allows"
             )
             assertEquals(
-                teamSecondLowest, selectAutoTeam(joining, scored(teamLowest to 2)),
+                teamSecondLowest, selectAutoTeam(joining.uuid, scored(teamLowest to 2)),
                 "two ahead of the smallest team is the handicap ceiling, so the next win rate takes the player"
             )
             // The recorded flake, forced. The guard compares each team against the smallest OTHER team,
@@ -552,7 +552,7 @@ class FeatureTest {
             assertEquals(
                 teamLowest,
                 selectAutoTeam(
-                    joining,
+                    joining.uuid,
                     scored(teamLowest to 2, *byWinRate.drop(1).map { it to 1 }.toTypedArray())
                 ),
                 "the guard is about counts, not win rates: with every other team within one of it, the " +
@@ -569,7 +569,7 @@ class FeatureTest {
         // team that holds a core, and never on one already more than one player ahead of the smallest.
         repeat(3) { i ->
             val before = playableTeamCounts()
-            val oracle = withProbeData { selectAutoTeam(it, players) }
+            val oracle = withProbeData { selectAutoTeam(it.uuid, players) }
             val joined = newPlayer().first.team()
             assertEquals(
                 oracle, joined,

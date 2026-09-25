@@ -230,6 +230,8 @@ class Main : Plugin() {
         Trigger.register()
         threadPool.execute(Trigger.PingThread())
 
+        Vars.netServer.assigner.let { if (it !is PvpTeamAssigner) Vars.netServer.assigner = PvpTeamAssigner(it) }
+
         Vars.netServer.admins.addActionFilter(object : Administration.ActionFilter {
             init {
                 Events.on(WorldLoadEvent::class.java) {

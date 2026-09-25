@@ -42,6 +42,7 @@ import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.content.Fx
 import mindustry.content.Planets
+import mindustry.core.NetServer
 import mindustry.game.EventType.*
 import mindustry.game.Team
 import mindustry.gen.Call
@@ -93,6 +94,13 @@ val pvpSpecters = mutableListOf<String>()
 
 /** PvP player team map */
 val pvpPlayer = mutableMapOf<String, Team>()
+
+/**
+ * Teams [PvpTeamAssigner] picked by autoTeam for a connecting player, taken back by attachPlayerData.
+ * Kept apart from [pvpPlayer]: a pick made before the player's data (and so their spectator
+ * permission) is loaded must not read as a remembered team.
+ */
+val pvpConnectPicks = mutableMapOf<String, Team>()
 
 /** Whether global chat is muted. Volatile: written from the game thread by /chat off, read from a
  *  Ktor worker by the web chat endpoint. */
@@ -1187,8 +1195,12 @@ fun playerLeave(event: PlayerLeave) {
             }
         }
         players.removeIf { it.uuid == data.uuid }
+        // PvpTeamAssigner hands a known uuid its recorded team back, which is only what a rejoin should
+        // get when the operator asked for it.
+        if (!conf.feature.pvp.rememberTeam) pvpPlayer.remove(data.uuid)
         worldEditSelection.remove(data.uuid)
         mapRateSessions.remove(data.uuid)
+        lastLoggedTap.remove(data.uuid)
     }
 }
 
@@ -1296,47 +1308,30 @@ fun worldLoad(event: WorldLoadEvent) {
     // the previous map's specters and team assignments.
     pvpSpecters.clear()
     pvpPlayer.clear()
+    pvpConnectPicks.clear()
 
+    // A map change runs inside WorldReloader, whose end() re-teams every player after this handler
+    // returns, through PvpTeamAssigner. So this only plans: spectators into pvpSpecters, autoTeam picks
+    // into pvpPlayer. Without autoTeam the engine's own fewest-players rule re-teams everyone, and
+    // registerPvpPlayer records the result. The changeTeam calls keep the counts selectAutoTeam reads
+    // right while it plans, and hold for a world loaded outside a reloader.
     if (Vars.state.rules.pvp) {
-        val activeTeams = Vars.state.teams?.active?.filter {
-            it.team != Team.derelict && it.hasCore() && !(Vars.state.rules.waves && Vars.state.rules.waveTeam == it.team)
-        }
-        val hasActiveTeams = activeTeams != null && activeTeams.any()
-
-        val isSpectator = { d: PlayerData -> conf.feature.pvp.spector && Permission.check(d, "pvp.spector") }
-
-        for (data in players) {
-            if (isSpectator(data)) {
+        val nonSpectators = players.filter { data ->
+            val spectator = conf.feature.pvp.spector && Permission.check(data, "pvp.spector")
+            if (spectator) {
                 data.player.changeTeam(Team.derelict)
+                pvpSpecters.add(data.uuid)
             }
+            !spectator
         }
 
-        if (hasActiveTeams) {
-            val nonSpectators = players.filter { !isSpectator(it) }
-            if (conf.feature.pvp.autoTeam) {
-                nonSpectators.forEach { it.player.changeTeam(Team.derelict) }
-                nonSpectators.forEach { data ->
-                    val bestTeam = selectAutoTeam(data)
-                    if (bestTeam != null) {
-                        data.player.changeTeam(bestTeam)
-                        pvpPlayer[data.uuid] = bestTeam
-                    }
-                }
-            } else {
-                nonSpectators.forEach { data ->
-                    val currentTeam = data.player.team()
-                    val isCurrentTeamActive = activeTeams.any { it.team == currentTeam }
-                    if (currentTeam == Team.derelict || !isCurrentTeamActive) {
-                        val bestTeam = activeTeams.minByOrNull { teamData ->
-                            players.count { it.player.team() == teamData.team }
-                        }?.team
-                        if (bestTeam != null) {
-                            data.player.changeTeam(bestTeam)
-                            pvpPlayer[data.uuid] = bestTeam
-                        }
-                    } else {
-                        pvpPlayer[data.uuid] = currentTeam
-                    }
+        if (conf.feature.pvp.autoTeam && Vars.state.teams.active.any { isPlayablePvpTeam(it.team) }) {
+            nonSpectators.forEach { it.player.changeTeam(Team.derelict) }
+            nonSpectators.forEach { data ->
+                val bestTeam = selectAutoTeam(data.uuid)
+                if (bestTeam != null) {
+                    data.player.changeTeam(bestTeam)
+                    pvpPlayer[data.uuid] = bestTeam
                 }
             }
         }
@@ -1633,39 +1628,20 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     players.add(playerData)
 
 
-    // If the current mode is PvP
+    // If the current mode is PvP. PvpTeamAssigner normally picked this team at connect, before the
+    // engine spawned the player, so the changeTeam below is a no-op; it only acts on what needs the
+    // loaded data (the spectator permission) or when something other than the plugin assigned the team.
     if (Vars.state.rules.pvp) {
-        when {
-            // If this player previously joined a team, reassign them to that team
-            conf.feature.pvp.rememberTeam && pvpPlayer.containsKey(playerData.uuid) -> {
-                player.changeTeam(pvpPlayer.getValue(playerData.uuid))
-            }
-
-            // If PvP spectator is enabled and the player is a spectator or has spectator permission, set to the spectator team
-            conf.feature.pvp.spector && (pvpSpecters.contains(playerData.uuid) || Permission.check(
-                playerData,
-                "pvp.spector"
-            )) -> {
-                player.changeTeam(Team.derelict)
-            }
-
-
-            conf.feature.pvp.autoTeam -> {
-                val bestTeam = selectAutoTeam(playerData)
-                if (bestTeam != null) {
-                    player.changeTeam(bestTeam)
-                    pvpPlayer[playerData.uuid] = bestTeam
-                }
-            }
-
-            else -> {
-                if (player.team() != Team.derelict && player.team().data().hasCore()
-                    && !(Vars.state.rules.waves && player.team() == Vars.state.rules.waveTeam)
-                ) {
-                    pvpPlayer[playerData.uuid] = player.team()
-                }
-            }
+        val uuid = playerData.uuid
+        val picked = pvpConnectPicks.remove(uuid)
+        val team = when {
+            conf.feature.pvp.rememberTeam && uuid in pvpPlayer -> pvpPlayer.getValue(uuid)
+            conf.feature.pvp.spector && (uuid in pvpSpecters || Permission.check(playerData, "pvp.spector")) -> Team.derelict
+            conf.feature.pvp.autoTeam -> picked?.takeIf(::isPlayablePvpTeam) ?: selectAutoTeam(uuid)
+            else -> null
         }
+        if (team != null) player.changeTeam(team)
+        if (team != Team.derelict && isPlayablePvpTeam(player.team())) pvpPlayer[uuid] = player.team()
     }
 
     ModuleRuntime.processPlayerDataLoad(playerData)
@@ -1674,19 +1650,51 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     Events.fire(CustomEvents.PlayerDataLoadEnd(playerData))
 }
 
-fun selectAutoTeam(playerData: PlayerData, targetPlayers: List<PlayerData> = players): Team? {
-    val state = Vars.state ?: return null
-    val teams = state.teams ?: return null
-    val activeTeams = teams.active ?: return null
-    val playableTeams = activeTeams.filter {
-        it.team != Team.derelict && it.hasCore() && !(state.rules.waves && state.rules.waveTeam == it.team)
+/** A team a PvP player can be put on: holds a core, is not derelict, and is not the wave team. */
+fun isPlayablePvpTeam(team: Team): Boolean =
+    team != Team.derelict && team.data().hasCore() && !(Vars.state.rules.waves && team == Vars.state.rules.waveTeam)
+
+/**
+ * An admin's team change (/team and its undo): the respawn [changeTeam] gives, and [pvpPlayer] moved
+ * with it, so the new team's defeat counts against the player and a remembered rejoin lands there.
+ * Left alone, the entry kept naming the old team and both went to the wrong one.
+ */
+fun movePlayerToTeam(player: Playerc, team: Team) {
+    player.changeTeam(team)
+    if (!Vars.state.rules.pvp) return
+    if (isPlayablePvpTeam(team)) pvpPlayer[player.uuid()] = team else pvpPlayer.remove(player.uuid())
+}
+
+/**
+ * The engine asks its assigner for a player's team at connect, before it spawns them, and again for
+ * every player at the end of each map change: `WorldReloader.end()` resets everyone to the default
+ * team and re-assigns them after WorldLoadEvent has run. A team the plugin set anywhere else either
+ * costs a respawn (join) or is overwritten outright (map change), so the PvP pick is made here, from
+ * what worldLoad planned into [pvpPlayer] or, for a fresh join, [selectAutoTeam]. Anything the plugin
+ * has no opinion on goes to [fallback], the engine's own fewest-players rule.
+ */
+class PvpTeamAssigner(private val fallback: NetServer.TeamAssigner) : NetServer.TeamAssigner {
+    override fun assign(player: Player, others: Iterable<Player>): Team {
+        val uuid = player.uuid()
+        return when {
+            !Vars.state.rules.pvp -> fallback.assign(player, others)
+            conf.feature.pvp.spector && uuid in pvpSpecters -> Team.derelict
+            else -> pvpPlayer[uuid]?.takeIf(::isPlayablePvpTeam)
+                ?: (if (conf.feature.pvp.autoTeam) selectAutoTeam(uuid)?.also { pvpConnectPicks[uuid] = it } else null)
+                ?: fallback.assign(player, others)
+        }
     }
+}
+
+fun selectAutoTeam(uuid: String, targetPlayers: List<PlayerData> = players): Team? {
+    val activeTeams = Vars.state?.teams?.active ?: return null
+    val playableTeams = activeTeams.filter { isPlayablePvpTeam(it.team) }
     if (!playableTeams.any()) return null
 
     val teamStats = playableTeams.map { teamData ->
         val team = teamData.team
         val teamPlayers = targetPlayers.filter {
-            it.player.team() == team && it.uuid != playerData.uuid
+            it.player.team() == team && it.uuid != uuid
         }
         val playerCount = teamPlayers.size
         val avgWinRate = if (teamPlayers.isEmpty()) 0.5 else teamPlayers.map {
