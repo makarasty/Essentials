@@ -56,6 +56,7 @@ import mindustry.net.Packets
 import mindustry.ui.Menus
 import mindustry.world.Tile
 import mindustry.world.blocks.ConstructBlock
+import mindustry.world.blocks.storage.CoreBlock
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
@@ -90,7 +91,7 @@ val mapRatings = HashMap<String, Boolean>()
 val playerDataRetries = ConcurrentHashMap<String, Job>()
 
 /** PvP spectator player list */
-val pvpSpecters = mutableListOf<String>()
+val pvpSpecters = mutableSetOf<String>()
 
 /** PvP player team map */
 val pvpPlayer = mutableMapOf<String, Team>()
@@ -185,37 +186,24 @@ fun deposit(event: DepositEvent) {
 
 @Event
 fun config(event: ConfigEvent) {
-    if (event.tile != null && event.tile.block != null && event.player != null) {
-        addLog(
+    if (event.tile != null && event.tile.block != null && event.player != null && conf.command.rollback.enabled) {
+        val block = checkValidBlock(event.tile.tile)
+        fun log(action: String) = addLog(
             TileLog(
                 System.currentTimeMillis(),
                 event.player.name,
-                "config",
+                action,
                 event.tile.tile.x,
                 event.tile.tile.y,
-                checkValidBlock(event.tile.tile),
+                block,
                 event.tile.rotation,
                 event.tile.team,
                 event.value,
                 event.player.uuid()
             )
         )
-        if (checkValidBlock(event.tile.tile).contains("message", true)) {
-            addLog(
-                TileLog(
-                    System.currentTimeMillis(),
-                    event.player.name,
-                    "message",
-                    event.tile.tile.x,
-                    event.tile.tile.y,
-                    checkValidBlock(event.tile.tile),
-                    event.tile.rotation,
-                    event.tile.team,
-                    event.value,
-                    event.player.uuid()
-                )
-            )
-        }
+        log("config")
+        if (block.contains("message", true)) log("message")
     }
 }
 
@@ -984,9 +972,8 @@ fun gameOver(event: GameOverEvent) {
 
 @Event
 fun blockBuildEnd(event: BlockBuildEndEvent) {
-    val isDebug = Core.settings.getBool("debugMode")
-
     if (event.unit != null && event.unit.isPlayer) {
+        val isDebug = Core.settings.getBool("debugMode")
         val player = event.unit.player
         val target = findPlayerData(player.uuid())
 
@@ -1468,16 +1455,7 @@ fun playerConnect(event: PlayerConnect) {
 
 @Event
 fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
-    val cores = listOf(
-        Blocks.coreAcropolis,
-        Blocks.coreBastion,
-        Blocks.coreCitadel,
-        Blocks.coreFoundation,
-        Blocks.coreAcropolis,
-        Blocks.coreNucleus,
-        Blocks.coreShard
-    )
-    if (Vars.state.rules.pvp && event.build.closestCore() == null && cores.contains(event.build.block)) {
+    if (Vars.state.rules.pvp && event.build.block is CoreBlock && event.build.closestCore() == null) {
         for (data in players) {
             if (data.player.team() == event.bullet.team) {
                 data.pvpEliminatedCount++

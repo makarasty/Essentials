@@ -504,15 +504,15 @@ object Permission {
      */
     fun check(data: PlayerData, command: String): Boolean {
         if (command in ALWAYS_ALLOWED) return true
-        val group = main[this[data].group]
-        return if (group != null) {
-            val passed = group.permission.contains(command) || group.permission.contains("all")
-            Log.debug("[Permission] ${data.name} > group: ${this[data].group} -> command: $command -> $passed")
-            passed
-        } else {
-            Log.debug("[Permission] ${data.name} > group: ${this[data].group} -> command: $command -> false")
-            false
+        // this[data] builds a fresh PermissionData, and the debug line is interpolated before Log.debug
+        // can drop it; both used to be paid twice per check at every log level.
+        val groupName = this[data].group
+        val group = main[groupName]
+        val passed = group != null && (group.permission.contains(command) || group.permission.contains("all"))
+        if (Log.level == Log.LogLevel.debug) {
+            Log.debug("[Permission] ${data.name} > group: $groupName -> command: $command -> $passed")
         }
+        return passed
     }
 
     @Serializable

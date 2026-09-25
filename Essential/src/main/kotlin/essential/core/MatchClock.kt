@@ -42,9 +42,12 @@ object MatchClock {
         if (Vars.state.rules.pvp) contestedTeams() >= 2 else Groups.player.size() > 0
 
     /** Teams that hold a core and have at least one player on them. */
-    private fun contestedTeams(): Int = Groups.player
-        .filter { it.team() != Team.derelict && it.team().cores().any() }
-        .map { it.team() }
-        .distinct()
-        .size
+    private fun contestedTeams(): Int {
+        val teams = HashSet<Team>()
+        Groups.player.forEach {
+            val team = it.team()
+            if (team != Team.derelict && team.cores().any()) teams.add(team)
+        }
+        return teams.size
+    }
 }

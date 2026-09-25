@@ -18,6 +18,7 @@ import mindustry.Vars
 import mindustry.ai.types.CommandAI
 import mindustry.content.Items
 import mindustry.game.EventType.*
+import mindustry.game.Team
 import mindustry.gen.Building
 import mindustry.gen.Groups
 import mindustry.gen.Unit
@@ -31,16 +32,16 @@ import mindustry.world.blocks.production.GenericCrafter
 // --- Per-game scratch state (cleared on WorldLoadEvent) ---
 
 /** Tile position (Building.pos()) -> owner uuid. Who placed the building. */
-private val tileOwner = mutableMapOf<Int, String>()
+private val tileOwner = IntMap<String>()
 
 /** Unit id -> uuid of the player whose factory produced it. */
-private val unitProducer = mutableMapOf<Int, String>()
+private val unitProducer = IntMap<String>()
 
 /** Unit id -> uuid of the player currently/last controlling it (direct possession). */
-private val unitController = mutableMapOf<Int, String>()
+private val unitController = IntMap<String>()
 
 /** Building positions already scored for the one-time factory-build bonus. */
-private val scoredFactories = mutableSetOf<Int>()
+private val scoredFactories = IntSet()
 
 /**
  * Tile position -> the last per-second output pollProduction measured for it while it was still a live
@@ -50,7 +51,7 @@ private val scoredFactories = mutableSetOf<Int>()
  * just uncomputed. This is the closest thing to it still available: the rate observed at most one poll
  * tick ago, which pollProduction already computes for every scoring building every second anyway.
  */
-private val lastOutputPerSecond = mutableMapOf<Int, Double>()
+private val lastOutputPerSecond = IntFloatMap()
 
 private var timerScheduled = false
 
@@ -77,18 +78,23 @@ private fun addScoreData(data: PlayerData?, amount: Double) {
 
 private fun addScore(uuid: String?, amount: Double) = addScoreData(ownerData(uuid), amount)
 
-/** Sum of a block's item build cost. */
-private fun resourceCost(block: Block): Int {
+// Keyed on content (blocks and unit types are loaded once), so unlike the per-game state above these
+// are never cleared: a requirement sum cannot change while the server runs.
+private val resourceCostCache = HashMap<Block, Int>()
+private val unitCostCache = HashMap<mindustry.type.UnitType, Int>()
+
+/** Sum of a block's item build cost. resourceCost runs on every bullet hit, so the sum is cached. */
+private fun resourceCost(block: Block): Int = resourceCostCache.getOrPut(block) {
     var sum = 0
     block.requirements?.forEach { sum += it.amount }
-    return sum
+    sum
 }
 
 /** Sum of a unit type's build cost. */
-private fun unitCost(type: mindustry.type.UnitType): Int {
+private fun unitCost(type: mindustry.type.UnitType): Int = unitCostCache.getOrPut(type) {
     var sum = 0
     type.getTotalRequirements()?.forEach { sum += it.amount }
-    return sum
+    sum
 }
 
 /**
@@ -103,18 +109,21 @@ private fun isPenaltyExempt(block: Block): Boolean = conf.resourcePenaltyExempt.
     if (it == "turret") block.category == Category.turret else block.name.contains(it)
 }
 
-/** Stored amount of [item] in the team's first core, 0 if none. */
-private fun coreItem(building: Building, item: Item): Int {
-    val core = building.team().data().core() ?: return 0
+/** Stored amount of [item] in [team]'s first core, 0 if none. */
+private fun coreItem(team: Team, item: Item): Int {
+    val core = team.data().core() ?: return 0
     return core.items?.get(item) ?: 0
 }
 
 /** Mining multiplier: 1.0 until the team core holds [coreThreshold] of both copper and lead, then reduced. */
-private fun miningMultiplier(building: Building): Double {
-    val reached = coreItem(building, Items.copper) >= conf.coreThreshold &&
-            coreItem(building, Items.lead) >= conf.coreThreshold
+private fun miningMultiplier(team: Team): Double {
+    val reached = coreItem(team, Items.copper) >= conf.coreThreshold &&
+            coreItem(team, Items.lead) >= conf.coreThreshold
     return if (reached) conf.postThresholdMultiplier else 1.0
 }
+
+/** Mining multiplier: 1.0 until the team core holds [coreThreshold] of both copper and lead, then reduced. */
+private fun miningMultiplier(building: Building): Double = miningMultiplier(building.team())
 
 // --- Event handlers ---
 
@@ -136,12 +145,12 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
 
     if (!event.breaking) {
         // Record ownership.
-        tileOwner[pos] = player.uuid()
+        tileOwner.put(pos, player.uuid())
         // A producer at this position that was removed some other way (killed, an Undo rollback, a raw
         // setBlock) never went through the breaking branch below, so its rate could still be sitting
         // here. Whatever gets built now starts with a clean slate rather than inheriting a dead
         // building's output.
-        lastOutputPerSecond.remove(pos)
+        lastOutputPerSecond.remove(pos, 0f)
 
         // First-build factory bonus.
         val factoryScore = conf.factoryBuildScore[block.name]
@@ -164,14 +173,14 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
         val build = tile.build
         val realBlock = (build as? ConstructBlock.ConstructBuild)?.current ?: block
         if (build != null && !isPenaltyExempt(realBlock)) {
-            val perSec = lastOutputPerSecond[pos] ?: 0.0
+            val perSec = lastOutputPerSecond.get(pos, 0f).toDouble()
             if (perSec > 0.0) {
                 addScore(owner, -perSec * miningMultiplier(build))
             }
         }
         tileOwner.remove(pos)
         scoredFactories.remove(pos)
-        lastOutputPerSecond.remove(pos)
+        lastOutputPerSecond.remove(pos, 0f)
     }
 }
 
@@ -179,8 +188,8 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
 fun unitCreate(event: UnitCreateEvent) {
     if (!conf.enabled) return
     val spawner = event.spawner ?: return
-    val producer = tileOwner[spawner.pos()] ?: return
-    unitProducer[event.unit.id()] = producer
+    val producer = tileOwner.get(spawner.pos()) ?: return
+    unitProducer.put(event.unit.id(), producer)
 }
 
 @Event
@@ -191,7 +200,7 @@ fun unitControl(event: UnitControlEvent) {
     // assertion that threw on the game thread every time a player let go of a unit.
     val unit = event.unit ?: return
     // Player took direct control of a unit; remember the controller.
-    unitController[unit.id()] = event.player.uuid()
+    unitController.put(unit.id(), event.player.uuid())
 }
 
 @Event
@@ -215,14 +224,14 @@ fun buildDamage(event: BuildDamageEvent) {
     // Identify the controlling player.
     val attacker: String? = when {
         owner.isPlayer -> owner.player?.uuid()
-        owner.controller() is CommandAI -> unitController[owner.id()] // best-effort: direct-control history
+        owner.controller() is CommandAI -> unitController.get(owner.id()) // best-effort: direct-control history
         else -> null
     }
 
     addScore(attacker, value.toDouble())
 
     // Reward the unit's producer with 50% (1.5x total when attacker == producer).
-    val producer = unitProducer[owner.id()]
+    val producer = unitProducer.get(owner.id())
     addScore(producer, value.toDouble() * 0.5)
 }
 
@@ -231,7 +240,7 @@ fun unitDestroy(event: UnitDestroyEvent) {
     if (!conf.enabled) return
     val id = event.unit.id()
     // A controlled unit died: penalize its controller by its production value (resource cost).
-    val controller = unitController[id]
+    val controller = unitController.get(id)
     if (controller != null) {
         addScore(controller, -unitCost(event.unit.type()).toDouble())
     }
@@ -316,32 +325,44 @@ internal fun pollProduction() {
         for (data in players) put(data.uuid, data) // online overrides offline, same preference as ownerData()
     }
 
+    // miningMultiplier and the titanium branch of itemScore read the team core, the same one for every
+    // drill and crafter of that team. Memoised per team for this poll only: the core's contents move
+    // between polls.
+    val miningMultiplierByTeam = HashMap<Team, Double>()
+    val titaniumScoreByTeam = HashMap<Team, Double>()
+
     Groups.build.forEach { build ->
         val pos = build.pos()
-        val owner = tileOwner[pos]?.let { ownerLookup[it] }
+        val owner = tileOwner.get(pos)?.let { ownerLookup[it] }
 
         // Mining (drills). Also the source for lastOutputPerSecond (task-070): written every tick a
         // drill is alive, whatever it is currently producing, so a self-deconstruction penalty never
         // reads a rate from a building that stopped mining a while before it was torn down.
         if (build is Drill.DrillBuild) {
             val perSec = estimateOutputPerSecond(build)
-            lastOutputPerSecond[pos] = perSec
+            lastOutputPerSecond.put(pos, perSec.toFloat())
             if (perSec > 0.0) {
-                addScoreData(owner, perSec * conf.miningPerOre * miningMultiplier(build))
+                val multiplier = miningMultiplierByTeam.getOrPut(build.team()) { miningMultiplier(build.team()) }
+                addScoreData(owner, perSec * conf.miningPerOre * multiplier)
             }
         }
 
         // Item production (crafters). Same lastOutputPerSecond bookkeeping as drills above.
         if (build is GenericCrafter.GenericCrafterBuild) {
             val perSec = estimateOutputPerSecond(build)
-            lastOutputPerSecond[pos] = perSec
+            lastOutputPerSecond.put(pos, perSec.toFloat())
             val crafter = build.block as? GenericCrafter
             val outputs = crafter?.outputItems
             if (crafter != null && outputs != null && crafter.craftTime > 0f && perSec > 0.0) {
                 for (stack in outputs) {
                     val stackPerSec = stack.amount * 60.0 / crafter.craftTime * build.warmup
                     if (stackPerSec <= 0.0) continue
-                    addScoreData(owner, itemScore(stack.item, build) * stackPerSec)
+                    val score = if (stack.item == Items.titanium) {
+                        titaniumScoreByTeam.getOrPut(build.team()) { itemScore(stack.item, build.team()) }
+                    } else {
+                        itemScore(stack.item, build.team())
+                    }
+                    addScoreData(owner, score * stackPerSec)
                 }
             }
         }
@@ -357,9 +378,9 @@ internal fun pollProduction() {
 }
 
 /** Score per produced item; titanium switches on the team core titanium threshold. */
-private fun itemScore(item: Item, building: Building): Double {
+private fun itemScore(item: Item, team: Team): Double {
     if (item == Items.titanium) {
-        return if (coreItem(building, Items.titanium) >= conf.titaniumThreshold)
+        return if (coreItem(team, Items.titanium) >= conf.titaniumThreshold)
             conf.titaniumScoreAfterThreshold.toDouble()
         else
             conf.titaniumScoreBeforeThreshold.toDouble()

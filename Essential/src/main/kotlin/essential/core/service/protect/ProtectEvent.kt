@@ -138,8 +138,10 @@ fun runEverySecond() {
 @Event
 fun update() {
     if (conf.pvp.border.enabled) {
+        val maxX = Vars.world.width() * 8
+        val maxY = Vars.world.height() * 8
         Groups.unit.forEach { unit ->
-            if (unit.x < 0 || unit.y < 0 || unit.x > (Vars.world.width() * 8) || unit.y > (Vars.world.height() * 8)) {
+            if (unit.x < 0 || unit.y < 0 || unit.x > maxX || unit.y > maxY) {
                 unit.kill()
             }
         }

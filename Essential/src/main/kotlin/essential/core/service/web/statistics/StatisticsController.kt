@@ -29,6 +29,7 @@ import kotlinx.datetime.toInstant
 import kotlinx.serialization.Serializable
 import mindustry.Vars
 import mindustry.game.EventType
+import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
 import java.lang.reflect.Method
@@ -193,6 +194,16 @@ class StatisticsController {
             val teamBuildingsMap = mutableMapOf<String, Int>()
 
             if (Vars.state.teams != null && Vars.state.teams.active != null) {
+                // One pass over each group, not one per team.
+                val unitCounts = HashMap<Team, Int>()
+                for (unit in Groups.unit) {
+                    unitCounts[unit.team] = (unitCounts[unit.team] ?: 0) + 1
+                }
+                val buildingCounts = HashMap<Team, Int>()
+                for (build in Groups.build) {
+                    buildingCounts[build.team] = (buildingCounts[build.team] ?: 0) + 1
+                }
+
                 Vars.state.teams.active.forEach { teamData ->
                     val team = teamData.team
                     val teamName = team.name
@@ -211,23 +222,8 @@ class StatisticsController {
                     }
                     teamResMap[teamName] = totalRes
 
-                    // Compute team units
-                    var unitCount = 0
-                    for (unit in Groups.unit) {
-                        if (unit.team == team) {
-                            unitCount++
-                        }
-                    }
-                    teamUnitsMap[teamName] = unitCount
-
-                    // Compute team buildings
-                    var buildingCount = 0
-                    for (build in Groups.build) {
-                        if (build.team == team) {
-                            buildingCount++
-                        }
-                    }
-                    teamBuildingsMap[teamName] = buildingCount
+                    teamUnitsMap[teamName] = unitCounts[team] ?: 0
+                    teamBuildingsMap[teamName] = buildingCounts[team] ?: 0
                 }
             }
             teamResources = teamResMap

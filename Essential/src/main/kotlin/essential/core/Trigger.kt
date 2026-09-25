@@ -23,9 +23,10 @@ import essential.common.pluginData
 import essential.common.rootPath
 import essential.common.systemTimezone
 import essential.common.util.changeTeam
-import essential.common.util.findPlayerData
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.toLocalDateTime
@@ -58,6 +59,12 @@ import essential.common.database.data.update
 /** Mindustry colour tags, stripped before a name is re-coloured. Compiled once: [Trigger] used to
  *  build this inside the one-second loop, so it was recompiled per animated player per second. */
 private val colorTag = Regex("\\[(.*?)]")
+
+/** The animated name's palette, one colour tag per character in turn. */
+private val RAINBOW = arrayOf(
+    "[#ff0000]", "[#ff7f00]", "[#ffff00]", "[#7fff00]", "[#00ff00]", "[#00ff7f]",
+    "[#00ffff]", "[#007fff]", "[#0000ff]", "[#8000ff]", "[#ff00ff]"
+)
 
 object Trigger {
     fun pingHostImpl(address: String, port: Int, listener: Consumer<Host>) {
@@ -585,33 +592,15 @@ object Trigger {
     fun register() {
         var colorOffset = 0
         fun rainbow(name: String): String {
-            val stringBuilder = StringBuilder()
-            val colors = arrayOfNulls<String>(11)
-            colors[0] = "[#ff0000]"
-            colors[1] = "[#ff7f00]"
-            colors[2] = "[#ffff00]"
-            colors[3] = "[#7fff00]"
-            colors[4] = "[#00ff00]"
-            colors[5] = "[#00ff7f]"
-            colors[6] = "[#00ffff]"
-            colors[7] = "[#007fff]"
-            colors[8] = "[#0000ff]"
-            colors[9] = "[#8000ff]"
-            colors[10] = "[#ff00ff]"
-            val newName = arrayOfNulls<String>(name.length)
+            val stringBuilder = StringBuilder(name.length * 10)
             for (i in name.indices) {
-                val c = name[i]
-                var colorIndex = (i + colorOffset) % colors.size
+                var colorIndex = (i + colorOffset) % RAINBOW.size
                 if (colorIndex < 0) {
-                    colorIndex += colors.size
+                    colorIndex += RAINBOW.size
                 }
-                val new = colors[colorIndex] + c
-                newName[i] = new
+                stringBuilder.append(RAINBOW[colorIndex]).append(name[i])
             }
             colorOffset--
-            newName.forEach {
-                stringBuilder.append(it)
-            }
             return stringBuilder.toString()
         }
 
@@ -634,15 +623,16 @@ object Trigger {
             for (data in players) {
                 recordPvpDefeat(data)
 
-                if (data.status.containsKey("freeze")) {
-                    val d = findPlayerData(data.uuid)
-                    if (d != null) {
-                        val player = d.player
-                        val split = data.status["freeze"].toString().split("/")
-                        player[split[0].toFloat()] = split[1].toFloat()
-                        Call.setPosition(player.con(), split[0].toFloat(), split[1].toFloat())
-                        Call.setCameraPosition(player.con(), split[0].toFloat(), split[1].toFloat())
-                    }
+                // data is the entry being iterated, so there is nothing to look up; parsed once a tick.
+                val frozenAt = data.status["freeze"]
+                if (frozenAt != null) {
+                    val split = frozenAt.toString().split("/")
+                    val x = split[0].toFloat()
+                    val y = split[1].toFloat()
+                    val player = data.player
+                    player[x] = y
+                    Call.setPosition(player.con(), x, y)
+                    Call.setCameraPosition(player.con(), x, y)
                 }
 
                 if (data.status.containsKey("chars_text") && Time.globalTime.toInt() % 30 == 0) {

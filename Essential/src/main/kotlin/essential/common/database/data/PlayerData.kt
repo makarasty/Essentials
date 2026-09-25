@@ -160,7 +160,7 @@ data class PlayerData(
 
     // APM (Actions Per Minute)
     var apm = 0
-    var apmTimestamps = mutableListOf<Long>()
+    var apmTimestamps = ArrayDeque<Long>()
 
     // achievements status
     var achievementStatus = mutableListOf<String>()

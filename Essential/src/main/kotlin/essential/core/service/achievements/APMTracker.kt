@@ -1,12 +1,15 @@
 package essential.core.service.achievements
 
 import arc.Events
+import arc.struct.ObjectIntMap
+import arc.struct.Queue
 import arc.util.Timer
 import essential.common.database.data.PlayerData
 import essential.common.players
 import essential.common.util.findPlayerData
 import mindustry.Vars
 import mindustry.content.Blocks
+import mindustry.entities.units.BuildPlan
 import mindustry.game.EventType
 import mindustry.net.Administration.ActionFilter
 import mindustry.net.Administration.ActionType
@@ -51,6 +54,29 @@ class APMTracker {
          * loop replaces the stored set, it never adds to one.
          */
         private val NO_PLANS = HashSet<PlanKey>(0)
+
+        /** Hash of each player's plan queue as last diffed. Game thread only, like the tick loop. */
+        private val planFingerprints = ObjectIntMap<String>()
+
+        /**
+         * An allocation-free hash of a plan queue, so a tick whose queue is what it was last tick skips
+         * building a set of it. Order counts here though the diff ignores it: a reordered queue only
+         * costs one rebuild that finds nothing to track.
+         * ponytail: a 32-bit collision would let one real change go uncounted; compare exactly if the
+         * APM achievements ever need to be exact.
+         */
+        private fun planFingerprint(plans: Queue<BuildPlan>): Int {
+            var h = plans.size
+            for (i in 0 until plans.size) {
+                val plan = plans.get(i)
+                h = 31 * h + plan.x
+                h = 31 * h + plan.y
+                h = 31 * h + if (plan.breaking) 1 else 0
+                h = 31 * h + (plan.block?.id?.toInt() ?: -1)
+                h = 31 * h + plan.rotation
+            }
+            return h
+        }
 
         /** Hoisted out of [updatePlayerAPM], which runs once a second per player and on every action. */
         private val APM_LEVELS = listOf(
@@ -110,6 +136,8 @@ class APMTracker {
 
                     val currentPlans = unit.plans() ?: continue
                     val prev = playerPlans[data.uuid]
+                    val fingerprint = planFingerprint(currentPlans)
+                    if (prev != null && planFingerprints.get(data.uuid, fingerprint.inv()) == fingerprint) continue
                     val currentSet = if (currentPlans.isEmpty()) {
                         NO_PLANS
                     } else {
@@ -151,6 +179,7 @@ class APMTracker {
                     }
 
                     playerPlans[data.uuid] = currentSet
+                    planFingerprints.put(data.uuid, fingerprint)
                 }
             }
 
@@ -188,20 +217,19 @@ class APMTracker {
                 resetThresholds(player.uuid())
                 lastTapTimes.remove(player.uuid())
                 playerPlans.remove(player.uuid())
+                planFingerprints.remove(player.uuid(), 0)
             }
         }
 
-        // apmTimestamps is a plain ArrayList. Every caller is on the game thread, the Timer
+        // apmTimestamps is a plain ArrayDeque. Every caller is on the game thread, the Timer
         // sweep included, because arc posts task bodies to Core.app (Timer.update calls
         // task.app.post). Do not call this from a coroutine.
+        //
+        // Only records: the one-second timer above recomputes the APM. Recomputing here walked all
+        // MAX_ACTION_TIMESTAMPS entries per action, and a dragged line of plans is one action per block.
         fun trackAction(data: PlayerData) {
-            data.apmTimestamps.add(System.currentTimeMillis())
-
-            if (data.apmTimestamps.size > MAX_ACTION_TIMESTAMPS) {
-                data.apmTimestamps.removeAt(0)
-            }
-
-            updatePlayerAPM(data)
+            data.apmTimestamps.addLast(System.currentTimeMillis())
+            if (data.apmTimestamps.size > MAX_ACTION_TIMESTAMPS) data.apmTimestamps.removeFirst()
         }
 
         // Calculate APM for a player based on action timestamps

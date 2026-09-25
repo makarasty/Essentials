@@ -14,6 +14,12 @@ import mindustry.gen.Call
 import mindustry.gen.Playerc
 import kotlin.random.Random
 
+/**
+ * Hex effect colours parsed once instead of 20 times a second per player. Game thread only (effect()
+ * runs from the task's Core.app.post), and shared safely: Call.effect only reads the colour's rgba.
+ */
+private val hexColorCache = HashMap<String, Color>()
+
 class EffectSystem : Timer.Task() {
     class EffectPos(
         val player: Playerc,
@@ -34,10 +40,9 @@ class EffectSystem : Timer.Task() {
     private var pending = false
 
     fun effect(data: PlayerData) {
-        val color = if (data.effectColor != null) {
-            if (Colors.get(data.effectColor) != null) Colors.get(data.effectColor) else Color.valueOf(
-                data.effectColor
-            )
+        val effectColor = data.effectColor
+        val color = if (effectColor != null) {
+            Colors.get(effectColor) ?: hexColorCache.getOrPut(effectColor) { Color.valueOf(effectColor) }
         } else {
             data.player.color()
         }
