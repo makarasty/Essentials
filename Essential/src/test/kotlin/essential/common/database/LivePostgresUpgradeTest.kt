@@ -253,15 +253,15 @@ class LivePostgresUpgradeTest {
         // The suffixed scripts exist so this engine never sees MySQL syntax. Both steps have to name
         // their own file and neither may fall back to the generic one or reach for H2's.
         assertTrue(
-            bootLog.any { it.contains(bundle["database.upgrade.execute", "v4_postgres.sql"]) },
-            "the v3 step did not run v4_postgres.sql. $why"
+            bootLog.any { it.contains(bundle["database.upgrade.execute", "db/migration/postgres/V4__legacy_migrate_postgres.sql"]) },
+            "the v3 step did not run the PostgreSQL V4 script. $why"
         )
         assertTrue(
-            bootLog.any { it.contains(bundle["database.upgrade.execute", "v5_postgres.sql"]) },
-            "the v4 step did not run v5_postgres.sql. $why"
+            bootLog.any { it.contains(bundle["database.upgrade.execute", "db/migration/postgres/V5__legacy_migrate_postgres.sql"]) },
+            "the v4 step did not run the PostgreSQL V5 script. $why"
         )
         assertTrue(
-            bootLog.none { it.contains("v4.sql") || it.contains("v5.sql") || it.contains("_h2.sql") },
+            bootLog.none { it.contains("/mysql/") || it.contains("/h2/") },
             "the upgrade reached for another engine's script. $why"
         )
 

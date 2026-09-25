@@ -9,7 +9,20 @@ import org.flywaydb.core.Flyway
 /** Flyway-backed migration entry point loaded reflectively by Database.kt. */
 object FlywayMigration {
     @JvmStatic
-    fun migrate(databaseType: String, r2dbcUrl: String, user: String, pass: String): String? {
+    fun migrate(
+        databaseType: String,
+        r2dbcUrl: String,
+        user: String,
+        pass: String,
+        baselineVersion: String,
+        targetVersion: String?
+    ): String? {
+        val migrationProfile = when (databaseType) {
+            "postgresql" -> "postgres"
+            "mysql", "mariadb" -> "mysql"
+            else -> "h2"
+        }
+
         val (jdbcUrl, effectiveUser, effectivePass) = when (databaseType) {
             "postgresql" -> {
                 val (host, port, database) = parseR2dbcUrl(r2dbcUrl, "postgresql://", "5432")
@@ -35,12 +48,14 @@ object FlywayMigration {
         val previousClassLoader = Thread.currentThread().contextClassLoader
         return try {
             Thread.currentThread().contextClassLoader = modClassLoader
-            val flyway = Flyway.configure(modClassLoader)
+            val configuration = Flyway.configure(modClassLoader)
                 .dataSource(jdbcUrl, effectiveUser, effectivePass)
-                .locations("classpath:db/migration")
+                .locations("classpath:db/migration/$migrationProfile")
                 .baselineOnMigrate(true)
-                .baselineVersion("5")
-                .load()
+                .baselineVersion(baselineVersion)
+
+            targetVersion?.let(configuration::target)
+            val flyway = configuration.load()
             flyway.migrate()
             // With baselineOnMigrate(true) an absent version means Flyway baselined or found nothing
             // to do, and calling that "5" is what let a failed legacy upgrade look finished.

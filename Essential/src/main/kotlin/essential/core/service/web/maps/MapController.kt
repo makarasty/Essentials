@@ -66,6 +66,12 @@ class MapController {
      */
     private suspend fun allMaps(): List<mindustry.maps.Map> = onGameThread { Vars.maps.all().toList() }
 
+    private sealed interface RenderJobSubmission {
+        data class Submitted(val jobId: String) : RenderJobSubmission
+        data object Unsupported : RenderJobSubmission
+        data object Failed : RenderJobSubmission
+    }
+
     private class FetchTask(
         val hash: String,
         val msavBytes: ByteArray,
@@ -81,6 +87,7 @@ class MapController {
     private val fetchChannel = Channel<FetchTask>(MAX_QUEUED_FETCHES)
     private val fetchSemaphore = Semaphore(3)
     private val mapHashCache = ConcurrentHashMap<String, MapHashCacheEntry>()
+    private val directRenderEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val uploadersMap = Collections.synchronizedMap(mutableMapOf<String, String>())
 
     val webCacheDir = File(rootPath.child("data/webCache").absolutePath())
@@ -572,16 +579,16 @@ class MapController {
         while (attempts < maxAttempts) {
             attempts++
             try {
-                Log.debug("Submitting render job to map render API for map '$mapName' (width: $width, attempt $attempts/$maxAttempts)")
+                Log.debug("Requesting a rendered image for map '$mapName' (width: $width, attempt $attempts/$maxAttempts)")
                 val result = withContext(Dispatchers.IO) {
-                    fetchMapImageBatch(msavBytes, fileName, mapName, width)
+                    fetchMapImage(msavBytes, fileName, mapName, width)
                 }
                 if (result != null) {
                     return result
                 }
-                Log.warn("Render job returned null for map '$mapName' (width: $width, attempt $attempts/$maxAttempts)")
+                Log.warn("Map render request returned null for map '$mapName' (width: $width, attempt $attempts/$maxAttempts)")
             } catch (e: Exception) {
-                Log.err("Exception during batch render for map '$mapName' (width: $width): ${e.message} (attempt $attempts/$maxAttempts)")
+                Log.err("Exception while rendering map '$mapName' (width: $width): ${e.message} (attempt $attempts/$maxAttempts)")
             }
             if (attempts < maxAttempts) {
                 delay(retryDelay)
@@ -590,10 +597,28 @@ class MapController {
         return null
     }
 
-    private suspend fun fetchMapImageBatch(msavBytes: ByteArray, fileName: String, mapName: String, width: Int? = null): ByteArray? {
-        val baseUrl = conf.mapRenderServer.trim().trimEnd('/')
-        val jobId = submitRenderJob(baseUrl, msavBytes, fileName, mapName, width)
-            ?: return null
+    internal suspend fun fetchMapImage(
+        msavBytes: ByteArray,
+        fileName: String,
+        mapName: String,
+        width: Int? = null,
+        renderServer: String = conf.mapRenderServer
+    ): ByteArray? {
+        val renderEndpoint = renderServer.trim()
+        if (renderEndpoint in directRenderEndpoints) {
+            return fetchMapImageDirect(renderEndpoint, msavBytes, fileName)
+        }
+
+        val baseUrl = renderEndpoint.trimEnd('/')
+        val jobId = when (val submission = submitRenderJob(baseUrl, msavBytes, fileName, mapName, width)) {
+            is RenderJobSubmission.Submitted -> submission.jobId
+            RenderJobSubmission.Unsupported -> {
+                directRenderEndpoints += renderEndpoint
+                Log.debug("Map render server does not support the /jobs API; sending '$fileName' directly to '$renderEndpoint'")
+                return fetchMapImageDirect(renderEndpoint, msavBytes, fileName)
+            }
+            RenderJobSubmission.Failed -> return null
+        }
 
         Log.debug("Render job submitted for map '$mapName' (width: $width): jobId=$jobId")
 
@@ -630,7 +655,7 @@ class MapController {
         return null
     }
 
-    private fun submitRenderJob(baseUrl: String, msavBytes: ByteArray, fileName: String, mapName: String, width: Int? = null): String? {
+    private fun submitRenderJob(baseUrl: String, msavBytes: ByteArray, fileName: String, mapName: String, width: Int? = null): RenderJobSubmission {
         val boundary = "----EssentialBoundary${System.nanoTime()}"
         val url = if (width != null && width > 0) URL("$baseUrl/jobs?width=$width") else URL("$baseUrl/jobs")
         val conn = url.openConnection() as HttpURLConnection
@@ -643,11 +668,7 @@ class MapController {
             conn.setRequestProperty("Connection", "close")
 
             DataOutputStream(conn.outputStream).use { out ->
-                out.write("--$boundary\r\n".toByteArray())
-                out.write("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n".toByteArray(Charsets.UTF_8))
-                out.write("Content-Type: application/octet-stream\r\n\r\n".toByteArray())
-                out.write(msavBytes)
-                out.write("\r\n".toByteArray())
+                writeMsavPart(out, boundary, msavBytes, fileName)
                 out.write("--$boundary\r\n".toByteArray())
                 out.write("Content-Disposition: form-data; name=\"mapName\"\r\n".toByteArray())
                 out.write("Content-Type: text/plain; charset=UTF-8\r\n\r\n".toByteArray())
@@ -660,19 +681,76 @@ class MapController {
             val responseCode = conn.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = try { conn.errorStream?.use { it.readBytes().decodeToString() } } catch (_: Exception) { null }
+                if (responseCode == HttpURLConnection.HTTP_NOT_FOUND ||
+                    responseCode == HttpURLConnection.HTTP_BAD_METHOD ||
+                    responseCode == HttpURLConnection.HTTP_NOT_IMPLEMENTED
+                ) {
+                    return RenderJobSubmission.Unsupported
+                }
                 Log.err("Failed to submit render job for map '$mapName' (HTTP $responseCode): $errorBody")
-                return null
+                return RenderJobSubmission.Failed
             }
 
             val body = conn.inputStream.use { it.readBytes().decodeToString() }
-            val json = Json.parseToJsonElement(body).jsonObject
-            return json["jobId"]?.jsonPrimitive?.content
+            val jobId = runCatching {
+                Json.parseToJsonElement(body).jsonObject["jobId"]?.jsonPrimitive?.content
+            }.getOrNull()
+            return if (jobId.isNullOrBlank()) {
+                RenderJobSubmission.Unsupported
+            } else {
+                RenderJobSubmission.Submitted(jobId)
+            }
         } catch (e: Exception) {
             Log.err("Exception submitting render job for map '$mapName': ${e.message}")
+            return RenderJobSubmission.Failed
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun fetchMapImageDirect(baseUrl: String, msavBytes: ByteArray, fileName: String): ByteArray? {
+        val boundary = "----EssentialBoundary${System.nanoTime()}"
+        val conn = URL(baseUrl).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 30000
+            conn.readTimeout = 120000
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            conn.setRequestProperty("Connection", "close")
+
+            DataOutputStream(conn.outputStream).use { out ->
+                writeMsavPart(out, boundary, msavBytes, fileName)
+                out.write("--$boundary--\r\n".toByteArray())
+                out.flush()
+            }
+
+            val responseCode = conn.responseCode
+            if (responseCode !in 200..299) {
+                val errorBody = try { conn.errorStream?.use { it.readBytes().decodeToString() } } catch (_: Exception) { null }
+                Log.err("Direct map render request failed for '$fileName' (HTTP $responseCode): $errorBody")
+                return null
+            }
+            return conn.inputStream.use { it.readBytes() }
+        } catch (e: Exception) {
+            Log.err("Exception sending '$fileName' directly to the map render server: ${e.message}")
             return null
         } finally {
             conn.disconnect()
         }
+    }
+
+    private fun writeMsavPart(
+        out: DataOutputStream,
+        boundary: String,
+        msavBytes: ByteArray,
+        fileName: String
+    ) {
+        out.write("--$boundary\r\n".toByteArray())
+        out.write("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n".toByteArray(Charsets.UTF_8))
+        out.write("Content-Type: application/octet-stream\r\n\r\n".toByteArray())
+        out.write(msavBytes)
+        out.write("\r\n".toByteArray())
     }
 
     private fun pollJobStatus(baseUrl: String, jobId: String): String? {

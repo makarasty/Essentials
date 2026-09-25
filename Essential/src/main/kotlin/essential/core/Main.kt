@@ -227,8 +227,7 @@ class Main : Plugin() {
         registerGeneratedEventHandlers()
 
         // 스레드 등록
-        val trigger = Trigger()
-        trigger.register()
+        Trigger.register()
         threadPool.execute(Trigger.PingThread())
 
         Vars.netServer.admins.addActionFilter(object : Administration.ActionFilter {

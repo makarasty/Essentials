@@ -127,6 +127,7 @@ class PluginTest {
     companion object {
         private lateinit var main: Main
         private val r = Random()
+        private val playerCounter = java.util.concurrent.atomic.AtomicLong(0)
         lateinit var player: Playerc
         lateinit var path: Fi
         val serverCommand: CommandHandler = CommandHandler("")
@@ -713,7 +714,7 @@ class PluginTest {
                     return
                 }
             }
-            val name = faker.name().lastName() + Clock.System.now().toEpochMilliseconds()
+            val name = faker.name().lastName() + Clock.System.now().toEpochMilliseconds() + playerCounter.incrementAndGet()
             player.name(name)
             player.con.uuid = getSaltString()
             player.con.usid = getSaltString()
@@ -1295,6 +1296,7 @@ class PluginTest {
             val updatedWebContent = configDir.child("config_web.yaml").readString()
             assertTrue(updatedWebContent.contains("sessionSecret"), "config_web.yaml should be upgraded with sessionSecret")
             assertTrue(updatedWebContent.contains("enableWebSocket"), "config_web.yaml should be upgraded with enableWebSocket")
+            assertTrue(updatedWebContent.contains("mapRenderServer"), "config_web.yaml should be upgraded with mapRenderServer")
 
             assertEquals("%player.name[orange] >[white] %chat", chatConf.javaClass.getMethod("getChatFormat").invoke(chatConf))
 

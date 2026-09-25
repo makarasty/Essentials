@@ -90,7 +90,9 @@ object Permission {
 
     init {
         if (!mainFile.exists()) {
-            mainFile.write(this::class.java.getResourceAsStream("/permission_default.yaml")!!, false)
+            this::class.java.getResourceAsStream("/permission_default.yaml")?.use { input ->
+                mainFile.write(input, false)
+            }
         }
 
         if (!userFile.exists()) {

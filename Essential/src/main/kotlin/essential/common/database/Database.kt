@@ -3,6 +3,7 @@ package essential.common.database
 import arc.util.Log
 import essential.common.bundle
 import essential.common.database.data.getPluginData
+import essential.common.database.data.mergePlayerAccounts
 import essential.common.database.data.update
 import essential.common.database.table.*
 import essential.common.rootPath
@@ -20,6 +21,7 @@ import io.r2dbc.spi.ConnectionFactory
 import io.r2dbc.spi.ValidationDepth
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.LocalDateTime
@@ -30,7 +32,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.count
+import org.jetbrains.exposed.v1.core.greater
+import org.jetbrains.exposed.v1.core.isNotNull
 import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.vendors.*
 import org.jetbrains.exposed.v1.datetime.datetime
 import org.jetbrains.exposed.v1.r2dbc.*
@@ -228,7 +234,13 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
     // baselined an untouched schema, or found one another server had baselined, so feeding it into
     // updatePluginVersion marked a legacy upgrade that had just aborted as done and every later start
     // skipped the legacy path. plugin_data.database_version is now written only by the legacy upgrade.
-    runFlywayMigration(databaseType, r2dbcUrl, user, pass)
+    //
+    // Skipped outright when that upgrade did not finish. Flyway would baseline the half-migrated schema
+    // at 5 and run V6 onwards over it, and V8 needs the account columns the legacy scripts add.
+    if (legacyUpgrade.failure == null) {
+        mergeDuplicateAccounts()
+        runFlywayMigration(databaseType, r2dbcUrl, user, pass)
+    }
 
     reportLegacyUpgradeOutcome(legacyUpgrade)
 }
@@ -369,9 +381,59 @@ private suspend fun releaseOwnStaleConnections() {
 }
 
 /**
+ * Folds every account that owns more than one `players` row into its newest row, ahead of Flyway V8.
+ *
+ * V8 puts a unique index on `account_id` and, to get there, deletes every duplicate but the newest along
+ * with its achievements and contributions. Merging them first through [mergePlayerAccounts] keeps the
+ * stats and achievements, and leaves V8 only the index to add. Newest is V8's own order - latest login,
+ * then highest id - so both pick the same survivor.
+ *
+ * The duplicate accounts are asked of the database rather than grouped here, so the engine's collation
+ * decides what counts as the same account, exactly as it will for the unique index. Once V8 has run the
+ * index makes the grouping query return nothing, so on every later boot this is one cheap read.
+ */
+internal suspend fun mergeDuplicateAccounts() {
+    val duplicated = runCatching {
+        suspendTransaction {
+            PlayerTable.select(PlayerTable.accountID)
+                .where { PlayerTable.accountID.isNotNull() and (PlayerTable.accountID neq "") }
+                .groupBy(PlayerTable.accountID)
+                .having { PlayerTable.id.count() greater 1L }
+                .mapNotNull { it[PlayerTable.accountID] }
+                .toList()
+        }
+    }.onFailure {
+        Log.warn("[Database] could not look for duplicate accounts: ${it.message}")
+    }.getOrDefault(emptyList())
+
+    for (account in duplicated) {
+        val rows = suspendTransaction {
+            PlayerTable.select(PlayerTable.id, PlayerTable.uuid, PlayerTable.lastLoginDate)
+                .where { PlayerTable.accountID eq account }
+                .map { Triple(it[PlayerTable.id], it[PlayerTable.uuid], it[PlayerTable.lastLoginDate]) }
+                .toList()
+        }.sortedWith(compareByDescending<Triple<UInt, String, LocalDateTime>> { it.third }.thenByDescending { it.first })
+
+        val keep = rows.firstOrNull() ?: continue
+        for (older in rows.drop(1)) {
+            runCatching { mergePlayerAccounts(older.second, keep.second) }
+                .onSuccess { Log.info("[Database] duplicate account '$account': $it") }
+                .onFailure { Log.warn("[Database] could not merge duplicate account '$account' (${older.second}): ${it.message}") }
+        }
+    }
+}
+
+/**
  * Execute Flyway migrations
  */
-fun runFlywayMigration(databaseType: String, r2dbcUrl: String, user: String, pass: String): String? {
+fun runFlywayMigration(
+    databaseType: String,
+    r2dbcUrl: String,
+    user: String,
+    pass: String,
+    baselineVersion: String = "5",
+    targetVersion: String? = null,
+): String? {
     return try {
         val migrationClass = Class.forName("essential.core.service.migration.FlywayMigration")
         migrationClass.getMethod(
@@ -380,7 +442,9 @@ fun runFlywayMigration(databaseType: String, r2dbcUrl: String, user: String, pas
             String::class.java,
             String::class.java,
             String::class.java,
-        ).invoke(null, databaseType, r2dbcUrl, user, pass) as? String
+            String::class.java,
+            String::class.java,
+        ).invoke(null, databaseType, r2dbcUrl, user, pass, baselineVersion, targetVersion) as? String
     } catch (_: ClassNotFoundException) {
         Log.info("Flyway migration module is not included; database migration was skipped.")
         null
@@ -480,22 +544,21 @@ private suspend fun updatePluginVersion(version: UByte) {
 }
 
 /**
- * The legacy upgrade scripts to try for one version step, most specific first.
+ * The legacy upgrade script for one version step.
  *
- * The generic `v<n>.sql` is the MySQL-flavoured script, so it is the correct fallback for MySQL and
- * MariaDB, which ship no suffixed file of their own. An `_h2` entry in the middle of this list used to
- * win instead, feeding H2-only syntax to every other engine and leaving `v<n>.sql` unreachable.
+ * They sit beside the Flyway migrations, one folder per engine family, since upstream moved them there;
+ * MariaDB shares the MySQL folder. Flyway never runs them itself: it always baselines at
+ * [LEGACY_BASELINE_VERSION], which puts V4 and V5 below its baseline, and [upgradeLegacyDatabase] runs
+ * them statement by statement instead, because they were written for a runner that survives a statement
+ * failing and Flyway abandons the whole script on the first one.
  */
-internal fun legacySqlCandidates(version: UByte, dialect: DatabaseDialect?): List<String> {
-    val suffix = when (dialect) {
-        is H2Dialect -> "_h2"
-        is PostgreSQLDialect -> "_postgres"
-        // MariaDBDialect is a MysqlDialect, so it has to be matched first.
-        is MariaDBDialect -> "_mariadb"
-        is MysqlDialect -> "_mysql"
-        else -> ""
+internal fun legacyScriptPath(version: UByte, dialect: DatabaseDialect?): String {
+    val profile = when (dialect) {
+        is H2Dialect -> "h2"
+        is PostgreSQLDialect -> "postgres"
+        else -> "mysql"
     }
-    return listOf("v$version$suffix.sql", "v$version.sql").distinct()
+    return "db/migration/$profile/V${version}__legacy_migrate_$profile.sql"
 }
 
 internal const val LEGACY_BASELINE_VERSION: UByte = 5u
@@ -633,7 +696,7 @@ private suspend fun upgradeLegacyDatabase(): LegacyUpgradeOutcome {
             } catch (_: Throwable) {
                 false
             }
-            if (found != null || dbExists) 3u else null
+            if (dbExists) 3u else null
         }
 
         if (currentVersion == null) {
@@ -653,47 +716,31 @@ private suspend fun upgradeLegacyDatabase(): LegacyUpgradeOutcome {
 
             for (v in (currentVersion.toUInt() + 1u)..LEGACY_BASELINE_VERSION.toUInt()) {
                 val version = v.toUByte()
-                val sqlFiles = legacySqlCandidates(version, defaultDatabase!!.config.explicitDialect)
-
-                var applied = false
-                for (sqlFile in sqlFiles) {
-                    val inputStream = Main::class.java.classLoader.getResourceAsStream("sql/$sqlFile")
-                    if (inputStream != null) {
-                        try {
-                            val sqlScript = inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-                            Log.info(bundle["database.upgrade.execute", sqlFile])
-
-                            suspendTransaction {
-                                swallowed += applyLegacyScript(sqlScript)
-
-                                updatePluginVersion(version)
-                            }
-                            applied = true
-
-                            // Outside the transaction above, not inside it. This opens its own and
-                            // swallows every failure it meets, so within the script's transaction a
-                            // failure it swallowed left that transaction aborted on PostgreSQL - after
-                            // the version stamp had already been written, and with COMMIT answering an
-                            // aborted transaction by rolling it back silently. The step would then
-                            // report success having applied nothing.
-                            if (version == 4u.toUByte()) {
-                                migrateStatusToAchievements()
-                            }
-                            break
-                        } catch (e: Throwable) {
-                            e.printStackTrace()
-                            throw e
-                        }
-                    }
-                }
+                val sqlFile = legacyScriptPath(version, defaultDatabase!!.config.explicitDialect)
 
                 // A version step with no script of its own is not a step that succeeded. It used to be
                 // silent: the loop simply advanced, and the stamp below then said the database had
                 // reached the baseline over an upgrade that had never run.
-                if (!applied) {
-                    throw IllegalStateException(
-                        "No upgrade script for version $version, tried ${sqlFiles.joinToString()}"
+                val sqlScript = Main::class.java.classLoader.getResourceAsStream(sqlFile)
+                    ?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+                    ?: throw IllegalStateException(
+                        "No upgrade script for version $version at $sqlFile (a build without the migration module ships none)"
                     )
+                Log.info(bundle["database.upgrade.execute", sqlFile])
+
+                suspendTransaction {
+                    swallowed += applyLegacyScript(sqlScript)
+
+                    updatePluginVersion(version)
+                }
+
+                // Outside the transaction above, not inside it. This opens its own and swallows every
+                // failure it meets, so within the script's transaction a failure it swallowed left that
+                // transaction aborted on PostgreSQL - after the version stamp had already been written,
+                // and with COMMIT answering an aborted transaction by rolling it back silently. The step
+                // would then report success having applied nothing.
+                if (version == 4u.toUByte()) {
+                    migrateStatusToAchievements()
                 }
             }
 

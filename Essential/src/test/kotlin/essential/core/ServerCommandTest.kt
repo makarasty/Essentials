@@ -44,7 +44,6 @@ class ServerCommandTest {
     fun setup() {
         if (!done) {
             loadGame(true)
-
             done = true
         }
     }
@@ -98,6 +97,13 @@ class ServerCommandTest {
             "Player should be deleted"
         )
 
+        assertTrue(waitUntil(5000) {
+            runBlocking {
+            suspendTransaction {
+                AchievementTable.selectAll().where { AchievementTable.playerId eq target.second.id }.count()
+            }
+            } == 0L
+        })
         val achievementsCount = runBlocking {
             suspendTransaction {
                 AchievementTable.selectAll().where { AchievementTable.playerId eq target.second.id }.count()
@@ -137,6 +143,11 @@ class ServerCommandTest {
         }
 
         serverCommand.handleMessage("delete multipleplayer")
+        assertTrue(waitUntil(5000) {
+            runBlocking {
+                getPlayerData(target1.first.uuid()) != null && getPlayerData(target2.first.uuid()) != null
+            }
+        })
 
         assertFalse(
             waitUntil(2000) { runBlocking { getPlayerData(target1.first.uuid()) } == null },

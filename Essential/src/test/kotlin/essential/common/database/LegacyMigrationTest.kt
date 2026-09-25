@@ -16,32 +16,30 @@ import kotlin.test.assertTrue
  * MySQL server ran H2-only syntax during an upgrade, so the pick is asserted here rather than left to
  * a live database.
  *
- * This asserts which script is chosen, not that the chosen script runs clean. v4.sql is still
- * MariaDB-flavoured - DROP COLUMN IF EXISTS, a literal DEFAULT on a TEXT column, and an
- * AUTO_INCREMENT column added without a key - so a v3 database on MySQL 8.0 still needs a
- * v4_mysql.sql that nobody has written. v5.sql, the step the shared databases actually take, is
- * clean on both.
+ * This asserts which script is chosen, not that the chosen script runs clean. The MySQL V4 script is
+ * still MariaDB-flavoured - DROP COLUMN IF EXISTS, a literal DEFAULT on a TEXT column, and an
+ * AUTO_INCREMENT column added without a key - so a v3 database on MySQL 8.0 still needs a MySQL-only
+ * V4 that nobody has written. V5, the step the shared databases actually take, is clean on both.
  */
 class LegacyMigrationTest {
-    /** The script the upgrade would actually run: the first candidate that exists as a resource. */
     // A dialect's own toString() reads the current transaction, so assertion messages name the class.
     private val DatabaseDialect?.label: String get() = this?.let { it::class.simpleName } ?: "no dialect"
 
+    /** The script the upgrade would actually run, which has to exist as a resource. */
     private fun picked(version: UByte, dialect: DatabaseDialect?): Pair<String, String> {
-        val loader = LegacyMigrationTest::class.java.classLoader
-        val name = legacySqlCandidates(version, dialect).firstOrNull { loader.getResource("sql/$it") != null }
-        assertNotNull(name, "no upgrade script resolved for ${dialect.label} at v$version")
-        return name to loader.getResource("sql/$name")!!.readText()
+        val name = legacyScriptPath(version, dialect)
+        val resource = LegacyMigrationTest::class.java.classLoader.getResource(name)
+        assertNotNull(resource, "no upgrade script at $name for ${dialect.label} at v$version")
+        return name to resource.readText()
     }
 
     @Test
-    fun mysqlNeverFallsBackToTheH2Script() {
+    fun mysqlNeverGetsTheH2Script() {
         for (version in listOf<UByte>(4u, 5u)) {
-            for (dialect in listOf(MysqlDialect(), MariaDBDialect())) {
+            for (dialect in listOf(MysqlDialect(), MariaDBDialect(), null)) {
                 val (name, script) = picked(version, dialect)
-                assertFalse(name.contains("_h2"), "${dialect.label} picked the H2 script $name")
-                assertFalse(name.contains("_postgres"), "${dialect.label} picked the PostgreSQL script $name")
-                // The two pieces of H2-only syntax that used to reach MySQL through the _h2 fallback.
+                assertTrue(name.contains("/mysql/"), "${dialect.label} picked $name")
+                // The two pieces of H2-only syntax that used to reach MySQL through an _h2 fallback.
                 assertFalse(
                     script.contains("CURRENT_TIMESTAMP(9)"),
                     "$name uses a fractional-seconds precision MySQL 8.0 rejects"
@@ -52,30 +50,27 @@ class LegacyMigrationTest {
                 )
             }
         }
-    }
-
-    @Test
-    fun theGenericScriptIsReachable() {
-        // v4.sql and v5.sql are the MySQL-flavoured scripts; with an _h2 fallback ahead of them they
-        // were dead files no dialect could select.
-        assertEquals("v5.sql", picked(5u, MysqlDialect()).first)
-        assertEquals("v4.sql", picked(4u, MysqlDialect()).first)
         assertTrue(picked(5u, MysqlDialect()).second.contains("DROP INDEX"))
     }
 
     @Test
     fun everyOtherDialectStillGetsItsOwnScript() {
-        assertEquals("v5_h2.sql", picked(5u, H2Dialect()).first)
-        assertEquals("v4_h2.sql", picked(4u, H2Dialect()).first)
-        assertEquals("v5_postgres.sql", picked(5u, PostgreSQLDialect()).first)
-        assertEquals("v4_postgres.sql", picked(4u, PostgreSQLDialect()).first)
+        assertEquals("db/migration/h2/V5__legacy_migrate_h2.sql", picked(5u, H2Dialect()).first)
+        assertEquals("db/migration/h2/V4__legacy_migrate_h2.sql", picked(4u, H2Dialect()).first)
+        assertEquals("db/migration/postgres/V5__legacy_migrate_postgres.sql", picked(5u, PostgreSQLDialect()).first)
+        assertEquals("db/migration/postgres/V4__legacy_migrate_postgres.sql", picked(4u, PostgreSQLDialect()).first)
     }
 
     @Test
-    fun theDialectScriptIsPreferredOverTheGenericOne() {
-        assertEquals(listOf("v5_h2.sql", "v5.sql"), legacySqlCandidates(5u, H2Dialect()))
-        assertEquals(listOf("v5_mysql.sql", "v5.sql"), legacySqlCandidates(5u, MysqlDialect()))
-        assertEquals(listOf("v5_mariadb.sql", "v5.sql"), legacySqlCandidates(5u, MariaDBDialect()))
-        assertEquals(listOf("v5.sql"), legacySqlCandidates(5u, null))
+    fun noLegacyScriptContainsASemicolonOutsideAStatementEnd() {
+        // applyLegacyScript splits on every semicolon, so one inside a comment feeds half a comment to
+        // the engine as a statement.
+        for (profile in listOf(H2Dialect(), PostgreSQLDialect(), MysqlDialect())) {
+            for (version in listOf<UByte>(4u, 5u)) {
+                val (name, script) = picked(version, profile)
+                val comments = Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL).findAll(script)
+                assertTrue(comments.none { it.value.contains(';') }, "$name has a semicolon inside a comment")
+            }
+        }
     }
 }

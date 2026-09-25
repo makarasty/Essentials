@@ -1656,4 +1656,56 @@ class FeatureTest {
         )
     }
 
+    @Test
+    fun pvpDefeatCountAndInfoTest() {
+        setPermission("owner", true)
+
+        clientCommand.handleMessage("/changemap Glacier pvp", player)
+        assertTrue(awaitCondition(7000L, 100L) { Vars.state.rules.pvp })
+
+        val testTeams = listOf(Team.sharded, Team.crux)
+        for (team in testTeams) {
+            val tile = PluginTest.randomTile()
+            tile.setNet(mindustry.content.Blocks.coreShard, team, 0)
+        }
+
+        val pWinner = newPlayer()
+        pWinner.first.team(Team.sharded)
+        pWinner.second.pvpWinCount = 0
+        pWinner.second.pvpLoseCount = 0
+
+        val pLoser = newPlayer()
+        pLoser.first.team(Team.crux)
+        pLoser.second.pvpWinCount = 0
+        pLoser.second.pvpLoseCount = 0
+
+        val pSpectator = newPlayer()
+        pSpectator.first.team(Team.derelict)
+        pSpectator.second.pvpWinCount = 0
+        pSpectator.second.pvpLoseCount = 0
+
+        // Fire GameOverEvent with Team.sharded as the winner
+        Events.fire(GameOverEvent(Team.sharded))
+
+        // Winning team player should have pvpWinCount increased
+        assertEquals(1.toShort(), pWinner.second.pvpWinCount, "Winning team player pvpWinCount should increase to 1")
+        assertEquals(0.toShort(), pWinner.second.pvpLoseCount, "Winning team player pvpLoseCount should remain 0")
+
+        // Losing team player should have pvpLoseCount increased
+        assertEquals(0.toShort(), pLoser.second.pvpWinCount, "Losing team player pvpWinCount should remain 0")
+        assertEquals(1.toShort(), pLoser.second.pvpLoseCount, "Losing team player pvpLoseCount should increase to 1")
+
+        // Spectator should have no change
+        assertEquals(0.toShort(), pSpectator.second.pvpWinCount, "Spectator pvpWinCount should remain 0")
+        assertEquals(0.toShort(), pSpectator.second.pvpLoseCount, "Spectator pvpLoseCount should remain 0")
+
+        // Verify that /info command displays the updated stats
+        clientCommand.handleMessage("/info", pLoser.first)
+        assertEquals(1.toShort(), pLoser.second.pvpLoseCount)
+        assertEquals(0.toShort(), pLoser.second.pvpWinCount)
+
+        clientCommand.handleMessage("/info", pWinner.first)
+        assertEquals(0.toShort(), pWinner.second.pvpLoseCount)
+        assertEquals(1.toShort(), pWinner.second.pvpWinCount)
+    }
 }

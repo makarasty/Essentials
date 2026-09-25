@@ -103,7 +103,6 @@ var unitLimitMessageCooldown = 0
 /** Whether server routing is forced - becomes true when isNotTargetMap is false */
 var isNotTargetMap = false
 
-val eventListeners: HashMap<Class<*>, Cons<*>> = hashMapOf()
 val coreListeners: ArrayList<ApplicationListener> = arrayListOf()
 lateinit var actionFilter: Administration.ActionFilter
 
@@ -272,7 +271,7 @@ fun tap(event: TapEvent) {
         }
 
         pluginData.data.warpBlock.forEach { two ->
-            if (two.mapName == Vars.state.map.name() && event.tile.block().name == two.tileName && event.tile.build.tileX() == two.x && event.tile.build.tileY() == two.y) {
+            if (two.mapName == Vars.state.map.name() && event.tile.build != null && event.tile.block().name == two.tileName && event.tile.build.tileX() == two.x && event.tile.build.tileY() == two.y) {
                 if (two.online) {
                     players.forEach { p ->
                         p.send("event.tap.server", event.player.plainName(), two.description)
@@ -614,7 +613,7 @@ fun syncProtectFallbackJoinListener() {
     if (current != null) {
         Events.remove(PlayerJoin::class.java, current)
         protectFallbackJoinListener = null
-        eventListeners.remove(PlayerJoin::class.java)
+        eventListeners.remove(current)
         return
     }
 
@@ -929,9 +928,13 @@ fun gameOver(event: GameOverEvent) {
 
     if (!Vars.state.rules.infiniteResources) {
         if (Vars.state.rules.pvp) {
-            for (data in players) {
-                if (data.player.team() == event.winner) {
-                    data.pvpWinCount++
+            if (event.winner != null && event.winner != Team.derelict) {
+                for (data in players) {
+                    if (data.player.team() == event.winner) {
+                        data.pvpWinCount++
+                    } else if (data.player.team() != Team.derelict && data.uuid !in pvpSpecters) {
+                        data.pvpLoseCount++
+                    }
                 }
             }
         } else if (Vars.state.rules.attackMode) {
@@ -1652,6 +1655,14 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
                 if (bestTeam != null) {
                     player.changeTeam(bestTeam)
                     pvpPlayer[playerData.uuid] = bestTeam
+                }
+            }
+
+            else -> {
+                if (player.team() != Team.derelict && player.team().data().hasCore()
+                    && !(Vars.state.rules.waves && player.team() == Vars.state.rules.waveTeam)
+                ) {
+                    pvpPlayer[playerData.uuid] = player.team()
                 }
             }
         }

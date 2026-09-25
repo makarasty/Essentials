@@ -276,28 +276,28 @@ class LiveDatabaseBootTest {
         val why by lazy { diagnosis(engine, failure) }
 
         assertTrue(
-            bootLog.any { it.contains(bundle["database.upgrade.execute", "v5.sql"]) },
+            bootLog.any { it.contains(bundle["database.upgrade.execute", "db/migration/mysql/V5__legacy_migrate_mysql.sql"]) },
             "the upgrade did not run v5.sql. $why"
         )
         assertTrue(
-            bootLog.none { it.contains("v5_h2.sql") || it.contains("v5_postgres.sql") },
+            bootLog.none { it.contains("/h2/") || it.contains("/postgres/") },
             "the upgrade reached for another engine's script. $why"
         )
         assertNull(failure, "a version 4 database could not boot. $why")
 
-        // An upgrade that reached the baseline but skipped work has to say both halves. v5.sql skips
-        // all five of its map_ratings statements here, and on any real server too: that table is never
-        // created by the scripts, only by SchemaUtils after this point. Before this change the boot
+        // An upgrade that reached the baseline but skipped work has to say both halves. V5 creates
+        // map_ratings in its current shape when it is absent, so here it skips three statements: the
+        // index drop, and the two column adds the fresh table already has. Before this change the boot
         // said nothing at all about them.
         assertTrue(
             bootLog.any { it.contains("statement(s) failed and were skipped as non-critical") },
             "the boot did not report the statements it skipped. $why"
         )
         assertEquals(
-            5, bootLog.swallowed().size,
-            "v5.sql skipped a different number of statements than the five map_ratings ones. $why"
+            3, bootLog.swallowed().size,
+            "V5 skipped a different number of statements than the three map_ratings ones. $why"
         )
-        // The count and the table together are the deploy check: five, map_ratings, move on. Naming the
+        // The count and the table together are the deploy check: three, map_ratings, move on. Naming the
         // tables is what makes that one line to read rather than five statements to compare by eye.
         assertTrue(
             bootLog.any { it.contains("(tables: map_ratings)") },
@@ -492,7 +492,7 @@ class LiveDatabaseBootTest {
         val failure = engine.bootCatching(legacyDb)
 
         assertTrue(
-            bootLog.any { it.contains(bundle["database.upgrade.execute", "v4.sql"]) },
+            bootLog.any { it.contains(bundle["database.upgrade.execute", "db/migration/mysql/V4__legacy_migrate_mysql.sql"]) },
             "a v3 database did not reach v4.sql. ${diagnosis(engine, failure)}"
         )
     }

@@ -59,116 +59,114 @@ import essential.common.database.data.update
  *  build this inside the one-second loop, so it was recompiled per animated player per second. */
 private val colorTag = Regex("\\[(.*?)]")
 
-class Trigger {
-    companion object {
-        fun pingHostImpl(address: String, port: Int, listener: Consumer<Host>) {
-            val packetSupplier: Prov<DatagramPacket> = Prov<DatagramPacket> { DatagramPacket(ByteArray(512), 512) }
+object Trigger {
+    fun pingHostImpl(address: String, port: Int, listener: Consumer<Host>) {
+        val packetSupplier: Prov<DatagramPacket> = Prov<DatagramPacket> { DatagramPacket(ByteArray(512), 512) }
 
-            try {
-                DatagramSocket().use { socket ->
-                    val s: Long = Time.millis()
-                    socket.send(DatagramPacket(byteArrayOf(-2, 1), 2, InetAddress.getByName(address), port))
-                    socket.soTimeout = 1000
-                    val packet: DatagramPacket = packetSupplier.get()
-                    socket.receive(packet)
-                    val buffer = ByteBuffer.wrap(packet.data)
-                    val host =
-                        NetworkIO.readServerData(Time.timeSinceMillis(s).toInt(), packet.address.hostAddress, buffer)
-                    host.port = port
-                    listener.accept(host)
-                }
-            } catch (_: Exception) {
-                listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
+        try {
+            DatagramSocket().use { socket ->
+                val s: Long = Time.millis()
+                socket.send(DatagramPacket(byteArrayOf(-2, 1), 2, InetAddress.getByName(address), port))
+                socket.soTimeout = 1000
+                val packet: DatagramPacket = packetSupplier.get()
+                socket.receive(packet)
+                val buffer = ByteBuffer.wrap(packet.data)
+                val host =
+                    NetworkIO.readServerData(Time.timeSinceMillis(s).toInt(), packet.address.hostAddress, buffer)
+                host.port = port
+                listener.accept(host)
             }
+        } catch (_: Exception) {
+            listener.accept(Host(0, null, null, null, 0, 0, 0, null, null, 0, null, null))
         }
+    }
 
-        /**
-         * The distinct ip:port this cycle pings. A remote server configured as both a warp block
-         * and a warp count used to be pinged once per list, and every ping blocks the cycle for
-         * the socket's full second when the target does not answer.
-         */
-        fun pingTargets(
-            warpBlock: List<WarpBlock>,
-            warpCount: List<WarpCount>,
-            warpZone: List<WarpZone>
-        ): Set<Pair<String, Int>> {
-            val targets = LinkedHashSet<Pair<String, Int>>()
-            warpBlock.forEach { targets += it.ip to it.port }
-            warpCount.forEach { targets += it.ip to it.port }
-            warpZone.forEach { targets += it.ip to it.port }
-            return targets
+    /**
+     * The distinct ip:port this cycle pings. A remote server configured as both a warp block
+     * and a warp count used to be pinged once per list, and every ping blocks the cycle for
+     * the socket's full second when the target does not answer.
+     */
+    fun pingTargets(
+        warpBlock: List<WarpBlock>,
+        warpCount: List<WarpCount>,
+        warpZone: List<WarpZone>
+    ): Set<Pair<String, Int>> {
+        val targets = LinkedHashSet<Pair<String, Int>>()
+        warpBlock.forEach { targets += it.ip to it.port }
+        warpCount.forEach { targets += it.ip to it.port }
+        warpZone.forEach { targets += it.ip to it.port }
+        return targets
+    }
+
+    /**
+     * Most marks the world-edit outline draws along one edge. Uncapped it was one packet per
+     * perimeter tile four times a second per selecting player, so a selection dragged across
+     * a 500x500 map cost that one client roughly 8000 packets a second until they cleared it.
+     */
+    const val OUTLINE_MARKS = 32
+
+    /** Coordinates the outline marks along one edge, thinned to at most [OUTLINE_MARKS] of them. */
+    fun outlineMarks(min: Int, max: Int): IntProgression = min..max step (max - min) / OUTLINE_MARKS + 1
+
+    /**
+     * What counts as this player having moved. `NetClient.sync` sends `0f, 0f` for the aim of a
+     * player with no unit and the server assigns that straight into mouseX/mouseY, so the
+     * pointer of a player who can never respawn is pinned - reading it would make the afk
+     * counter unescapable for exactly the players this fix is about. The camera they can still
+     * pan is the signal that survives.
+     */
+    fun activityMark(data: PlayerData): Float {
+        val con = data.player.con()
+        return if (data.player.unit() == null && con != null) con.viewX + con.viewY
+        else data.player.mouseX() + data.player.mouseY()
+    }
+
+    /**
+     * A player with no unit is dead on a team with no core to respawn from - every pvp loser
+     * this file moves to Team.derelict is in that state permanently - and can never move or
+     * mine again, so reading a null unit as activity exempted the idlest players on the
+     * server from afk handling for good.
+     */
+    fun isAfkCandidate(data: PlayerData): Boolean {
+        val unit = data.player.unit()
+        return (unit == null || (!unit.moving() && !unit.mining())) &&
+            !Permission.check(data, "afk.admin") &&
+            data.mousePosition == activityMark(data)
+    }
+
+    /**
+     * Where an afk player is sent, or null to kick them instead. The config documents an empty
+     * server as "disable teleport" and ships empty, while the reader tested for null, so the
+     * shipped default hopped the player to host "" on port 6567 rather than kicking. A value
+     * that will not parse gets the same answer: `parts[1].toInt()` used to throw out of a
+     * Timer body, which arc runs on the game thread with no handler above it, so one typo in
+     * this field took the server down the first time anybody idled.
+     */
+    fun afkTarget(server: String?): Pair<String, Int>? {
+        val parts = (server ?: return null).trim().split(":")
+        val host = parts[0].trim()
+        if (host.isEmpty()) return null
+        if (parts.size == 1) return host to 6567
+        val port = parts[1].trim().toIntOrNull()
+        if (port == null || port !in 1..65535) {
+            Log.warn("feature.afk.server is \"$server\", which carries no usable port; afk players are kicked instead")
+            return null
         }
+        return host to port
+    }
 
-        /**
-         * Most marks the world-edit outline draws along one edge. Uncapped it was one packet per
-         * perimeter tile four times a second per selecting player, so a selection dragged across
-         * a 500x500 map cost that one client roughly 8000 packets a second until they cleared it.
-         */
-        const val OUTLINE_MARKS = 32
+    fun saveMapBackup() {
+        if (!conf.command.rollback.enabled || !conf.command.rollback.mapBackup) return
 
-        /** Coordinates the outline marks along one edge, thinned to at most [OUTLINE_MARKS] of them. */
-        fun outlineMarks(min: Int, max: Int): IntProgression = min..max step (max - min) / OUTLINE_MARKS + 1
+        val timestamp = System.currentTimeMillis()
+        val backupFile = Vars.saveDirectory.child("rollback_$timestamp.msav")
+        SaveIO.save(backupFile)
 
-        /**
-         * What counts as this player having moved. `NetClient.sync` sends `0f, 0f` for the aim of a
-         * player with no unit and the server assigns that straight into mouseX/mouseY, so the
-         * pointer of a player who can never respawn is pinned - reading it would make the afk
-         * counter unescapable for exactly the players this fix is about. The camera they can still
-         * pan is the signal that survives.
-         */
-        fun activityMark(data: PlayerData): Float {
-            val con = data.player.con()
-            return if (data.player.unit() == null && con != null) con.viewX + con.viewY
-            else data.player.mouseX() + data.player.mouseY()
-        }
-
-        /**
-         * A player with no unit is dead on a team with no core to respawn from - every pvp loser
-         * this file moves to Team.derelict is in that state permanently - and can never move or
-         * mine again, so reading a null unit as activity exempted the idlest players on the
-         * server from afk handling for good.
-         */
-        fun isAfkCandidate(data: PlayerData): Boolean {
-            val unit = data.player.unit()
-            return (unit == null || (!unit.moving() && !unit.mining())) &&
-                !Permission.check(data, "afk.admin") &&
-                data.mousePosition == activityMark(data)
-        }
-
-        /**
-         * Where an afk player is sent, or null to kick them instead. The config documents an empty
-         * server as "disable teleport" and ships empty, while the reader tested for null, so the
-         * shipped default hopped the player to host "" on port 6567 rather than kicking. A value
-         * that will not parse gets the same answer: `parts[1].toInt()` used to throw out of a
-         * Timer body, which arc runs on the game thread with no handler above it, so one typo in
-         * this field took the server down the first time anybody idled.
-         */
-        fun afkTarget(server: String?): Pair<String, Int>? {
-            val parts = (server ?: return null).trim().split(":")
-            val host = parts[0].trim()
-            if (host.isEmpty()) return null
-            if (parts.size == 1) return host to 6567
-            val port = parts[1].trim().toIntOrNull()
-            if (port == null || port !in 1..65535) {
-                Log.warn("feature.afk.server is \"$server\", which carries no usable port; afk players are kicked instead")
-                return null
-            }
-            return host to port
-        }
-
-        fun saveMapBackup() {
-            if (!conf.command.rollback.enabled || !conf.command.rollback.mapBackup) return
-
-            val timestamp = System.currentTimeMillis()
-            val backupFile = Vars.saveDirectory.child("rollback_$timestamp.msav")
-            SaveIO.save(backupFile)
-
-            val files = Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
-            val sortedFiles = files.sortedBy { it.lastModified() }
-            if (sortedFiles.size > conf.command.rollback.limit) {
-                for (i in 0 until (sortedFiles.size - conf.command.rollback.limit)) {
-                    sortedFiles[i].delete()
-                }
+        val files = Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
+        val sortedFiles = files.sortedBy { it.lastModified() }
+        if (sortedFiles.size > conf.command.rollback.limit) {
+            for (i in 0 until (sortedFiles.size - conf.command.rollback.limit)) {
+                sortedFiles[i].delete()
             }
         }
     }
@@ -634,26 +632,7 @@ class Trigger {
             val warpZones = pluginData.data.warpZone
             val warpMapName = if (warpZones.isEmpty()) null else Vars.state.map.name()
             for (data in players) {
-                val registeredTeam = pvpPlayer[data.uuid]
-                if (Vars.state.rules.pvp
-                    && registeredTeam == data.player.team()
-                    && data.player.unit() != null
-                    && data.player.team().cores().isEmpty
-                    && data.player.team() != Team.derelict
-                ) {
-                    data.pvpLoseCount++
-                    if (conf.feature.pvp.spector) {
-                        data.player.changeTeam(Team.derelict)
-                        pvpSpecters.add(data.uuid)
-                    }
-                    pvpPlayer.remove(data.uuid)
-
-                    val time = data.currentPlayTime
-                    val score = time + 5000
-
-                    data.exp += ((score * data.expMultiplier).toInt())
-                    data.send("event.exp.earn.defeat", data.currentExp + score)
-                }
+                recordPvpDefeat(data)
 
                 if (data.status.containsKey("freeze")) {
                     val d = findPlayerData(data.uuid)
@@ -893,9 +872,7 @@ class Trigger {
         Timer.schedule({
             if (Vars.state.rules.pvp) {
                 players.forEach {
-                    if (!pvpPlayer.containsKey(it.uuid) && it.player.team() != Team.derelict && it.player.unit() != null) {
-                        pvpPlayer[it.uuid] = it.player.team()
-                    }
+                    registerPvpPlayer(it)
                 }
             }
 
@@ -950,5 +927,45 @@ class Trigger {
                 Core.app.addListener(it)
             }
         }
+    }
+
+    fun registerPvpPlayer(data: PlayerData) {
+        if (!Vars.state.rules.pvp) return
+        val player = data.player
+        val connection = player.con() ?: return
+        if (connection.hasDisconnected) return
+        val team = player.team()
+        if (data.uuid !in pvpPlayer && data.uuid !in pvpSpecters
+            && team != Team.derelict && team.data().hasCore()
+            && !(Vars.state.rules.waves && team == Vars.state.rules.waveTeam)
+        ) {
+            pvpPlayer[data.uuid] = team
+        }
+    }
+
+    /**
+     * Counts a loss the moment a registered player's team runs out of cores. No unit check: a player
+     * whose unit died with the last core has none, and that is exactly the loss this has to see.
+     * The player goes into pvpSpecters either way, which is what keeps gameOver from counting the
+     * same loss a second time.
+     */
+    fun recordPvpDefeat(data: PlayerData) {
+        if (!Vars.state.rules.pvp || data.uuid in pvpSpecters) return
+        val player = data.player
+        val connection = player.con() ?: return
+        if (connection.hasDisconnected) return
+        val team = player.team()
+        if (team == Team.derelict || pvpPlayer[data.uuid] != team || team.data().hasCore()) return
+
+        pvpPlayer.remove(data.uuid)
+        pvpSpecters.add(data.uuid)
+        data.pvpLoseCount++
+        if (conf.feature.pvp.spector) {
+            player.changeTeam(Team.derelict)
+        }
+
+        val score = data.currentPlayTime + 5000
+        data.exp += (score * data.expMultiplier).toInt()
+        data.send("event.exp.earn.defeat", data.currentExp + score)
     }
 }
