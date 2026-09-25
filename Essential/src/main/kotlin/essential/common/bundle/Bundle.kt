@@ -2,6 +2,7 @@ package essential.common.bundle
 
 import java.text.MessageFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 
 class Bundle {
     companion object {
@@ -14,9 +15,39 @@ class Bundle {
         private val CONTROL: ResourceBundle.Control =
             ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES)
 
-        /** Resolves a bundle without the JVM default locale standing in for a missing translation. */
+        private val resolved = ConcurrentHashMap<String, ConcurrentHashMap<Locale, ResourceBundle>>()
+
+        /**
+         * Resolves a bundle without the JVM default locale standing in for a missing translation.
+         *
+         * Memoised: every player message built a Bundle and asked [translated] first, two lookups
+         * through ResourceBundle's own cache per message. That cache never expires an entry under
+         * this control either, so holding the answer here changes nothing but the cost.
+         */
         fun resolve(baseName: String, locale: Locale): ResourceBundle =
-            ResourceBundle.getBundle(baseName, locale, CONTROL)
+            resolved.computeIfAbsent(baseName) { ConcurrentHashMap() }
+                .computeIfAbsent(locale) { ResourceBundle.getBundle(baseName, it, CONTROL) }
+
+        private val NO_ARGS = arrayOf<Any>()
+
+        private val translatedLocales = ConcurrentHashMap<Locale, Boolean>()
+
+        /** A parsed pattern for one key in one bundle and locale, shared by every Bundle that asks. */
+        private data class FormatKey(val resource: ResourceBundle, val locale: Locale, val key: String)
+
+        private val formats = ConcurrentHashMap<FormatKey, MessageFormat>()
+
+        /**
+         * Formats [key] from a pattern parsed once rather than on every message. MessageFormat is not
+         * thread-safe and bundles are used from coroutines and web handlers as well as the game thread,
+         * so each shared instance formats under its own lock; two threads rarely want the same key.
+         */
+        private fun format(resource: ResourceBundle, locale: Locale, key: String, args: Array<out Any>): String {
+            val format = formats.computeIfAbsent(FormatKey(resource, locale, key)) {
+                MessageFormat(resource.getString(key), locale)
+            }
+            return synchronized(format) { format.format(args) }
+        }
 
         /**
          * Whether a translation of its own ships for [locale], rather than it falling through to the
@@ -25,8 +56,9 @@ class Bundle {
          * English is the base bundle and has no `bundle_en.properties` of its own, so it has to be
          * named here; every other language is answered by asking what [resolve] actually landed on.
          */
-        fun translated(locale: Locale): Boolean =
-            locale.language == "en" || resolve("bundles/common/bundle", locale).locale.language.isNotEmpty()
+        fun translated(locale: Locale): Boolean = translatedLocales.computeIfAbsent(locale) {
+            it.language == "en" || resolve("bundles/common/bundle", it).locale.language.isNotEmpty()
+        }
 
         /**
          * Language tags this build ships a translation for, English included.
@@ -76,23 +108,13 @@ class Bundle {
         resource = source
     }
 
-    operator fun get(key: String): String {
+    operator fun get(key: String): String = text(key, NO_ARGS)
+
+    operator fun get(key: String, vararg parameter: Any): String = text(key, parameter)
+
+    private fun text(key: String, args: Array<out Any>): String {
         if (!resource.containsKey(key)) return key
-
-        return if (prefix.isEmpty()) {
-            MessageFormat(resource.getString(key), locale).format(arrayOf<Any>())
-        } else {
-            "$prefix " + MessageFormat(resource.getString(key), locale).format(arrayOf<Any>())
-        }
-    }
-
-    operator fun get(key: String, vararg parameter: Any): String {
-        if (!resource.containsKey(key)) return key
-
-        return if (prefix.isEmpty()) {
-            MessageFormat(resource.getString(key), locale).format(parameter)
-        } else {
-            "$prefix " + MessageFormat(resource.getString(key), locale).format(parameter)
-        }
+        val text = format(resource, locale, key, args)
+        return if (prefix.isEmpty()) text else "$prefix $text"
     }
 }
