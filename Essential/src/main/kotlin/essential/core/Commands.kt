@@ -2402,7 +2402,7 @@ class Commands {
         Undo.record(null, "strict", target.uuid, Undo.label(target.uuid)) { Undo.strict(it, previous) }
     }
 
-    @ClientCommand("t", "<message...>", "Send a meaage only to your teammates.")
+    @ClientCommand("t", "<message...>", "Send a message only to your teammates.")
     fun t(playerData: PlayerData, arg: Array<out String>) {
         // Team chat went straight to sendMessage, so none of the five registered chat filters saw it:
         // this plugin's mute and global-mute check, the word blacklist, the keyboard-layout rewrite, a
@@ -2473,7 +2473,7 @@ class Commands {
 
     // todo tempban client -> server
     @OptIn(ExperimentalTime::class)
-    @ServerCommand("tempban", "<player> <time> [reason...]", "Ban the player for aa certain peroid of time")
+    @ServerCommand("tempban", "<player> <time> [reason...]", "Ban the player for a certain period of time")
     fun tempBan(arg: Array<out String>) {
         val bundle = Bundle()
         val minute = arg[1].toIntOrNull()

@@ -1,7 +1,7 @@
 {
   "displayName": "Essential",
   "name": "essential",
-  "author": "Gureumi",
+  "author": "Gureumi, makarasty",
   "main": "essential.core.Main",
   "description": "More commands and features.",
   "version": "v22"

@@ -23,7 +23,7 @@ data class Plugin(
     val lang: String = "en",
     @YamlComment("Unique server identifier for hub routing; configure the destination's identifier on every non-hub server")
     val serverId: String = "",
-    @YamlComment("Automatically update the plugin when new version is available")
+    @YamlComment("On start, check the fork's GitHub releases (makarasty/Essentials) and log when a newer version exists")
     val autoUpdate: Boolean = true,
     @YamlComment("Database configuration")
     val database: DatabaseConfig = DatabaseConfig(),

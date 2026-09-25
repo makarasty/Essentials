@@ -341,7 +341,7 @@ class Main : Plugin() {
 
     private fun checkUpdate() {
         if (conf.plugin.autoUpdate) {
-            Http.get("https://api.github.com/repos/kieaer/Essentials/releases/latest").timeout(1000)
+            Http.get("https://api.github.com/repos/makarasty/Essentials/releases/latest").timeout(1000)
                 .error { _ -> Log.warn(bundle["event.plugin.update.check.failed"]) }
                 .block {
                     if (it.status == Http.HttpStatus.OK) {
