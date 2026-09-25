@@ -327,11 +327,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 if ((count == 0 && check() <= voted.size) || check() <= voted.size || isAdminVote) {
                     send("command.vote.success")
 
-                    val onlinePlayers = StringBuilder()
-                    players.forEach {
-                        onlinePlayers.append("${it.name}, ")
-                    }
-                    onlinePlayers.substring(0, onlinePlayers.length - 2)
+                    val onlinePlayers = players.joinToString(", ") { it.name }
 
                     when (voteData.type) {
                         VoteType.Kick -> {

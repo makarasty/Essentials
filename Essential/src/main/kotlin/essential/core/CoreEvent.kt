@@ -1336,14 +1336,17 @@ fun worldLoad(event: WorldLoadEvent) {
     }
 }
 
+private val blacklistPatterns = HashMap<String, Regex>()
+
 @Event
 fun connectPacket(event: ConnectPacketEvent) {
     if (conf.feature.blacklist.enabled) {
         pluginData.data.blacklistedNames.forEach { text ->
-            val pattern = Regex(text)
-            if ((conf.feature.blacklist.regex && pattern.matches(event.packet.name)) ||
-                !conf.feature.blacklist.regex && event.packet.name.contains(text)
-            ) {
+            // Compiled only in regex mode, and once per entry: a plain-text entry such as "[admin]" is
+            // not a valid pattern, and compiling it anyway threw out of this handler on every connect.
+            val hit = if (conf.feature.blacklist.regex) blacklistPatterns.getOrPut(text) { Regex(text) }.matches(event.packet.name)
+            else event.packet.name.contains(text)
+            if (hit) {
                 event.connection.kick(Bundle(event.packet.locale)["event.player.name.blacklisted"], 0L)
                 val reason = Bundle()["event.player.kick", event.packet.name, event.packet.uuid, event.connection.address, Bundle()["event.player.kick.reason.blacklisted"]]
                 writeLog(
