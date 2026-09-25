@@ -7,11 +7,11 @@ assignees: ''
 
 ---
 <!--
-First, make sure your latest essential plugin version.
-If bug is alive, report here.
+First, make sure you are on the latest build of this fork (makarasty/Essentials).
+If the bug is still there, report it here. A problem that also happens on upstream
+Kieaer/Essentials is worth reporting there too.
 
-You're not need write step by step how to reproduce.
-I will take care of tracking down the cause and solving it.
+Step-by-step reproduction is welcome but not required: the log is what matters most.
 -->
 
 **Logs**

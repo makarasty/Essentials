@@ -1,783 +1,919 @@
-Wiki version: Essentials 18
+Wiki version: Essentials v22 (makarasty/Essentials fork)
 
-The plugin already has a description, but you can check it in more detail here.<br>
-Plugin config file path: ``config/mods/Essentials/config.txt``<br>
-Search for the setting you are looking for using the ``Ctrl+F`` keys.
+Reference for every configuration file the plugin writes. Search for a key with ``Ctrl+F``: headings use the full dotted path of the key. The YAML blocks show each file's defaults without the comments the plugin writes into it.
 
-# Plugin
+# Files and reloading
 
-Manage the plugin's preferences.
+All YAML files live in ``config/mods/Essentials/config/``. A missing file is created with the defaults below on the first start. An old ``configs/`` folder from earlier versions is renamed to ``config/`` automatically.
 
-## ⚙️ update
+| File | Read by | Needs |
+|:-----|:--------|:------|
+| ``config.yaml`` | the core plugin | always loaded |
+| ``config_chat.yaml`` | chat module | ``module.chat: true`` |
+| ``config_protect.yaml`` | protect module | ``module.protect: true`` |
+| ``config_contribution.yaml`` | contribution module | ``module.contribution: true`` |
+| ``config_bridge.yaml`` | bridge module | ``module.bridge: true`` |
+| ``config_discord.yaml`` | discord module | ``module.discord: true`` |
+| ``config_web.yaml`` | web module | ``module.web: true`` |
 
-Default: ``true``<br>
-Check for plugin updates every time you start the server.<br>
-However, it does not download automatically.
+A module's file can appear even while the module is off, but it is only acted on while the module is on. Modules left out of a modular build (``-PexcludeModules``) never write their file.
 
-Example
+On every load the plugin compares the file with the current defaults:
+- Unknown keys (a typo, or a key removed from the plugin) are logged and do nothing.
+- Missing keys are logged, and the file is rewritten with them added at their default value. The same rewrite happens when the file lacks the plugin's explanatory comments.
+- A rewrite drops unknown keys and your own comments. Before it drops anything, the original is copied to ``<file>.yaml.bak``. An existing backup is never overwritten.
+
+Saving ``config.yaml`` while the server runs reloads it straight away. The ``reload`` console command also reloads it, along with ``permission.yaml``. Edits to ``config_*.yaml`` files, to ``module.*`` and to ``plugin.database`` take effect only after a restart.
+
+Groups, permission nodes and per-group chat formats live in ``permission.yaml`` and ``permission_user.yaml`` (in ``config/mods/Essentials/``, not in ``config/``). See [Permission.md](Permission.md).
+
+# config.yaml
+
 ```yaml
-# Check for plugin update
-update: true
-
-# Disable check for plugin update
-update: false
+plugin:
+  lang: "en"
+  serverId: ""
+  autoUpdate: true
+  database:
+    url: "h2:./config/mods/Essentials/data/database"
+    username: "sa"
+    password: ""
+feature:
+  afk:
+    enabled: false
+    time: 300
+    server: ""
+  vote:
+    enabled: true
+    enableVotekick: false
+    rtv:
+      ratio: 0.6
+      cooldown: 12
+      timeout: 60
+  unit:
+    enabled: false
+    limit: 3000
+  motd:
+    enabled: false
+    time: 600
+  pvp:
+    autoTeam: false
+    spector: false
+    rememberTeam: false
+  level:
+    effect:
+      enabled: false
+      moving: false
+      maxPacketsPerRun: 2000
+    levelNotify: false
+    display: false
+  game:
+    wave:
+      autoSkip: 1
+  blacklist:
+    enabled: true
+    regex: false
+  count: false
+  mapVote: false
+  description:
+    enabled: false
+    template: ""
+    updateOnChange: true
+    interval: 30
+  playerData:
+    allowWithoutData: true
+    loadTimeout: 5
+    retryAttempts: 30
+  log:
+    player: true
+    chat: false
+    report: true
+    block: false
+    tap: false
+    item: false
+    other: true
+  permission:
+    vanillaAdminGroup: "admin"
+  name:
+    restoreStored: false
+module:
+  achievement: false
+  bridge: false
+  chat: true
+  contribution: true
+  discord: false
+  protect: false
+  web: false
+command:
+  skip:
+    enabled: true
+    limit: 10
+    adminLimit: 100
+  rollback:
+    enabled: true
+    mapBackup: true
+    time: 300
+    limit: 10
+  layoutFix: true
+  worldEdit:
+    maxRegionSize: 10000
+ban:
+  useDatabase: false
 ```
 
-## ⚙️ report
+## plugin
 
-Default: ``true``<br>
-In case of an error, it sends error information to the developer's server.<br>
-However, the current developer's server does not have an error reporting server, so the feature does not work.
+### plugin.lang
 
-Example
-```yaml
-# Enable upload error reports
-report: true
+Default: ``en``<br>
+Language of the plugin's console messages. Players get the language they picked with ``/lang``, otherwise their client's language when a translation for it ships, otherwise this one.<br>
+Shipped translations: en, ja, ko, uk, zh. The console language changes only after a restart.
 
-# Disable upload error report
-report: false
-```
-
-## ⚙️ authType
-
-Default: ``None``<br>
-Avaliable: none, password, discord<br>
-If set to ``None``, users will be able to play without further authentication.<br>
-If set to ``Password``, users must register for an account using the ``/reg`` command to play.<br>
-If set to ``Discord``, users must authenticate with Discord to play on the server.
-
-It is rare to use anything higher than the normal Password level.<br>
-However, in the event of a high modified client threat or if the UUID and IP values given by the client are no longer reliable, both UUID and IP values are ignored and the user is identified only with the password-protected account.<br>
-Discord is more secure than Password.<br>
-The server barrier to entry can be very high, so be careful.
-
-Example
-```yaml
-# Disable all authentication
-# Players can play the server directly without doing anything specific
-authType: none
-
-# Use password authentication
-# Players must register their account using the /register command.
-authType: password
-
-# Use discord authentication
-# Players must verify their Discord account on the Discord server using the /discord command before they can play on the server.
-authType: discord
-```
-
-## ⚙️ database
-
-Default: ``Your server folder/config/mods/Essentials/database``<br>
-Select the DB where the player data will be saved.<br>
-If you enter an IP address here, it will try to connect to the DB with that IP.
-
-Entering ``default`` reverts to the original value.
-
-Example
-```yaml
-# Windows jOS
-database: E:/Mindustry/config/mods/Essentials/database
-
-# Linux OS
-database: /home/cloud/mindustry/config/mods/Essentials/database
-
-# If you want to use default values
-database: default
-
-# Connect remote database (Servers using this plugin must be turned on.)
-database: 192.168.0.2
-```
-
-## ⚙️ banList
-
-Default: ``Your server folder/config/mods/Essentials/data``<br>
-Set the folder path to manage blocking by inserting or removing the UUID or IP to block into a text file.<br>
-UUID is recorded in ``idban.txt`` and IP is recorded in ``ipban.txt``.<br>
-
-Example
-```yaml
-# Windows OS
-database: E:/Mindustry/config/mods/Essentials/data
-
-# Linux OS
-database: /home/cloud/mindustry/config/mods/Essentials/data
-
-# Use other ban list folder
-database: E:/Mindustry_sandbox/config/mods/Essentials/data
-```
-
-# Features
-
-Manage the features of plugins.
-
-## 💤 afk
-
-Default: ``false``<br>
-If the player doesn't do anything for a certain amount of time, they are automatically kicked.
-
-Example
-```yaml
-# Enable auto kick
-afk: true
-
-# Disable auto kick
-afk: false
-```
-
-## 💤 afkTime
-Default: ``300`` (5 minute)<br>
-Set how many seconds to kick. The unit is 1 second.
-
-Example
-```yaml
-# Kick after 5 minutes
-afkTime: 300
-
-# Kick after 60 seconds
-afkTime: 60
-
-# Kick after 10 minute
-afkTime: 600
-```
-
-## 💤 afkServer
+### plugin.serverId
 
 Default: empty<br>
-If this value is non-empty, players who haven't done anything for a certain amount of time will be moved to the server entered here instead of kicking.
+Identifier of this server for hub routing. It matters once a hub map is set with ``/hub``: a non-hub server then only admits players the hub sent to it, and it matches them against this value.<br>
+The hub records the destination as ``<ip>:<port>`` exactly as written in its warp entry, so set this to that same string on every non-hub server. Left empty, every direct join to a non-hub server is refused while a hub is set.<br>
+On the first start it also seeds ``data/server-id``, this server's identity in a shared database. After that the file decides, and changing this key does not change the stored identity.
 
-Example
+### plugin.autoUpdate
+
+Default: ``true``<br>
+On start, check the latest release of this fork on GitHub (``makarasty/Essentials``) and log whether a newer version exists. It never downloads anything.
+
+### plugin.database.url
+
+Default: ``h2:./config/mods/Essentials/data/database``<br>
+Where player data is stored.
+- ``postgresql://host:port/database``, ``mysql://host:port/database`` or ``mariadb://host:port/database`` connect to that server. The port can be left out (5432 for PostgreSQL, 3306 for MySQL and MariaDB).
+- Anything else uses the embedded H2 database. Its location is fixed at ``config/mods/Essentials/data/database``, whatever path follows ``h2:``.
+
+Several servers pointed at the same PostgreSQL, MySQL or MariaDB database share player data. Takes effect after a restart.
+
 ```yaml
-# If you want to only kick from server
-afkServer: ""
-
-# If you want to move to another server instead of kick when it is time for afk
-afkServer: mindustry.kr
-
-# Also you can write port...
-afkServer: mindustry.kr:6567
+database:
+  url: "postgresql://192.168.0.2:5432/essentials"
+  username: "essentials"
+  password: "secret"
 ```
 
-## ❎ border
+### plugin.database.username
+
+Default: ``sa``<br>
+Database user. Ignored for the embedded H2 database.
+
+### plugin.database.password
+
+Default: empty<br>
+Database password. Ignored for the embedded H2 database.
+
+## feature.afk
+
+### feature.afk.enabled
 
 Default: ``false``<br>
-When out of the world, the unit is destroyed.<br>
-On PvP servers, you can prevent units from attacking by diverting them out of the world.
+Kick a player, or move them to ``feature.afk.server``, once they have been idle for ``feature.afk.time`` seconds. A player counts as idle while their unit neither moves nor mines and their cursor stays put. Players with the ``afk.admin`` permission are never affected.
 
-Example
-```yaml
-# Enable world border
-border: true
+### feature.afk.time
 
-# Disable world border
-border: false
-```
+Default: ``300``<br>
+Seconds of inactivity before a player counts as AFK.
 
-## 💬 chatFormat
+### feature.afk.server
 
-Default: ``%player.name[orange] >[white] %chat``<br>
-Change chat default format.<br>
-Available variables: %player.name, %player.level, %player.permission, %player.exp, %player.playtime, %player.blockPlace, %player.blockBreak, %player.attackClear, %player.waveClear, %player.pvpWin, %player.pvpLose, %player.pvpEliminated, %player.pvpMvp, %player.attendance, %player.language, %player.world, %player.worldMode, %player.uuid, %chat (message).
+Default: empty<br>
+Server that AFK players are sent to instead of being kicked, as ``host`` or ``host:port`` (6567 when no port is given). Empty kicks them. A value with an unusable port is logged and also kicks.
 
-Example
-```yaml
-# Result is "Gureumi > hello!"
-chatFormat: "%player.name[orange] >[white] %chat"
+## feature.vote
 
-# Result is "[Owner]Gureumi > hello!"
-chatFormat: "[sky][Owner]%player.name[orange] >[white] %chat"
+### feature.vote.enabled
 
-# Result is "prefix Gureumi -> hello! suffix"
-chatFormat: "prefix %player.name -> %chat suffix"
+Default: ``true``<br>
+The plugin's vote command (kick, map, gg, skip, back, random). Because vanilla already owns ``/vote``, the plugin's version is registered as ``/evote``.<br>
+In this fork, ``false`` removes both ``/evote`` and vanilla's ``/vote``, so the server has no vote command at all.
 
-# Result includes player level
-chatFormat: "[%player.level]%player.name[orange] >[white] %chat"
-```
+### feature.vote.enableVotekick
 
-## 🤖 spawnLimit
+Default: ``false``<br>
+The plugin's ``/votekick``, registered as ``/evotekick``.<br>
+In this fork, ``false`` (the default) removes vanilla's ``/votekick`` as well, and players get "Unknown command" for it.
+
+### feature.vote.rtv.ratio
+
+Default: ``0.6``<br>
+Share of the online players that must use ``/rtv`` before the server moves on to the next map (0.6 = 60%, rounded up, at least one vote).
+
+### feature.vote.rtv.cooldown
+
+Default: ``12``<br>
+Seconds a player has to wait between two ``/rtv`` uses.
+
+### feature.vote.rtv.timeout
+
+Default: ``60``<br>
+Seconds after the first vote before an unfinished ``/rtv`` vote expires.
+
+## feature.unit
+
+### feature.unit.enabled
+
+Default: ``false``<br>
+Turn the unit cap on.
+
+### feature.unit.limit
 
 Default: ``3000``<br>
-Built to avoid server load.<br>
-Specifies the maximum number of units the server will accept.
+Maximum number of live units on the server. A unit created above it, wave units included, is killed at once and players are told the cap was reached.
 
-If you set max units to 0, you won't be able to spawn any units, including players.
+## feature.motd
 
-Example
-```yaml
-# If you want to limit the maximum number of units in the world to 3000 units
-spawnLimit: 3000
-
-# If you want to 500 units..
-spawnLimit: 500
-```
-
-## 🗳️ vote
-
-Default: true<br>
-Set whether to use the voting function provided by the plugin.<br>
-If set to ``true`` , you can use kick, gameover, wave skip, random event, etc.<br>
-If set to ``false`` , the default voting functionality provided by the developer will be used.
-
-Example
-```yaml
-# Enable plugin vote system
-vote: true
-
-# Disable plugin vote system and use mindustry native voting system
-vote: false
-```
-
-## 🔒 fixedName
-
-Default: ``true``<br>
-It is fixed to the name that the player used when he first entered the server.<br>
-After that, even when the player changes his name and enters, it will be changed to the name he used when he first entered.
-This feature is useful for find griefer by changing the nickname or identifying a specific user.
-
-Example
-```yaml
-# Prevent players from changing their names.
-fixedName: true
-
-# Allow players to change their name at will and enter the server.
-fixedName: false
-```
-
-## 🔒 antiVPN
-
-Default: false<br>
-When a player connects to the IP used by the VPN service, the connection is automatically disconnected.
-
-This feature may not work perfectly due to the nature of the VPN service.
-
-Example
-```yaml
-# Enable antiVPN service
-antiVPN: true
-
-# Disable antiVPN service
-antiVPN: false
-```
-
-## ⚔️ pvpPeace
+### feature.motd.enabled
 
 Default: ``false``<br>
-When the world starts on a PvP server, the attack damage of units and buildings is set to 0% for a certain period of time.
+Send one line of ``messages/<language>.txt`` (in ``config/mods/Essentials/``) to every player at a regular interval, cycling through the lines. Players whose language has no file get ``messages/en.txt``.<br>
+This is not the join message: ``motd/<language>.txt`` is shown on join whether this is on or off.
 
-Example
-```yaml
-# Sets the damage to 0% for the time set in pvpPeaceTime.
-pvpPeace: true
+### feature.motd.time
 
-# Remove PvP restrictions.
-pvpPeace: false
-```
+Default: ``600``<br>
+Seconds between two messages. Checked once a minute, so values below 60 behave like 60.
 
-## ⚔️ pvpPeaceTime
+## feature.pvp
 
-Default: ``300`` (5 minute)<br>
-Sets the time to restore attack damage back to normal. The unit is 1 second.
-
-Example
-```yaml
-# Set 5 minute
-pvpPeace: 300
-
-# Set 10 minute
-pvpPeace: 600
-
-# Set 30 seconds
-pvpPeace: 30
-```
-
-## ⚔️ pvpSpector
+### feature.pvp.autoTeam
 
 Default: ``false``<br>
-When using this feature, the losing team will automatically move to the Derelict team, and will remain in spectator mode until the next match.
+On PvP maps, assign each player a team by player count and the players' PvP win rates, both when the map loads and when a player joins. Players on the derelict team cannot build while this is on.
 
-Example
-```yaml
-# Enable spector system
-pvpSpector: true
-
-# Disable spector system
-pvpSpector: false
-```
-
-## ⏱️ rollbackTime
-
-Default: ``10`` (10 minute)<br>
-Saves the state to be used in /vote back at each set time.<br>
-If the time is too short, the griefing will not be fully recoverable, and if the time is too long, a significant amount of play data may be lost.<br>
-I'm recommand set to 10 minute in attack/survival mode.
-
-```yaml
-# Set 5 minute
-rollbackTime: 300
-
-# Set 10 minute
-rollbackTime: 600
-
-# Set 30 seconds
-rollbackTime: 30
-```
-
-## 🔊 message
+### feature.pvp.spector
 
 Default: ``false``<br>
-Set whether or not to output messages at regular intervals.<br>
-You can use this feature to periodically deliver news and information to players.
+On PvP maps, move a player to the derelict (spectator) team as soon as their team loses its last core, until the next map. Players with the ``pvp.spector`` permission are put on the spectator team from the start.
 
-Example
-```yaml
-# Enable motd message
-message: true
-
-# Disable motd message
-message: false
-```
-
-## 🔊 messageTime
-
-Default: ``10`` (10 minute)<br>
-Set the time interval to output messages.<br>
-If the time is too short, the chat window may be spammed.
-
-Example
-```yaml
-# Set 10 minute
-messageTime: 10
-
-# Set 30 minute
-messageTime: 30
-
-# Set 5 minute
-messageTime: 5
-```
-
-## 🔢 countAllServers
+### feature.pvp.rememberTeam
 
 Default: ``false``<br>
-This is a useful feature on lobby servers.<br>
-Adds the number of players shown using the ``/warp count`` command to display the current number of players.
+Put a player who rejoins during the same PvP match back on the team they had. ``false`` lets them be assigned again.
 
-Example
-```yaml
-# Enable count all connected server players
-countAllServers: true
+## feature.level
 
-# Only count current server players
-countAllServers: false
-```
-
-## 🧱 destroyCore
+### feature.level.effect.enabled
 
 Default: ``false``<br>
-When the player team capture the enemy core, to prevent the core from being captured again because the surrounding buildings are not destroyed, all the surrounding buildings are destroyed when the core is captured.<br>
-Useful on attack servers.
+Level-based visual effects around players. Each player can still turn them off for themselves with ``/effect``. Costs CPU and network traffic.
 
-Example
-```yaml
-# Enable this feature
-destroyCore: true
-
-# Disable this feature
-destroyCore: false
-```
-
-## 💬 chatlimit
+### feature.level.effect.moving
 
 Default: ``false``<br>
-Restrict chatting in languages other than a specific language.
+When ``true``, effects are only sent to players whose unit is moving.
 
-This feature may not be perfect.
+### feature.level.effect.maxPacketsPerRun
 
-Example
-```yaml
-# Block chats outside of specific languages.
-chatlimit: true
+Default: ``2000``<br>
+Maximum number of effect packets one pass may send (20 passes per second). Effects that do not fit are sent by the following passes, not dropped. Below the ceiling nothing changes.
 
-# Allow all language chats.
-chatlimit: false
-```
-
-## 💬 chatlanguage
-
-Default: ``ko,en`` (Korean and English. Plugin developer from South Korea.)<br>
-Avaliable languages: en, ja, ko, ru, uk, zh<br>
-The plugin size has become too large to include all languages...
-
-Set the languages to be allowed.<br>
-This plugin uses ISO 3166-1 alpha-2.<br>
-Check out the list of languages for country here.<br>
-[https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2)
-
-Example
-```yaml
-# Only use Korean
-chatlanguage: ko
-
-# Only use English
-chatlanguage: en
-
-# Use Korean, English, Japanese
-chatlanguage: ko,en,jp
-
-# Use Japanese, Korean, English, Chinese, Russian
-chatlanguage: jp,ko,en,zh,ru
-```
-
-## 💬 chatBlacklist
+### feature.level.levelNotify
 
 Default: ``false``<br>
-Disable certain words.<br>
-You can set the languages to be banned in ``chat_blastlist.txt``<br>
-Applied one per line.
+At game over, tell each player the EXP they earned and their level.
 
-Example
-```yaml
-# Enable this feature
-chatBlacklist: true
-
-# Disable this feature
-chatBlacklist: false
-```
-
-## 💬 chatBlacklistRegex
-
-Default: false<br>
-The contents written in ``chat_blacklist.txt`` are used as regular expressions, not simple word matching.
-
-Example
-```yaml
-# Use regular expressions.
-chatBlacklistRegex: true
-
-# Just simply searches for word matches.
-chatBlacklistRegex: true
-```
-
-## ⏫ expDisplay
+### feature.level.display
 
 Default: ``false``<br>
-On every player's screen, display players account experience.
+Show each player's current EXP and the EXP needed for the next level on their screen, refreshed every second.
 
-Example
-```yaml
-# Enable this feature
-expDisplay: true
+## feature.game
 
-# Disable this feature
-expDisplay: false
-```
-
-## 🔒 blockIP
-
-Default: ``false``<br>
-This feature is supported only in **Linux**, and requires the ``iptables`` command in the system to work.<br>
-This feature hides this server from the banned user's list of community servers.
-
-Example
-```yaml
-# Activate the feature to turn on special blocking.
-blockIP: true
-
-# Use normal ban
-blockIP: false
-```
-
-## 💀 waveskip
+### feature.game.wave.autoSkip
 
 Default: ``1``<br>
-In Survival mode, each wave starts as many times as the set number of waves.
+Number of waves that spawn each time a wave starts. ``1`` is normal play, ``2`` spawns two waves at a time, and so on. High values put a heavy load on the server.
 
-Setting a value that is too high can cause a very high load on the server or cause high gameovers.
+## feature.blacklist
 
-Example
-```yaml
-# Normal wave processed
-waveskip: 1
+Player name blacklist, checked when a player connects. The names come from the ``blacklistedNames`` list in the plugin data stored in the database. No command edits that list.
 
-# 2 waves are processed for each wave.
-waveskip: 2
-
-# 3 waves are processed for each wave.
-waveskip: 3
-
-# 10 waves are processed for each wave.
-waveskip: 10
-```
-
-## 🧱 unbreakableCore
-
-Default: ``false``<br>
-Useful for sandbox servers.<br>
-Keep set core health to 100% to avoid destroying the core.
-
-If you do it in wave, attack server the game may not end forever.
-
-Example
-```yaml
-# Makes unbreakable core
-unbreakableCore: true
-
-# Enable destroyable core
-unbreakableCore: false
-```
-
-## 🌠 moveEffects
+### feature.blacklist.enabled
 
 Default: ``true``<br>
-Enables/disables effects that appear when players move.<br>
-Enabling this feature will have different effects for different player levels, but will affect CPU performance and network traffic.
+Kick players whose name matches an entry of the name blacklist. With an empty list nothing is kicked.
 
-Turns all player movement effects on and off independently of the player's settings.
-
-Example
-```yaml
-# Enable unit move effects
-moveEffects: true
-
-# Disable unit move effects
-moveEffects: false
-```
-
-## 🖥️ webServer
+### feature.blacklist.regex
 
 Default: ``false``<br>
-Enable web server. It includes a leaderboard feature.<br>
-You may need to use nginx port forwarding to use it as a real domain.
+Treat each entry as a regular expression that must match the whole name. ``false`` kicks any name that contains the entry as plain text.
 
-Example
+## feature (single keys)
+
+### feature.count
+
+Default: ``false``<br>
+While the current map has warp entries, the player count this server reports to the server list becomes its own players plus the players on every server those warps point to. Useful on lobby servers.
+
+### feature.mapVote
+
+Default: ``false``<br>
+At game over, after a map that ran for at least 5 minutes, ask each player who has not rated that map yet to rate it in a menu (difficulty, then rating).
+
+## feature.description
+
+Live values in the server description shown in the server list.
+
+### feature.description.enabled
+
+Default: ``false``<br>
+Let the plugin own the server description and keep its placeholders up to date.<br>
+Placeholders: ``{players}`` ``{playerLimit}`` ``{wave}`` ``{map}`` ``{mode}`` ``{playTime}`` ``{matchTime}`` ``{uptime}`` ``{peace}``.<br>
+``{playTime}`` counts from the map load. ``{matchTime}`` counts from the moment the map is actually played; on PvP that means two teams each with a core and a player. ``{wave}`` is empty on maps without waves. ``{peace}`` is the remaining PvP peace time, filled only by the protect module.
+
+### feature.description.template
+
+Default: empty<br>
+The description text with placeholders. When empty, the text given with the ``config desc`` console command is used as the template. When set, this key wins.<br>
+Vanilla clients cut the description at 100 characters in the server list, and colour tags count too.
+
 ```yaml
-# Enable leaderboard web server
-webServer: true
-
-# Disable web server
-webServer: false
+description:
+  enabled: true
+  template: "{players}/{playerLimit} on {map} - wave {wave}"
 ```
 
-## 🖥️ webServerPort
+### feature.description.updateOnChange
 
-Default: ``8123``<br>
-Set the port to use for the web server.
+Default: ``true``<br>
+Re-render as soon as players join or leave, the wave changes, a map loads or the peace timer ticks.
 
-Example
-```yaml
-# Set web server port to 80
-webServerPort: 80
-
-# Set web server port to 8080
-webServerPort: 8080
-```
-
-## 🖥️ restAPIRequestsLimit
-
-Default: ``5``<br>
-The number of times to request per ``restAPILimitRefillPeriod`` config value.<br>
-It prevents malicious users from performing attacks that slow down the server by continuously refreshing through the web server.
-
-Example
-```yaml
-# If restAPILimitRefillPeriod value is 30..
-# Set restAPILimitRefillPeriod x 5 = Limit request 5 times per 30 seconds
-restAPIRequestsLimit: 5
-
-# Set restAPILimitRefillPeriod x 10 = Limit request 10 times per 30 seconds
-restAPIRequestsLimit: 10
-```
-
-## 🖥️ restAPILimitRefillPeriod
+### feature.description.interval
 
 Default: ``30``<br>
-restAPIRequestsLimit Sets the time limit is reset.<br>
+Also re-render every N seconds. ``0`` re-renders only on changes.
 
-Example
-```yaml
-# If restAPIRequestsLimit value is 5..
-# Limit 5 refreshes in 30 seconds
-restAPILimitRefillPeriod: 30
+## feature.playerData
 
-# Limit 5 refreshes in 1 minute
-restAPILimitRefillPeriod: 60
+What happens when a player's data cannot be loaded from the database.
 
-# Limit 5 refreshes in 5 minutes
-restAPILimitRefillPeriod: 300
-```
+### feature.playerData.allowWithoutData
 
-## 💀 skiplimit
+Default: ``true``<br>
+When the data could not be loaded, the player still joins with temporary data and the default permission group, and can build and use commands. The real data replaces it in the background once the database answers.<br>
+Set ``false`` on servers where only registered players may build: those players then cannot act until their data loads.
+
+### feature.playerData.loadTimeout
+
+Default: ``5``<br>
+Seconds to wait for the player data to load before falling back.
+
+### feature.playerData.retryAttempts
+
+Default: ``30``<br>
+How many times the background reload tries again, once every 10 seconds, before giving up. The default covers about 5 minutes.
+
+## feature.log
+
+Which events are written to the log files in ``config/mods/Essentials/log/``. Writing happens on a background thread. The bot commands of WebSocketAdmin that read a log need its type turned on.
+
+### feature.log.player
+
+Default: ``true``<br>
+Joins, leaves, kicks and bans, written to ``log/Player.log``.
+
+### feature.log.chat
+
+Default: ``false``<br>
+Chat messages, written to ``log/Chat.log``.
+
+### feature.log.report
+
+Default: ``true``<br>
+Player reports, written to ``log/report/``.
+
+### feature.log.block
+
+Default: ``false``<br>
+Block place and break records, written to ``log/Block.log``.
+
+### feature.log.tap
+
+Default: ``false``<br>
+Block tap records, written to ``log/Tap.log``.
+
+### feature.log.item
+
+Default: ``false``<br>
+Item deposits and withdrawals, written to ``log/Deposit.log`` and ``log/WithDraw.log``.
+
+### feature.log.other
+
+Default: ``true``<br>
+Everything else, such as web panel actions, written to ``log/Web.log``.
+
+## feature.permission
+
+### feature.permission.vanillaAdminGroup
+
+Default: ``admin``<br>
+Group given on join to a player who is an admin in Mindustry's own admin list but is not yet in an admin group. The group is stored in the player's database record, not in ``permission_user.yaml``. Pointing it at a group that is not an admin group removes the player's vanilla admin flag.
+
+## feature.name
+
+### feature.name.restoreStored
+
+Default: ``false``<br>
+``true`` forces the name stored in the database back onto the player on join and once a second after that.<br>
+``false``: a player keeps the nickname they joined with, and the stored name follows it. A name written into ``permission_user.yaml`` is applied either way.
+
+## module
+
+Switches for the optional modules. Each is read at start, so restart after changing one. A module left out of a modular build stays off whatever its switch says.
+
+### module.achievement
+
+Default: ``false``<br>
+Achievements and the ``/achievements`` command. No config file.
+
+### module.bridge
+
+Default: ``false``<br>
+Link between servers for ``/broadcast``. Settings in ``config_bridge.yaml``.
+
+### module.chat
+
+Default: ``true``<br>
+Chat word blacklist and the per-group chat formats from ``permission.yaml``. Settings in ``config_chat.yaml``.
+
+### module.contribution
+
+Default: ``true``<br>
+Per-game contribution score from mining, factory builds, item and power output, damage dealt and lost units, shown by ``/contribution``. Every second the scorer walks all buildings on the map, so the cost grows with the size of the bases, not with the player count. The score is written to the database once per game. Weights in ``config_contribution.yaml``.
+
+### module.discord
+
+Default: ``false``<br>
+The ``/discord`` command. Settings in ``config_discord.yaml``.
+
+### module.protect
+
+Default: ``false``<br>
+Accounts, join rules and PvP protection. Settings in ``config_protect.yaml``.
+
+### module.web
+
+Default: ``false``<br>
+Web server with map, statistics, achievement and login pages. Settings in ``config_web.yaml``.
+
+## command.skip
+
+### command.skip.enabled
+
+Default: ``true``<br>
+Not read by the current code: ``/vote skip`` and ``/skip`` work whatever it says.
+
+### command.skip.limit
 
 Default: ``10``<br>
-Limits the number of wave skips caused by the ``/vote skip`` command.<br>
-Avoid putting a very high load on the server by entering a wave skip that is too high.
+Maximum number of waves one ``/vote skip`` may skip.
 
-Example
-```yaml
-# Maximum of 10 waves per vote
-skiplimit: 10
+### command.skip.adminLimit
 
-# Maximum of 15 waves per vote
-skiplimit: 15
-```
+Default: ``100``<br>
+Maximum number of waves the ``/skip`` command may spawn at once. All of them spawn in one go on the main thread.
 
-## ⚔️ pvpAutoTeam
+## command.rollback
+
+### command.rollback.enabled
 
 Default: ``true``<br>
-Teams are automatically deployed according to the player's record when connecting to the PvP server.<br>
-Players with high win rates are more likely to be placed on teams with many players with very low win rates.
+Record block history, used by ``/log`` and ``/rollback``, and allow the map backups below. With ``false`` nothing is recorded.
 
-Example
+### command.rollback.mapBackup
+
+Default: ``true``<br>
+Save a map backup (``rollback_<time>.msav`` in the saves folder) every ``command.rollback.time`` seconds. ``/vote back`` restores the newest one. Backups are deleted when a new map loads.
+
+### command.rollback.time
+
+Default: ``300``<br>
+Seconds between two map backups. Checked once a minute. Too short and griefing may be saved over, too long and a rollback loses more play.
+
+### command.rollback.limit
+
+Default: ``10``<br>
+Number of map backup files kept. Older ones are deleted.
+
+## command (single keys)
+
+### command.layoutFix
+
+Default: ``true``<br>
+Run commands typed with a Cyrillic keyboard layout without switching layouts: ``.кем`` and ``/кем`` both run ``/rtv``.
+
+### command.worldEdit.maxRegionSize
+
+Default: ``10000``<br>
+Maximum number of tiles ``/ws f``, ``/ws r`` and ``/ws d`` may change in one selection. Every tile is changed on the main thread, so a huge selection stalls the server.
+
+## ban
+
+### ban.useDatabase
+
+Default: ``false``<br>
+``true`` checks joining players against the ban list stored in the database. Servers sharing one database then share their bans.<br>
+``false`` uses only Mindustry's own ban list. Keep it ``false`` next to the WebSocketAdmin plugin, so both plugins agree on who is banned.
+
+# config_chat.yaml
+
 ```yaml
-# Enable PvP balance matching system
-pvpAutoTeam: true
-
-# Disable PvP balance matching system
-pvpAutoTeam: false
+chatFormat: ""
+strict:
+  enabled: false
+  language: "en-US"
+blacklist:
+  enabled: false
+  regex: false
 ```
 
-# Ban
+### chatFormat
 
-These are functions for connecting between servers.
-Rework is in progress.
+Default: empty<br>
+Not read by the current code. Chat formats are set per group or per player with ``chatFormat`` in ``permission.yaml`` (see [Permission.md](Permission.md)). A player whose group has none gets ``[name]: message``.
 
-## shareBanListServer
+### strict.enabled
+
+Default: ``false``<br>
+Not implemented. Meant to allow only chat in ``strict.language``.
+
+### strict.language
+
+Default: the JVM's default language tag, for example ``en-US``<br>
+Not implemented. Language for ``strict.enabled``.
+
+### blacklist.enabled
+
+Default: ``false``<br>
+Block chat messages that contain a word from ``chat_blacklist.txt`` (in ``config/mods/Essentials/``, one entry per line). The file is created when the chat module starts. The same check applies to chat sent from the web panel.
+
+### blacklist.regex
+
+Default: ``false``<br>
+Treat each line of ``chat_blacklist.txt`` as a regular expression searched anywhere in the message. An invalid expression is logged and skipped. ``false`` matches plain text.
+
+# config_protect.yaml
+
+```yaml
+pvp:
+  peace:
+    enabled: false
+    time: 0
+  border:
+    enabled: false
+  destroyCore: false
+account:
+  enabled: false
+  authType: "None"
+  discordURL: ""
+protect:
+  unbreakableCore: false
+  powerDetect: false
+rules:
+  vpn: false
+  foo: false
+  mobile: false
+  steamOnly: false
+  minimalName:
+    enabled: false
+    length: 0
+  strict: false
+  blockNewUser: false
+```
+
+## pvp
+
+### pvp.peace.enabled
+
+Default: ``false``<br>
+At the start of a PvP map, set block and unit damage to 0% for ``pvp.peace.time`` seconds. Players are told when peace ends.
+
+### pvp.peace.time
+
+Default: ``0``<br>
+Seconds of peace. ``0`` keeps peace for the whole match.
+
+### pvp.border.enabled
+
+Default: ``false``<br>
+Kill every unit that leaves the map area. On PvP servers this stops units attacking from outside the world.
+
+### pvp.destroyCore
+
+Default: ``false``<br>
+On PvP maps with core capture on, a destroyed block sets off a blast of the drop zone radius that destroys everything around it, so captured cores are not taken back at once. The current code does this for every destroyed block, not only cores.
+
+## account
+
+### account.enabled
+
+Default: ``false``<br>
+Turn the account system on. ``account.authType`` only has an effect while this is ``true``.
+
+### account.authType
+
+Default: ``None``<br>
+Available: ``None``, ``Password``, ``Discord`` (the first letter may be lowercase).
+- ``None``: players play without an account.
+- ``Password``: players register with ``/reg`` and log in with ``/login``. Until they do, they cannot act and are reminded every 20 seconds.
+- ``Discord``: players cannot act until their account is linked to Discord. The login prompt comes from the separate essential-discord mod; without it only this block remains.
+
+### account.discordURL
+
+Default: empty<br>
+Not read by the current code. The link opened by ``/discord`` is ``url`` in ``config_discord.yaml``.
+
+## protect
+
+### protect.unbreakableCore
+
+Default: ``false``<br>
+Keep every core at 100 million health so it cannot be destroyed. Useful on sandbox servers; on wave or attack maps the game may never end.
+
+### protect.powerDetect
+
+Default: ``false``<br>
+Not implemented.
+
+## rules
+
+Checks run when a player connects.
+
+### rules.vpn
+
+Default: ``false``<br>
+Kick players connecting from a known VPN address. The address list is downloaded from the X4BNet VPN list at start. It may not catch every VPN.
+
+### rules.foo
+
+Default: ``false``<br>
+Not implemented. Meant to block the foo's client.
+
+### rules.mobile
+
+Default: ``false``<br>
+Kick players on mobile devices. ``false`` lets them join.
+
+### rules.steamOnly
+
+Default: ``false``<br>
+Not implemented.
+
+### rules.minimalName.enabled
+
+Default: ``false``<br>
+Kick players whose name is shorter than ``rules.minimalName.length``.
+
+### rules.minimalName.length
+
+Default: ``0``<br>
+Minimum name length, colour tags included. With ``0`` the check never kicks anyone.
+
+### rules.strict
+
+Default: ``false``<br>
+When a player's data loads, set their name back to the one stored in the database.
+
+### rules.blockNewUser
+
+Default: ``false``<br>
+Kick every player whose UUID was not in the database when the server started, so only returning players can join. Useful against ban evasion with a new UUID while ``account.authType`` stays ``None``.
+
+# config_contribution.yaml
+
+The contribution module is switched on with ``module.contribution`` in ``config.yaml``. Block and item names are Mindustry content names, for example ``graphite-press`` or ``silicon``.
+
+```yaml
+enabled: true
+miningPerOre: 1.0
+postThresholdMultiplier: 0.1
+coreThreshold: 30000
+titaniumThreshold: 5000
+factoryBuildScore:
+  graphite-press: 80
+  multi-press: 80
+  silicon-smelter: 100
+  silicon-crucible: 100
+  kiln: 150
+  pulverizer: 150
+  melter: 190
+  separator: 190
+  disassembler: 250
+  plastanium-compressor: 450
+  phase-weaver: 600
+  surge-smelter: 800
+itemProduceScore:
+  graphite: 7
+  silicon: 15
+  metaglass: 10
+  thorium: 17
+  plastanium: 30
+  phase-fabric: 60
+  surge-alloy: 90
+titaniumScoreBeforeThreshold: 15
+titaniumScoreAfterThreshold: 8
+powerScoreRatio: 0.1
+resourcePenaltyExempt:
+  - "conveyor"
+  - "duct"
+  - "wall"
+  - "turret"
+buildPenaltyMultiplier: 1.0
+```
+
+### enabled
+
+Default: ``true``<br>
+Second switch inside the module. Turning on ``module.contribution`` is enough.
+
+### miningPerOre
+
+Default: ``1.0``<br>
+Score per mined ore unit while the team's core holds less than ``coreThreshold`` of that item.
+
+### postThresholdMultiplier
+
+Default: ``0.1``<br>
+Multiplier on mining score once the core holds ``coreThreshold`` of the item.
+
+### coreThreshold
+
+Default: ``30000``<br>
+Amount of copper or lead in the core above which mining scores less.
+
+### titaniumThreshold
+
+Default: ``5000``<br>
+Amount of titanium in the core that switches the titanium score from ``titaniumScoreBeforeThreshold`` to ``titaniumScoreAfterThreshold``.
+
+### factoryBuildScore
+
+Default: see the block above<br>
+Points for building the first block of each factory type (block name to points).
+
+### itemProduceScore
+
+Default: see the block above<br>
+Points for each produced item (item name to points). Items not listed, such as coal, score nothing. Titanium uses the two keys below.
+
+### titaniumScoreBeforeThreshold
+
+Default: ``15``<br>
+Points per titanium produced while the core holds less than ``titaniumThreshold``.
+
+### titaniumScoreAfterThreshold
+
+Default: ``8``<br>
+Points per titanium produced after that.
+
+### powerScoreRatio
+
+Default: ``0.1``<br>
+Share of the net power production turned into score every second.
+
+### resourcePenaltyExempt
+
+Default: ``conveyor``, ``duct``, ``wall``, ``turret``<br>
+Blocks whose name contains one of these texts cost no score to build and lose none when their builder deconstructs them.
+
+### buildPenaltyMultiplier
+
+Default: ``1.0``<br>
+Multiplier on a block's resource cost when it is subtracted from the builder's score.
+
+# config_bridge.yaml
+
+Links several servers for ``/broadcast``. The first server that can open ``port`` becomes the host, and every other server connects to it at ``address:port``.
+
+```yaml
+address: "127.0.0.1"
+port: 34567
+sharedSecret: ""
+sharing:
+  ban: false
+  broadcast: false
+```
+
+### address
 
 Default: ``127.0.0.1``<br>
-Connect with another server.<br>
-In the connected state, you can use the broadcast command to send messages to all servers.
+Address of the host server that the other servers connect to.
 
-# Security
-Manages functions useful for catching Griefers.
+### port
 
-## votekick
+Default: a random port between 10000 and 65535, picked when the file is created<br>
+Port of the bridge. Set the same value on every server. If this line goes missing, a new random port is written and the servers stop finding each other.
 
-Default: ``false``<br>
-Allows players to start voting by pressing the hammer icon in the player list.<br>
-This feature has the risk of voting being neutralized by trolling users, Modified clients, or griefers, and there have been cases of abuse by Modified clients.<br>
-**If you use this function, you agree that _any disputes between players and server security may be vulnerable_.**
+### sharedSecret
 
-Example
-```yaml
-# Enable quick voting from player list
-votekick: true
+Default: empty<br>
+Shared secret that servers use to authenticate to each other. It must be at least 32 bytes (UTF-8) and the same on every server. While it is shorter, the bridge stays off and logs a warning.
 
-# Disable quick voting from player list
-votekick: false
-```
-
-## antiGrief
+### sharing.ban
 
 Default: ``false``<br>
-Execute various experimental anti-grief functions.<br>
-This includes prohibiting access between the same IP and detecting power supply cutoff, which may cause malfunction or instability.
+Not read by the current code. To share bans, point the servers at one database and use ``ban.useDatabase`` in ``config.yaml``.
 
-Example
-```yaml
-# Enable anti-grief system
-antiGrief: true
-
-# Disable anti-grief system
-antiGrief: false
-```
-
-## minimumName
+### sharing.broadcast
 
 Default: ``false``<br>
-Set the player's minimum nickname length to at least 4 characters.<br>
-Very short nicknames prevent duplicate nicknames from being detected and hindered in quickly blocking the griefer.
+Not read by the current code. ``/broadcast`` reaches every connected server whatever it says.
 
-Example
+# config_discord.yaml
+
 ```yaml
-# Set minimum nickname length to 4 characters
-minimumName: true
-
-# Unlimit nickname length
-minimumName: false
+url: ""
 ```
 
-## blockfooclient
+### url
 
-Default: ``false``<br>
-Blocking foo's client.
-If this value is set to false, various cheats, unfair games, unintentional block place, and unexpected plugin errors cannot be prevented.<br>
-If you set this value to false, **you agree that the plugin creator will not have any problems with plugin errors and server operation**.
+Default: empty<br>
+Discord invite link that ``/discord`` opens in the player's browser. With an empty value ``/discord`` does nothing.
 
-Example
 ```yaml
-# Block foo's client
-blockfooclient: true
-
-# Allow foo's client
-blockfooclient: false
+url: "https://discord.gg/invitelink"
 ```
 
-## allowMobile
+# config_web.yaml
+
+```yaml
+port: 32000
+uploadPath: "config/maps"
+sessionSecret: ""
+secureCookie: true
+sessionDuration: 3600
+maxFileSize: 10485760
+maxImageWidth: 2048
+mapRenderServer: "https://api.mindustry-tool.com/api/v4/maps/image"
+discordUrl: "https://discord.gg/yourserver"
+enableWebSocket: true
+```
+
+### port
+
+Default: ``32000``<br>
+Port of the web server. Put a reverse proxy such as nginx in front of it to serve it on a real domain.
+
+### uploadPath
+
+Default: ``config/maps``<br>
+Folder where maps uploaded through the web page are stored, relative to the server folder.
+
+### sessionSecret
+
+Default: empty, replaced by a generated value on the first start<br>
+Secret of at least 32 characters used to encrypt and sign login cookies. When blank, one is generated and written to the file. Changing it logs every open session out.
+
+### secureCookie
 
 Default: ``true``<br>
-Allow mobile user access.<br>
-Setting this value to false will prevent mobile players from entering the server.<br>
+Only send the login cookie over HTTPS. Set ``false`` when the site is served over plain HTTP, or logins will not stick.
 
-Example
-```yaml
-# Allow mobile players
-allowMobile: true
+### sessionDuration
 
-# Block mobile players
-allowMobile: false
-```
+Default: ``3600``<br>
+Seconds a login stays valid. Must be greater than 0, or the web server does not start.
 
-## blockNewUser
+### maxFileSize
 
-Default: ``false``<br>
-Blocks new users from entering the server.<br>
-This feature is useful for malicious users to bypass bans using custom clients or VPNs.<br>
-Enable this function to block modified client attacks while maintaining the authType value as ``None``.
+Default: ``10485760`` (10 MB)<br>
+Largest map file, in bytes, that can be uploaded.
 
-Example
-```yaml
-# Block new players
-blockNewUser: true
+### maxImageWidth
 
-# Allow join new players
-blockNewUser: false
-```
+Default: ``2048``<br>
+Largest width, in pixels, that a map image request may ask for.
 
-# Discord
+### mapRenderServer
 
-Settings related to Discord integration
+Default: ``https://api.mindustry-tool.com/api/v4/maps/image``<br>
+Service that renders map preview images.
 
-## botToken
-Enter the Bot ID.<br>
-You can find it in the Discord Developer Center.
+### discordUrl
 
-Example
-```yaml
-botToken: avqnwfe561awe4fvq
-```
+Default: ``https://discord.gg/yourserver``<br>
+Discord invite shown by the web login to players who still have to link their Discord account.
 
-## channelToken
-Enter the ID of the specific channel the bot will be used on.<br>
-You will need to enable developer mode in your Discord settings to see this.
+### enableWebSocket
 
-Example
-```yaml
-channelToken: 527319715439417593
-```
+Default: ``true``<br>
+Not read by the current code.
 
-## discordURL
-Enter your discord invite URL.<br>
-By entering your Discord URL here, you can use the ``/discord`` command to open the Discord URL from within the game.
+# Other files
 
-Example
-```yaml
-discordURL: https://discord.gg/invitelink
-```
+These live in ``config/mods/Essentials/``, not in ``config/``.
 
-## banChannelToken
-Enter the ID of the specific channel the bot will be used on.<br>
-When a player is banned on the server, the information of the banned player is displayed through the set Discord channel.
-
-Example
-```yaml
-banChannelToken: 91475341795341759
-```
+| File | Written by the plugin | Purpose |
+|:-----|:----------------------|:--------|
+| ``permission.yaml`` | on the first start | Groups and their permission nodes, admin flag and chat format. See [Permission.md](Permission.md). |
+| ``permission_user.yaml`` | on the first start (comments only), entries by ``setperm`` | Per-player ``name``, ``group``, ``admin``, ``isAlert``, ``alertMessage`` and ``chatFormat``. Wins over the group stored in the database. |
+| ``chat_blacklist.txt`` | when the chat module starts | Words for ``blacklist`` in ``config_chat.yaml``, one per line. |
+| ``bannedCommands.txt`` | no, create it yourself | JSON list of command names to remove, for example ``["js", "spawn"]``. |
+| ``motd/<language>.txt`` | no | Message shown on join. More than 10 lines opens it in a window. |
+| ``messages/<language>.txt`` | no | Lines sent one at a time by ``feature.motd``. |
+| ``data/server-id`` | on the first start | This server's identity in a shared database, seeded from ``plugin.serverId``. |
