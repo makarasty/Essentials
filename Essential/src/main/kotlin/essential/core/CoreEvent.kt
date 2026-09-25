@@ -1290,8 +1290,7 @@ fun worldLoad(event: WorldLoadEvent) {
         }
     }
 
-    Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }.forEach { it.delete() }
-    if (Vars.saveDirectory.child("rollback.msav").exists()) Vars.saveDirectory.child("rollback.msav").delete()
+    Trigger.discardMapBackups()
 
     // Clear on every world load, PvP or not - otherwise a non-PvP map after a PvP one inherits
     // the previous map's specters and team assignments.

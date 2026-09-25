@@ -8,6 +8,7 @@ import arc.util.Align
 import arc.util.Log
 import arc.util.Time
 import arc.util.Timer
+import arc.util.io.FastDeflaterOutputStream
 import essential.common.bundle.Bundle
 import essential.common.event.CustomEvents
 import essential.common.database.data.PlayerData
@@ -39,9 +40,11 @@ import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.gen.Playerc
 import mindustry.io.SaveIO
+import mindustry.io.SaveOptions
 import mindustry.net.Host
 import mindustry.net.NetworkIO
 import mindustry.world.Tile
+import java.io.ByteArrayOutputStream
 import java.lang.Thread.currentThread
 import java.lang.Thread.sleep
 import java.net.DatagramPacket
@@ -162,20 +165,54 @@ object Trigger {
         return host to port
     }
 
-    fun saveMapBackup() {
-        if (!conf.command.rollback.enabled || !conf.command.rollback.mapBackup) return
+    private fun mapBackups() =
+        Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
 
-        val timestamp = System.currentTimeMillis()
-        val backupFile = Vars.saveDirectory.child("rollback_$timestamp.msav")
-        SaveIO.save(backupFile)
+    private val backupLock = Any()
 
-        val files = Vars.saveDirectory.findAll { f -> f.name().startsWith("rollback_") && f.name().endsWith(".msav") }
-        val sortedFiles = files.sortedBy { it.lastModified() }
-        if (sortedFiles.size > conf.command.rollback.limit) {
-            for (i in 0 until (sortedFiles.size - conf.command.rollback.limit)) {
-                sortedFiles[i].delete()
+    /** Bumped by every world load, so a backup still compressing when the map changed is dropped. */
+    private var backupGeneration = 0
+
+    /**
+     * Snapshots the world into a `rollback_*.msav` for `/vote back`. Serialising has to happen here on
+     * the game thread, with the world standing still; compressing and writing the file does not, and on
+     * a built-up map that was most of the time `SaveIO.save` held the tick for. Returns the write, or
+     * null when backups are off.
+     */
+    fun saveMapBackup(): Job? {
+        if (!conf.command.rollback.enabled || !conf.command.rollback.mapBackup) return null
+
+        val raw = ByteArrayOutputStream(1 shl 20)
+        SaveIO.write(raw, SaveOptions())
+        val generation = synchronized(backupLock) { backupGeneration }
+        val name = "rollback_${System.currentTimeMillis()}.msav"
+        val limit = conf.command.rollback.limit
+
+        return scope.launch(Dispatchers.IO) {
+            // Written under another name and renamed, so findVoteBackSave never picks a half-written file.
+            val tmp = Vars.saveDirectory.child("$name.tmp")
+            try {
+                FastDeflaterOutputStream(tmp.write(false, 8192)).use { raw.writeTo(it) }
+                // Only the check and the rename under the lock: discardMapBackups takes it on the game
+                // thread, and the prune below is a directory listing that does not need to hold it.
+                synchronized(backupLock) {
+                    if (generation != backupGeneration) return@launch
+                    tmp.moveTo(Vars.saveDirectory.child(name))
+                }
+                mapBackups().sortedBy { it.lastModified() }.dropLast(limit).forEach { it.delete() }
+            } catch (e: Exception) {
+                Log.err("Map backup failed", e)
+            } finally {
+                tmp.delete()
             }
         }
+    }
+
+    /** Deletes every map backup: each one is of the map being replaced, and `SaveIO.load` checks no map. */
+    fun discardMapBackups() = synchronized(backupLock) {
+        backupGeneration++
+        mapBackups().forEach { it.delete() }
+        Vars.saveDirectory.child("rollback.msav").delete()
     }
 
     class PingThread: Runnable {

@@ -1,7 +1,9 @@
 package essential.core
 
 import PluginTest.Companion.loadGame
+import kotlinx.coroutines.runBlocking
 import mindustry.Vars
+import mindustry.io.SaveIO
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertTrue
@@ -44,8 +46,10 @@ class MapBackupTest {
 
     @Test
     fun enabledWritesBackup() {
-        withRollback(enabled = true, mapBackup = true) { Trigger.saveMapBackup() }
+        withRollback(enabled = true, mapBackup = true) { runBlocking { Trigger.saveMapBackup()?.join() } }
         assertTrue(backups().size > 0, "map backup was not written while enabled")
+        // Compressed off the game thread by hand rather than by SaveIO.save, so check it still loads.
+        assertTrue(backups().all { SaveIO.isSaveValid(it) }, "map backup is not a loadable save")
         backups().forEach { it.delete() }
     }
 }
