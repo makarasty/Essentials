@@ -1,12 +1,11 @@
 package essential.common.database
 
 import arc.util.Log
-import essential.common.database.data.getAllWorldHistory
 import essential.common.database.table.WorldHistoryTable
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.jetbrains.exposed.v1.r2dbc.insert
+import org.jetbrains.exposed.v1.r2dbc.batchInsert
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingDeque
@@ -84,21 +83,6 @@ object WorldHistoryBuffer {
         }
     }
 
-    suspend fun reload() {
-        runCatching {
-            val existing = getAllWorldHistory()
-            val newCache = ConcurrentHashMap<Int, String>()
-            existing.sortedBy { it.time }.forEach { entry ->
-                val packed = (entry.x.toInt() shl 16) or (entry.y.toInt() and 0xFFFF)
-                newCache[packed] = entry.tile
-            }
-            lastBlockCache.clear()
-            lastBlockCache.putAll(newCache)
-        }.onFailure {
-            Log.err("[WorldHistoryBuffer] Failed to reload history into cache", it)
-        }
-    }
-
     fun getLastBlock(x: Short, y: Short): String? {
         val packed = (x.toInt() shl 16) or (y.toInt() and 0xFFFF)
         return lastBlockCache[packed]
@@ -107,10 +91,10 @@ object WorldHistoryBuffer {
     fun start(scope: CoroutineScope) {
         if (flushJob != null && !flushJob!!.isCancelled) return
         stopped.set(false)
-        flushJob = scope.launch(Dispatchers.IO) {
-            reload()
-            flushLoop()
-        }
+        // No reload of the table into lastBlockCache first: rows left from before a restart belong to
+        // a world that is gone, and the first WorldLoadEvent truncates them anyway. Reading them all in
+        // was a full-table load into the heap on every start, racing that truncate.
+        flushJob = scope.launch(Dispatchers.IO) { flushLoop() }
     }
 
     fun enqueue(
@@ -294,21 +278,21 @@ object WorldHistoryBuffer {
         if (batch.isEmpty()) return true
         return runCatching {
             suspendTransaction(db = worldHistoryDatabase) {
-                batch.forEach { e ->
-                    WorldHistoryTable.insert { row ->
-                        row[WorldHistoryTable.time] = e.time
-                        row[WorldHistoryTable.player] = e.player
-                        row[WorldHistoryTable.action] = e.action
-                        row[WorldHistoryTable.x] = e.x
-                        row[WorldHistoryTable.y] = e.y
-                        row[WorldHistoryTable.tile] = e.tile
-                        row[WorldHistoryTable.rotate] = e.rotate
-                        row[WorldHistoryTable.team] = e.team
-                        row[WorldHistoryTable.value] = e.value
-                        row[WorldHistoryTable.kind] = e.kind
-                        row[WorldHistoryTable.uuid] = e.uuid
-                        row[WorldHistoryTable.createdAt] = Instant.fromEpochMilliseconds(e.createdAt)
-                    }
+                // One batched statement per flush rather than one INSERT per row, and no generated ids
+                // read back: nothing here uses them.
+                WorldHistoryTable.batchInsert(batch, shouldReturnGeneratedValues = false) { e ->
+                    this[WorldHistoryTable.time] = e.time
+                    this[WorldHistoryTable.player] = e.player
+                    this[WorldHistoryTable.action] = e.action
+                    this[WorldHistoryTable.x] = e.x
+                    this[WorldHistoryTable.y] = e.y
+                    this[WorldHistoryTable.tile] = e.tile
+                    this[WorldHistoryTable.rotate] = e.rotate
+                    this[WorldHistoryTable.team] = e.team
+                    this[WorldHistoryTable.value] = e.value
+                    this[WorldHistoryTable.kind] = e.kind
+                    this[WorldHistoryTable.uuid] = e.uuid
+                    this[WorldHistoryTable.createdAt] = Instant.fromEpochMilliseconds(e.createdAt)
                 }
             }
             Log.debug("[WorldHistoryBuffer] flushed ${batch.size} entries")

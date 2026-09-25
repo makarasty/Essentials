@@ -97,9 +97,12 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     val h2HistoryFactory = h2("worldHistory")
 
+    // One steady writer (the WorldHistoryBuffer flush loop), plus readers that do not queue behind it:
+    // a /rollback and every tap of an admin in history view. Twenty was headroom nothing used; six
+    // leaves room for a rollback and a few viewers at once without anyone waiting on the pool.
     val h2PoolConfig = ConnectionPoolConfiguration.builder(h2HistoryFactory.first)
-        .maxSize(20)
-        .initialSize(4)
+        .maxSize(6)
+        .initialSize(1)
         .maxIdleTime(Duration.ofMinutes(10))
         .maxAcquireTime(Duration.ofSeconds(10))
         .maxCreateConnectionTime(Duration.ofSeconds(5))
@@ -866,6 +869,9 @@ fun h2(name: String): Pair<ConnectionFactory, DatabaseDialect> = Pair(
             .property(H2ConnectionOption.DB_CLOSE_DELAY, "-1")
             .property(H2ConnectionOption.DB_CLOSE_ON_EXIT, "FALSE")
             .property("DEFAULT_NULL_ORDERING", "HIGH")
+            // Page cache in KB. H2's default is 16 MB per database and this opens two; both are read
+            // by key or not at all during play, so a quarter of that holds the working set.
+            .property("CACHE_SIZE", "4096")
             .username("sa")
             .password("123")
             .build()

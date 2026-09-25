@@ -45,6 +45,7 @@ class Main : Plugin() {
         const val CONFIG_PATH = "config/config.yaml"
         private const val DATABASE_INIT_TIMEOUT_MS = 30_000L
         private const val SHUTDOWN_SAVE_TIMEOUT_MS = 30_000L
+        private const val SHUTDOWN_DRAIN_TIMEOUT_MS = 5_000L
         @Volatile
         var conf: CoreConfig = reloadConf()
 
@@ -281,6 +282,13 @@ class Main : Plugin() {
             override fun dispose() {
                 runBlocking {
                     WorldHistoryBuffer.stop()
+                    // Background writes still in flight - a leave, a game over, an award - that the
+                    // scope.cancel() below would cut off mid-transaction. The history flush loop is
+                    // stopped above and the web loops run in Ktor's scope, so what is left here ends on
+                    // its own; bounded anyway, for a write stuck waiting on the pool.
+                    withTimeoutOrNull(SHUTDOWN_DRAIN_TIMEOUT_MS) {
+                        scope.coroutineContext.job.children.toList().joinAll()
+                    }
                     stopLogWriter()
                     // Also on the main thread, one suspending write per online player, in
                     // sequence, with nothing bounding the total. A supervisor with a shutdown

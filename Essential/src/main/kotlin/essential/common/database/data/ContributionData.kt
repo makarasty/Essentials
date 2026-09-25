@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.datetime.LocalDateTime
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.r2dbc.batchInsert
 import org.jetbrains.exposed.v1.r2dbc.insert
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
@@ -41,6 +42,20 @@ suspend fun insertContribution(
             it[ContributionTable.mapName] = mapName
             it[ContributionTable.score] = score
             // recordedAt is set by the default value
+        }
+    }
+}
+
+/** One game's scores in a single transaction; temporary (id == 0u) players are skipped. */
+suspend fun insertContributions(scores: List<Pair<PlayerData, Double>>, gameMode: String, mapName: String?) {
+    val rows = scores.filter { it.first.id != 0u }
+    if (rows.isEmpty()) return
+    suspendTransaction {
+        ContributionTable.batchInsert(rows, shouldReturnGeneratedValues = false) { (playerData, score) ->
+            this[ContributionTable.playerId] = playerData.id
+            this[ContributionTable.gameMode] = gameMode
+            this[ContributionTable.mapName] = mapName
+            this[ContributionTable.score] = score
         }
     }
 }

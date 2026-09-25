@@ -1,8 +1,12 @@
 package essential.core.service.contribution
 
+import arc.struct.IntFloatMap
+import arc.struct.IntMap
+import arc.struct.IntSet
+import arc.util.Log
 import arc.util.Timer
 import essential.common.database.data.PlayerData
-import essential.common.database.data.insertContribution
+import essential.common.database.data.insertContributions
 import essential.common.offlinePlayers
 import essential.common.players
 import essential.common.util.findPlayerData
@@ -244,14 +248,15 @@ fun gameOver(event: GameOverEvent) {
         else -> "survival"
     }
     val mapName = Vars.state.map?.plainName()
-    val snapshot = (players + offlinePlayers).distinctBy { it.uuid }
-    for (data in snapshot) {
-        val score = data.currentContribution
-        scope.launch {
-            try {
-                insertContribution(data, mode, mapName, score)
-            } catch (_: Throwable) {
-            }
+    // Scores read here, on the game thread, before resetGameState zeroes them. One transaction for the
+    // whole game rather than a coroutine per player: forty of those at once queued on a five-connection
+    // pool, and a failure was swallowed without a line.
+    val scores = (players + offlinePlayers).distinctBy { it.uuid }.map { it to it.currentContribution }
+    scope.launch {
+        try {
+            insertContributions(scores, mode, mapName)
+        } catch (e: Exception) {
+            Log.err("Failed to save this game's contribution scores (${scores.size} players)", e)
         }
     }
     resetGameState()

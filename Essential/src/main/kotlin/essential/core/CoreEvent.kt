@@ -350,7 +350,9 @@ fun tap(event: TapEvent) {
             }
         }
 
-        if (data.viewHistoryMode) {
+        // Behind the same per-uuid gate as the tap log: each of these flushes the history buffer under
+        // its lock and takes a pool connection, and taps arrive as fast as a client sends them.
+        if (data.viewHistoryMode && shouldLog) {
             scope.launch {
                 val buf = ArrayList<TileLog>()
 
