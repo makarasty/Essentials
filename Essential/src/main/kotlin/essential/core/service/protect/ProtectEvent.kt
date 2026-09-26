@@ -32,7 +32,6 @@ import mindustry.gen.Groups
 import mindustry.net.ArcNetProvider
 import mindustry.net.NetworkIO
 import mindustry.net.Packets
-import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.net.InetAddress
@@ -162,7 +161,6 @@ fun playerJoin(e: EventType.PlayerJoin) {
     val uuid = player.uuid()
     val plainName = player.plainName()
     val locale = player.locale
-    val con = player.con
 
     scope.launch {
         if (conf.account.getAuthType() == ProtectConfig.AuthType.None || !conf.account.enabled) {
@@ -189,26 +187,14 @@ fun playerJoin(e: EventType.PlayerJoin) {
         }
         if (conf.account.getAuthType() == ProtectConfig.AuthType.Discord) {
             if (data == null) {
-                val exists = suspendTransaction {
-                    !PlayerTable
-                        .select(PlayerTable.name)
-                        .where { PlayerTable.name eq plainName }
-                        .empty()
-                }
-
-                if (!exists) {
-                    // There is no Discord login on this path - the action filter is the only gate,
-                    // and it denies silently. Say so rather than leaving the player in a server
-                    // where nothing they do works.
-                    arc.Core.app.post {
-                        Groups.player.find { p -> p.uuid() == uuid }
-                            ?.sendMessage(Bundle(locale)["event.discord.not.registered"])
-                    }
-                } else {
-                    val reason = Bundle(locale)["event.player.name.duplicate"]
-                    arc.Core.app.post {
-                        con.kick(reason, 0L)
-                    }
+                // There is no Discord login on this path - the action filter is the only gate,
+                // and it denies silently. Say so rather than leaving the player in a server
+                // where nothing they do works. A name another uuid already has is no reason to
+                // kick: names are not unique, and that is also how a player whose uuid changed
+                // arrives.
+                arc.Core.app.post {
+                    Groups.player.find { p -> p.uuid() == uuid }
+                        ?.sendMessage(Bundle(locale)["event.discord.not.registered"])
                 }
             } else {
                 arc.Core.app.post {
