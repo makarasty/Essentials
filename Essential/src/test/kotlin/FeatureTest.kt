@@ -3,6 +3,7 @@ import PluginTest.Companion.createPlayer
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
+import PluginTest.Companion.observeMessages
 import PluginTest.Companion.player
 import PluginTest.Companion.pumpApp
 import PluginTest.Companion.serverCommand
@@ -982,13 +983,15 @@ class FeatureTest {
         withoutLogErrors {
             try {
                 clientCommand.handleMessage("/rollback ${p.first.name()}", p.first)
-                val thrown = pumpForThrow(5000L)
+                // Not the last message after a fixed window: with an owner online, the one-second achievement
+                // sweep counts MeetOwner for every player, and a long-lived one reaching 60 broadcasts it to
+                // everyone online, p included, landing behind the reply.
+                val failed = Bundle(p.first.locale())["command.rollback.failed"]
+                var seen = emptyList<String>()
+                val thrown = runCatching { seen = observeMessages(p.second) { it.contains(failed) } }.exceptionOrNull()
 
                 assertNull(thrown, "A failing rollback must not unwind the main loop: $thrown")
-                assertTrue(
-                    p.second.lastReceivedMessage.contains(Bundle(p.first.locale())["command.rollback.failed"]),
-                    "A failing rollback must tell the admin, got: ${p.second.lastReceivedMessage}"
-                )
+                assertTrue(seen.any { it.contains(failed) }, "A failing rollback must tell the admin, got: $seen")
             } finally {
                 ghost.remove()
                 Groups.player.update()
