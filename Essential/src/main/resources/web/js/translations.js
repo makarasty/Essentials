@@ -107,13 +107,13 @@ const translations = {
 
         // Login page
         'login.title': 'Login',
-        'login.username': 'Username',
+        'login.username': 'Account ID',
         'login.password': 'Password',
         'login.button': 'Login',
         'login.required': 'Login Required',
         'login.to.view': 'Please login to view and manage maps',
-        'login.error.credentials': 'Invalid username or password',
-        'login.error.fields': 'Please enter both username and password',
+        'login.error.credentials': 'Invalid account ID or password',
+        'login.error.fields': 'Please enter both account ID and password',
         'login.error.forbidden': 'Access forbidden',
 
         // Upload dialog
@@ -241,13 +241,13 @@ const translations = {
 
         // Login page
         'login.title': '로그인',
-        'login.username': '사용자 이름',
+        'login.username': '계정 ID',
         'login.password': '비밀번호',
         'login.button': '로그인',
         'login.required': '로그인 필요',
         'login.to.view': '맵을 보고 관리하려면 로그인하세요',
-        'login.error.credentials': '잘못된 사용자 이름 또는 비밀번호',
-        'login.error.fields': '사용자 이름과 비밀번호를 모두 입력해주세요',
+        'login.error.credentials': '잘못된 계정 ID 또는 비밀번호',
+        'login.error.fields': '계정 ID와 비밀번호를 모두 입력해주세요',
         'login.error.forbidden': '접근 금지',
 
         // Upload dialog
@@ -378,13 +378,13 @@ const translations = {
 
         // Login page
         'login.title': 'Вхід',
-        'login.username': 'Ім\'я користувача',
+        'login.username': 'ID акаунту',
         'login.password': 'Пароль',
         'login.button': 'Увійти',
         'login.required': 'Потрібен вхід',
         'login.to.view': 'Будь ласка, увійдіть, щоб переглядати та керувати картами',
-        'login.error.credentials': 'Невірне ім\'я користувача або пароль',
-        'login.error.fields': 'Будь ласка, введіть ім\'я користувача та пароль',
+        'login.error.credentials': 'Невірний ID акаунту або пароль',
+        'login.error.fields': 'Будь ласка, введіть ID акаунту та пароль',
         'login.error.forbidden': 'Доступ заборонено',
 
         // Upload dialog

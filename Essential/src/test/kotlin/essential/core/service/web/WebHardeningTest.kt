@@ -113,7 +113,8 @@ class WebHardeningTest {
     }
 
     private fun sessionCookieFor(data: PlayerData, password: String): String {
-        val login = request("POST", "/api/auth/login", loginBody(data.name, password))
+        val accountID = data.accountID ?: fail("account ID was not stored")
+        val login = request("POST", "/api/auth/login", loginBody(accountID, password))
         assertEquals(200, login.status, "a correct password no longer logs in: ${login.body}")
         return login.setCookie?.substringBefore(';') ?: fail("login returned no session cookie")
     }
@@ -121,20 +122,23 @@ class WebHardeningTest {
     @Test
     fun every_failed_login_answers_the_same_thing() {
         val existing = PluginTest.newPlayer().second
+        // A row that exists but never registered: an account ID with no password hash behind it.
+        existing.accountID = "existing-${System.nanoTime()}"
+        runBlocking { existing.update() }
 
         val unknown = request(
             "POST",
             "/api/auth/login",
-            loginBody("no-such-player-${System.nanoTime()}", "wrong")
+            loginBody("no-such-account-${System.nanoTime()}", "wrong")
         )
-        val notSetUp = request("POST", "/api/auth/login", loginBody(existing.name, "wrong"))
+        val notSetUp = request("POST", "/api/auth/login", loginBody(existing.accountID!!, "wrong"))
 
         assertEquals(401, unknown.status)
-        assertEquals(401, notSetUp.status, "an existing player is answered differently from an unknown one")
+        assertEquals(401, notSetUp.status, "an existing account is answered differently from an unknown one")
         assertEquals(
             unknown.body,
             notSetUp.body,
-            "the login response tells an unauthenticated caller whether the name exists"
+            "the login response tells an unauthenticated caller whether the account id exists"
         )
     }
 
@@ -143,8 +147,8 @@ class WebHardeningTest {
         val data = registeredPlayer("correct horse battery staple")
         val accountID = data.accountID ?: fail("account ID was not stored")
 
-        val guess = request("POST", "/api/auth/login", loginBody(data.name, accountID))
-        val otherGuess = request("POST", "/api/auth/login", loginBody(data.name, "some other guess"))
+        val guess = request("POST", "/api/auth/login", loginBody(accountID, accountID))
+        val otherGuess = request("POST", "/api/auth/login", loginBody(accountID, "some other guess"))
 
         assertEquals(401, guess.status, "the stored account ID submitted as a password is answered as its own case")
         assertEquals(guess.body, otherGuess.body, "a guess equal to the account ID is distinguishable from any other")
@@ -197,23 +201,23 @@ class WebHardeningTest {
             WebService.conf = saved.copy(sessionDuration = 60)
             val now = System.currentTimeMillis()
 
-            assertTrue(UserSession("1", "web-session-user", now).isCurrent())
+            assertTrue(UserSession("1", "web-session-user", "web-session-user", now).isCurrent())
             assertFalse(
-                UserSession("1", "web-session-user", now - 61_000).isCurrent(),
+                UserSession("1", "web-session-user", "web-session-user", now - 61_000).isCurrent(),
                 "a session older than sessionDuration still authenticated"
             )
             assertFalse(
-                UserSession("1", "web-session-user").isCurrent(),
+                UserSession("1", "web-session-user", "web-session-user").isCurrent(),
                 "a cookie carrying no issue time still authenticated"
             )
 
-            val copied = UserSession("1", "web-session-user", System.currentTimeMillis())
+            val copied = UserSession("1", "web-session-user", "web-session-user", System.currentTimeMillis())
             assertTrue(copied.isCurrent())
             SessionRevocations.revoke(copied)
             assertFalse(copied.isCurrent(), "a copied cookie survived the logout of its owner")
 
             // Revocation is per account row, not per name: another row must be untouched by it.
-            assertTrue(UserSession("2", "web-session-user", System.currentTimeMillis()).isCurrent())
+            assertTrue(UserSession("2", "web-session-user", "web-session-user", System.currentTimeMillis()).isCurrent())
         } finally {
             WebService.conf = saved
         }

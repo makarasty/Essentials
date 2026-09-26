@@ -362,6 +362,15 @@ suspend fun getPlayerDataByName(name: String): PlayerData? {
     }.firstOrNull()
 }
 
+/** Account IDs are unique (see the V8 migration), so unlike [getPlayerDataByName] this can only match one row. */
+suspend fun getPlayerDataByAccountID(accountID: String): PlayerData? {
+    return suspendTransaction {
+        PlayerTable.selectAll()
+            .where { PlayerTable.accountID eq accountID }
+            .mapToPlayerDataList()
+    }.firstOrNull()
+}
+
 /** Read player data synchronously (for classloader bridge) */
 suspend fun getPlayerDataSync(uuid: String): PlayerData? {
     return suspendTransaction {

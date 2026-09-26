@@ -1,7 +1,7 @@
 package essential.core.service.web
 
 import arc.util.Log
-import essential.common.database.data.getPlayerDataByName
+import essential.common.database.data.getPlayerDataByAccountID
 import essential.core.service.web.WebService.Companion.bundle
 import essential.core.service.web.WebService.Companion.conf
 import essential.core.service.web.auth.AuthController
@@ -84,7 +84,7 @@ class WebServer {
                 session<UserSession>("auth-session") {
                     validate { session ->
                         session.takeIf { it.isCurrent() }
-                            ?.let { getPlayerDataByName(session.username) }
+                            ?.let { getPlayerDataByAccountID(session.accountID) }
                             ?.takeIf { it.id.toString() == session.id }
                             ?.let { session }
                     }

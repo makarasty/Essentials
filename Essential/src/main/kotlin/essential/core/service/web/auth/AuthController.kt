@@ -1,7 +1,7 @@
 package essential.core.service.web.auth
 
 import arc.util.Log
-import essential.common.database.data.getPlayerDataByName
+import essential.common.database.data.getPlayerDataByAccountID
 import essential.core.service.web.WebService.Companion.conf
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -16,8 +16,9 @@ import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
 @Serializable
-data class UserSession(val id: String, val username: String, val issuedAt: Long = 0L)
+data class UserSession(val id: String, val accountID: String, val username: String, val issuedAt: Long = 0L)
 
+/** [username] is the wire name for what the login form now collects: the account ID, not the player name. */
 @Serializable
 data class LoginRequest(val username: String, val password: String)
 
@@ -79,12 +80,12 @@ class AuthController {
                 .encodeToString(ByteArray(32).also(SecureRandom()::nextBytes)),
             BCrypt.gensalt()
         )
-        const val AUTH_FAILED = "Invalid username or password"
+        const val AUTH_FAILED = "Invalid account ID or password"
     }
 
     suspend fun handleLogin(call: ApplicationCall, request: LoginRequest) {
         try {
-            val playerData = getPlayerDataByName(request.username)
+            val playerData = getPlayerDataByAccountID(request.username)
             val storedHash = playerData?.accountPW
             val accountID = playerData?.accountID
 
@@ -116,7 +117,7 @@ class AuthController {
                 // now the only moment at which the owner of such an account is ever told.
                 call.respond(
                     HttpStatusCode.Forbidden,
-                    mapOf("message" to "Your username and password are the same. Please change your password.")
+                    mapOf("message" to "Your account ID and password are the same. Please change your password.")
                 )
                 return
             }
@@ -130,7 +131,7 @@ class AuthController {
             }
 
             // Create session
-            val session = UserSession(playerData.id.toString(), playerData.name, System.currentTimeMillis())
+            val session = UserSession(playerData.id.toString(), accountID, playerData.name, System.currentTimeMillis())
             call.sessions.set(session)
 
             call.respond(HttpStatusCode.OK, mapOf("username" to playerData.name))

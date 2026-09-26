@@ -2,7 +2,7 @@ package essential.core.service.web.achievement
 
 import essential.common.bundle.Bundle
 import essential.common.database.data.getPlayerAchievements
-import essential.common.database.data.getPlayerDataByName
+import essential.common.database.data.getPlayerDataByAccountID
 import essential.common.players
 import essential.common.util.toHString
 import essential.core.service.achievements.Achievement
@@ -75,7 +75,7 @@ class AchievementController {
         val session = call.sessions.get<UserSession>()
             ?: return call.respond(HttpStatusCode.Unauthorized)
 
-        val dbData = getPlayerDataByName(session.username)
+        val dbData = getPlayerDataByAccountID(session.accountID)
             ?: return call.respond(HttpStatusCode.NotFound, "Player not found")
 
         // Prefer live (connected) data so runtime-only achievement progress is accurate

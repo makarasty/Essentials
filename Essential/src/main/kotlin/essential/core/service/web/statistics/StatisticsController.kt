@@ -5,7 +5,7 @@ import arc.Events
 import arc.util.Log
 import essential.common.database.data.getAverageContribution
 import essential.common.database.data.getContributionCount
-import essential.common.database.data.getPlayerDataByName
+import essential.common.database.data.getPlayerDataByAccountID
 import essential.common.permission.Permission
 import essential.common.playTime
 import essential.common.players
@@ -339,7 +339,7 @@ class StatisticsController {
         // The checks that do not need a Player are applied directly, against the same blacklist body the
         // registered filter uses. The vote filter is deliberately not among them: a web sender who is not
         // in the game is not a participant in a vote.
-        val data = getPlayerDataByName(session.username)
+        val data = getPlayerDataByAccountID(session.accountID)
             ?: return call.respond(HttpStatusCode.Forbidden, "Chat is disabled")
         if (data.chatMuted) {
             return call.respond(HttpStatusCode.Forbidden, "You are muted")
@@ -356,10 +356,10 @@ class StatisticsController {
 
         // Broadcast before recording: a send that failed must not show up in the web history as if
         // it had gone out.
-        onGameThread { Call.sendMessage("[cyan]<WEB>[white] ${session.username}: $sanitizedMessage") }
+        onGameThread { Call.sendMessage("[cyan]<WEB>[white] ${data.name}: $sanitizedMessage") }
 
         // Add to chat history
-        val chatMessage = ChatMessage(session.username, sanitizedMessage, isWeb = true)
+        val chatMessage = ChatMessage(data.name, sanitizedMessage, isWeb = true)
         synchronized(chatHistory) {
             chatHistory.add(chatMessage)
             if (chatHistory.size > 100) {
