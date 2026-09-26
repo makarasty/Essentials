@@ -146,13 +146,34 @@ suspend fun updateOrCreateMapRating(
 }
 
 /**
- * Migrate map ratings from PluginData to the new MapRating table
+ * Migrate map ratings from PluginData to the new MapRating table.
+ *
+ * This runs on every boot, and nothing writes into the legacy blob any more (it is only read, at
+ * CoreEvent.kt's map-vote handling), so from the second boot on every entry here is a duplicate of the
+ * (player_uuid, map_name) unique index. All of them landing in one transaction was harmless on MySQL,
+ * where a failed insert only fails itself - but on PostgreSQL the first failure aborts the whole
+ * transaction, so every insert after it fails too, for a reason that has nothing to do with its own
+ * row. Reading what already exists first, outside any insert's transaction, means a boot with nothing
+ * left to migrate opens none at all; a genuinely new row still gets its own transaction, so a real
+ * collision - two of the six servers migrating the same legacy rating at once - only fails itself.
  */
 suspend fun migrateMapRatingsFromPluginData(pluginData: PluginData) {
-    suspendTransaction {
-        for ((mapName, ratings) in pluginData.data.mapRatings) {
-            for ((playerUuid, isUpvote) in ratings) {
-                try {
+    val ratingsByMap = pluginData.data.mapRatings
+    if (ratingsByMap.isEmpty()) return
+
+    val mapNames = ratingsByMap.keys.toList()
+    val existing = suspendTransaction {
+        MapRatingTable.select(MapRatingTable.mapName, MapRatingTable.playerUuid)
+            .where { MapRatingTable.mapName inList mapNames }
+            .map { it[MapRatingTable.mapName] to it[MapRatingTable.playerUuid] }
+            .toSet()
+    }
+
+    for ((mapName, ratings) in ratingsByMap) {
+        for ((playerUuid, isUpvote) in ratings) {
+            if (mapName to playerUuid in existing) continue
+            try {
+                suspendTransaction {
                     MapRatingTable.insert {
                         it[MapRatingTable.mapName] = mapName
                         it[MapRatingTable.mapHash] = ""
@@ -160,9 +181,9 @@ suspend fun migrateMapRatingsFromPluginData(pluginData: PluginData) {
                         it[MapRatingTable.difficulty] = 3
                         it[MapRatingTable.rating] = if (isUpvote) 5 else 1
                     }
-                } catch (e: Exception) {
-                    println("Error migrating map rating for map $mapName and player $playerUuid: ${e.message}")
                 }
+            } catch (e: Exception) {
+                Log.err("Error migrating map rating for map $mapName and player $playerUuid", e)
             }
         }
     }
