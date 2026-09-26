@@ -178,9 +178,9 @@ The script backs up the installed jar and `config/mods/Essentials` into
 permissions to the `user` group of `permission.yaml` if they are missing. `--jar` deploys a jar from
 another path (default: `Essential/build/libs/Essential-all.jar`).
 
-## Working next to WebSocketAdmin
+## Working next to ServerAdminer
 
-The WebSocketAdmin plugin bridges a Discord bot to the same servers. Mindustry's own `Administration`
+The ServerAdminer plugin (formerly WebSocketAdmin) bridges a Discord bot to the same servers. Mindustry's own `Administration`
 state stays the source of truth for bans and admin status, and this plugin keeps its side consistent with
 it in both directions.
 
@@ -191,7 +191,7 @@ it in both directions.
   back. A vanilla admin flag this plugin did not set is never cleared on join.
 - `tempban` creates a real vanilla ban, so the bot sees it in its ban list.
 
-WebSocketAdmin calls these console commands when this plugin is loaded:
+ServerAdminer calls these console commands when this plugin is loaded:
 
 | Bot action | Console command |
 |:---|:---|

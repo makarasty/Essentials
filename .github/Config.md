@@ -370,7 +370,7 @@ How many times the background reload tries again, once every 10 seconds, before 
 
 ## feature.log
 
-Which events are written to the log files in ``config/mods/Essentials/log/``. Writing happens on a background thread. The bot commands of WebSocketAdmin that read a log need its type turned on.
+Which events are written to the log files in ``config/mods/Essentials/log/``. Writing happens on a background thread. The bot commands of ServerAdminer that read a log need its type turned on.
 
 ### feature.log.player
 
@@ -518,7 +518,7 @@ Maximum number of tiles ``/ws f``, ``/ws r`` and ``/ws d`` may change in one sel
 
 Default: ``false``<br>
 ``true`` checks joining players against the ban list stored in the database. Servers sharing one database then share their bans.<br>
-``false`` uses only Mindustry's own ban list. Keep it ``false`` next to the WebSocketAdmin plugin, so both plugins agree on who is banned.
+``false`` uses only Mindustry's own ban list. Keep it ``false`` next to the ServerAdminer plugin, so both plugins agree on who is banned.
 
 # config_chat.yaml
 
