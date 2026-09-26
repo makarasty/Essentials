@@ -23,6 +23,7 @@ import mindustry.gen.Playerc
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.lowerCase
+import org.jetbrains.exposed.v1.core.stringParam
 import org.jetbrains.exposed.v1.r2dbc.*
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mindrot.jbcrypt.BCrypt
@@ -372,7 +373,7 @@ suspend fun getPlayerDataByName(name: String): PlayerData? {
 suspend fun getPlayerDataByAccountID(accountID: String): PlayerData? {
     return suspendTransaction {
         PlayerTable.selectAll()
-            .where { PlayerTable.accountID.lowerCase() eq accountID.lowercase() }
+            .where { PlayerTable.accountID.lowerCase() eq stringParam(accountID).lowerCase() }
             .mapToPlayerDataList()
     }.firstOrNull()
 }

@@ -22,6 +22,7 @@ import mindustry.gen.Groups
 import mindustry.net.Administration.PlayerInfo
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.lowerCase
+import org.jetbrains.exposed.v1.core.stringParam
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.selectAll
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
@@ -39,7 +40,7 @@ class Commands {
 
         scope.launch {
             val target = suspendTransaction {
-                PlayerTable.selectAll().where { PlayerTable.accountID.lowerCase() eq arg[0].lowercase() }.mapToPlayerDataList()
+                PlayerTable.selectAll().where { PlayerTable.accountID.lowerCase() eq stringParam(arg[0]).lowerCase() }.mapToPlayerDataList()
             }.firstOrNull()
             val existingDeviceAccount = getPlayerData(currentUuid)
 
@@ -120,7 +121,7 @@ class Commands {
                 scope.launch {
                     val idTaken = !suspendTransaction {
                         PlayerTable.select(PlayerTable.accountID).where {
-                            PlayerTable.accountID.lowerCase() eq arg[0].lowercase()
+                            PlayerTable.accountID.lowerCase() eq stringParam(arg[0]).lowerCase()
                         }.empty()
                     }
                     if (idTaken) {
