@@ -231,6 +231,48 @@ class LivePostgresUpgradeTest {
     }
 
     /**
+     * The path the fleet takes when it moves from MySQL: an empty database, the plugin's own boot builds
+     * the schema and Flyway takes it to the newest version, and a second boot finds nothing to do.
+     *
+     * Flyway swallows its own failure into a log line, so nothing else here would notice a migration that
+     * does not run on PostgreSQL. The two indexes checked are the ones those migrations exist for.
+     */
+    @Test
+    fun anEmptyDatabaseBootsToTheCurrentSchema() = onAServer {
+        reset()
+        repeat(2) { start ->
+            if (start == 1) stopBoot()
+            val failure = bootCatching()
+            assertTrue(failure == null && bootLog.refusals().isEmpty(), "boot ${start + 1}: ${diagnosis(failure)}")
+        }
+
+        open(DATABASE).use { connection ->
+            assertEquals("0", connection.scalar("SELECT count(*) FROM flyway_schema_history WHERE NOT success"))
+            assertEquals(
+                "10",
+                connection.scalar("SELECT max(version::int) FROM flyway_schema_history WHERE version IS NOT NULL"),
+                "Flyway did not reach the newest migration:\n${bootLog.report()}"
+            )
+            val indexes = buildList {
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT indexdef FROM pg_indexes WHERE tablename = 'players'").use { rows ->
+                        while (rows.next()) add(rows.getString(1))
+                    }
+                }
+            }
+            assertTrue(
+                indexes.none { it.startsWith("CREATE UNIQUE") && it.endsWith("(name)") },
+                "players.name is still unique: $indexes"
+            )
+            assertTrue(indexes.any { it.endsWith("(name)") }, "players.name lost its index: $indexes")
+            assertTrue(
+                indexes.any { it.startsWith("CREATE UNIQUE") && it.contains("lower((account_id)") },
+                "account ids are not unique ignoring case: $indexes"
+            )
+        }
+    }
+
+    /**
      * The whole point of this class: a pre-fork version 3 database, upgraded by the plugin's own boot.
      *
      * The fixture is the same `v3_postgres.sql` the container test used, so the row asserted at the end
