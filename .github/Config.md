@@ -649,6 +649,8 @@ Checks run when a player connects.
 Default: ``false``<br>
 Kick players connecting from a known VPN address. The address list is downloaded from the X4BNet VPN list at start. It may not catch every VPN.
 
+Keep it ``false`` next to the BlockIP plugin, which owns VPN decisions: it lets VPN players in, or challenges them with a button, and this rule would kick them anyway.
+
 ### rules.foo
 
 Default: ``false``<br>
