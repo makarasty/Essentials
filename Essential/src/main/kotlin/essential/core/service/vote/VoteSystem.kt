@@ -33,6 +33,8 @@ import mindustry.io.SaveIO
 import mindustry.net.Administration
 import mindustry.net.Packets
 import mindustry.net.WorldReloader
+import kotlin.math.ceil
+import kotlin.math.sqrt
 import kotlin.time.Duration.Companion.minutes
 
 
@@ -501,8 +503,11 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
                                     5 -> {
                                         send("command.vote.random.fire")
-                                        for (x in 0 until Vars.world.width()) {
-                                            for (y in 0 until Vars.world.height()) {
+                                        // One broadcast per tile was 40,000 packets to every player in a
+                                        // single frame on a 200x200 map; a stride keeps it near a thousand
+                                        val step = ceil(sqrt(Vars.world.width() * Vars.world.height() / 1000.0)).toInt().coerceAtLeast(1)
+                                        for (x in 0 until Vars.world.width() step step) {
+                                            for (y in 0 until Vars.world.height() step step) {
                                                 Call.effect(
                                                     Fx.fire,
                                                     (x * 8).toFloat(),
