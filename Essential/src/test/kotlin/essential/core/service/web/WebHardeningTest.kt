@@ -8,6 +8,7 @@ import essential.core.service.web.auth.SessionRevocations
 import essential.core.service.web.auth.UserSession
 import essential.core.service.web.auth.isCurrent
 import essential.core.service.web.maps.MapController
+import essential.core.service.web.maps.MapUploader
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.mindrot.jbcrypt.BCrypt
@@ -256,20 +257,37 @@ class WebHardeningTest {
     @Test
     fun re_uploading_a_map_name_you_do_not_own_is_refused() {
         val controller = MapController()
+        // Both accounts play as "Foo": only the account ID may decide.
+        val alices = MapUploader("alice-account", "Foo")
 
-        assertTrue(controller.mayReplaceExisting("alice", fileExists = false, fileOwner = null, nameOwner = null))
-        assertTrue(controller.mayReplaceExisting("alice", fileExists = true, fileOwner = "Alice", nameOwner = "alice"))
+        assertTrue(controller.mayReplaceExisting("alice-account", fileExists = false, fileOwner = null, nameTaken = false, nameOwner = null))
+        assertTrue(controller.mayReplaceExisting("alice-account", fileExists = true, fileOwner = alices, nameTaken = true, nameOwner = alices))
         assertFalse(
-            controller.mayReplaceExisting("bob", fileExists = true, fileOwner = "alice", nameOwner = "alice"),
+            controller.mayReplaceExisting("bob-account", fileExists = true, fileOwner = alices, nameTaken = true, nameOwner = alices),
             "another account could overwrite a map file it does not own"
         )
         assertFalse(
-            controller.mayReplaceExisting("bob", fileExists = false, fileOwner = null, nameOwner = "alice"),
+            controller.mayReplaceExisting("bob-account", fileExists = false, fileOwner = null, nameTaken = true, nameOwner = alices),
             "another account could take over the uploader record, and with it the delete guard"
         )
         assertFalse(
-            controller.mayReplaceExisting("bob", fileExists = true, fileOwner = null, nameOwner = null),
+            controller.mayReplaceExisting("bob-account", fileExists = true, fileOwner = null, nameTaken = false, nameOwner = null),
             "a map with no uploader record could be claimed by re-uploading over it"
+        )
+        val legacy = MapUploader(null, "Foo")
+        assertFalse(
+            controller.mayReplaceExisting("alice-account", fileExists = false, fileOwner = null, nameTaken = true, nameOwner = legacy),
+            "a record from before account IDs were kept stopped reserving its map name"
+        )
+        // A map shipped with the server or put on disk by an operator is loaded under its name with no record.
+        // Delete looks maps up by name, so a second file under that name would let its uploader delete the first.
+        assertFalse(
+            controller.mayReplaceExisting("bob-account", fileExists = false, fileOwner = null, nameTaken = true, nameOwner = null),
+            "a different file could take the name of a loaded map with no uploader record"
+        )
+        assertTrue(
+            controller.mayReplaceExisting("bob-account", fileExists = false, fileOwner = null, nameTaken = false, nameOwner = alices),
+            "a record whose map is no longer loaded kept reserving its name"
         )
     }
 }

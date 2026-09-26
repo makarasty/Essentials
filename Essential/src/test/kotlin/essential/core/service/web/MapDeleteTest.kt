@@ -4,6 +4,7 @@ import arc.Core
 import arc.Settings
 import arc.files.Fi
 import essential.core.service.web.maps.MapController
+import essential.core.service.web.maps.MapUploader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -42,5 +43,19 @@ class MapDeleteTest {
 
         assertTrue(controller.webCacheDir.exists())
         assertTrue(uploadersFile.exists())
+        // The old file format named only the uploader's player name, which no longer identifies an account.
+        assertEquals(MapUploader(null, "testerUser"), controller.uploadersMap["TestMap"])
+    }
+
+    @Test
+    fun uploaderRecordsLoadWithTheirAccount() {
+        val controller = MapController()
+        controller.uploadersFile.parentFile.mkdirs()
+        val record = MapUploader("tester-account", "testerUser")
+        controller.uploadersFile.writeText(Json.encodeToString(mapOf("TestMap" to record)))
+
+        controller.init(CoroutineScope(Dispatchers.Default))
+
+        assertEquals(record, controller.uploadersMap["TestMap"])
     }
 }

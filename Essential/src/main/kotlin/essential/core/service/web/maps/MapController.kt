@@ -25,6 +25,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import mindustry.Vars
@@ -53,6 +55,15 @@ data class MapInfo(
     val votes: Int = 0,
     val uploader: String? = null
 )
+
+/**
+ * Who uploaded a map. [accountID] decides who may delete or replace it, since player names are not unique;
+ * [name] is only shown in the panel, so the account ID - the web login - is never sent to other players.
+ * Records from before account IDs were kept have a null [accountID]: they still reserve their map but match
+ * no one, so those maps are left for an operator to remove on disk rather than guessed back to an account by name.
+ */
+@Serializable
+data class MapUploader(val accountID: String?, val name: String)
 
 class MapController {
     private companion object {
@@ -88,7 +99,7 @@ class MapController {
     private val fetchSemaphore = Semaphore(3)
     private val mapHashCache = ConcurrentHashMap<String, MapHashCacheEntry>()
     private val directRenderEndpoints = ConcurrentHashMap.newKeySet<String>()
-    private val uploadersMap = Collections.synchronizedMap(mutableMapOf<String, String>())
+    internal val uploadersMap = Collections.synchronizedMap(mutableMapOf<String, MapUploader>())
 
     val webCacheDir = File(rootPath.child("data/webCache").absolutePath())
     val uploadersFile = File(rootPath.child("data/map_uploaders.json").absolutePath())
@@ -109,7 +120,10 @@ class MapController {
         if (uploadersFile.exists()) {
             try {
                 val jsonText = uploadersFile.readText()
-                val loadedMap: Map<String, String> = Json.decodeFromString(jsonText)
+                // Older files map each map name straight to the uploader's player name.
+                val loadedMap = Json.parseToJsonElement(jsonText).jsonObject.mapValues { (_, value) ->
+                    if (value is JsonPrimitive) MapUploader(null, value.content) else Json.decodeFromJsonElement<MapUploader>(value)
+                }
                 uploadersMap.putAll(loadedMap)
                 Log.info("Loaded ${loadedMap.size} map uploaders from JSON")
             } catch (e: Exception) {
@@ -150,9 +164,9 @@ class MapController {
      * Whether this uploader may write over what is already under these two keys. Split out of the handler
      * so the rule can be exercised without a multipart request carrying a valid .msav.
      */
-    internal fun mayReplaceExisting(username: String, fileExists: Boolean, fileOwner: String?, nameOwner: String?): Boolean {
-        val clobbersFile = fileExists && !username.equals(fileOwner, ignoreCase = true)
-        val clobbersName = nameOwner != null && !username.equals(nameOwner, ignoreCase = true)
+    internal fun mayReplaceExisting(accountID: String, fileExists: Boolean, fileOwner: MapUploader?, nameTaken: Boolean, nameOwner: MapUploader?): Boolean {
+        val clobbersFile = fileExists && fileOwner?.accountID != accountID
+        val clobbersName = nameTaken && nameOwner?.accountID != accountID
         return !clobbersFile && !clobbersName
     }
 
@@ -217,10 +231,10 @@ class MapController {
                 return
             }
 
-            // The uploader name decides who may delete this map later, so it has to be a real caller
+            // The uploader's account decides who may delete this map later, so it has to be a real caller
             // rather than a placeholder standing in for the absence of one.
-            val username = call.sessions.get<UserSession>()?.username
-            if (username == null) {
+            val session = call.sessions.get<UserSession>()
+            if (session == null) {
                 tempFile.delete()
                 call.respond(HttpStatusCode.Unauthorized, "Unauthorized")
                 return
@@ -232,15 +246,16 @@ class MapController {
             // caller already owns what is being replaced, because taking over the record is what gives
             // the delete endpoint its answer. A file with no uploader record - one predating the record,
             // or a map shipped with the server - belongs to nobody here and cannot be claimed by
-            // re-uploading over it; replacing those stays an operator's job on disk.
+            // re-uploading over it; replacing those stays an operator's job on disk. The same goes for its
+            // name: delete finds maps by name, so a second file under it would let its uploader delete the first.
             //
             // A record whose map is no longer loaded reserves nothing: it would otherwise let one account
             // squat unbounded names by re-uploading one file under edited internal names.
             val maps = allMaps()
             val fileOwner = maps.find { it.file.name().equals(fileName, ignoreCase = true) }
                 ?.let { uploadersMap[it.name()] }
-            val nameOwner = uploadersMap[mapName]?.takeIf { maps.any { map -> map.name() == mapName } }
-            if (!mayReplaceExisting(username, targetFile.exists(), fileOwner, nameOwner)) {
+            val nameTaken = maps.any { it.name() == mapName }
+            if (!mayReplaceExisting(session.accountID, targetFile.exists(), fileOwner, nameTaken, uploadersMap[mapName])) {
                 tempFile.delete()
                 call.respond(HttpStatusCode.Forbidden, "A map by that name already exists and is not yours")
                 return
@@ -261,7 +276,7 @@ class MapController {
 
             // Save uploader to JSON file
             try {
-                uploadersMap[mapName] = username
+                uploadersMap[mapName] = MapUploader(session.accountID, session.username)
                 withContext(Dispatchers.IO) {
                     synchronized(uploadersMap) {
                         val jsonText = Json.encodeToString(uploadersMap.toMap())
@@ -276,7 +291,7 @@ class MapController {
             try {
                 writeLog(
                     LogType.Web,
-                    "User '$username' uploaded file '$fileName' (Map name: '${parsedMap.plainName()}', Author: '${parsedMap.plainAuthor()}', Version: ${parsedMap.version}, Build: ${parsedMap.build}, Size: ${parsedMap.width}x${parsedMap.height})"
+                    "User '${session.username}' uploaded file '$fileName' (Map name: '${parsedMap.plainName()}', Author: '${parsedMap.plainAuthor()}', Version: ${parsedMap.version}, Build: ${parsedMap.build}, Size: ${parsedMap.width}x${parsedMap.height})"
                 )
             } catch (le: Exception) {
                 Log.err("Error writing upload log", le)
@@ -314,8 +329,7 @@ class MapController {
             return
         }
 
-        val uploader = uploadersMap[map.name()]
-        if (uploader == null || !uploader.equals(session.username, ignoreCase = true)) {
+        if (uploadersMap[map.name()]?.accountID != session.accountID) {
             call.respond(HttpStatusCode.Forbidden, "You can only delete maps that you uploaded")
             return
         }
@@ -808,7 +822,7 @@ class MapController {
             val upvotes = ratings.count { it.rating >= 3 }
             val downvotes = ratings.count { it.rating < 3 }
             val netVotes = upvotes - downvotes
-            val uploader = uploadersMap[mapName]
+            val uploader = uploadersMap[mapName]?.name
 
             val hash = getMapHash(File(map.file.absolutePath()))
             val previewUrl = hash ?: URLEncoder.encode(mapName, "UTF-8")
