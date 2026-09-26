@@ -36,7 +36,9 @@ import org.jetbrains.exposed.v1.core.count
 import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.isNotNull
 import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.core.neq
+import org.jetbrains.exposed.v1.core.stringParam
 import org.jetbrains.exposed.v1.core.vendors.*
 import org.jetbrains.exposed.v1.datetime.datetime
 import org.jetbrains.exposed.v1.r2dbc.*
@@ -391,18 +393,20 @@ private suspend fun releaseOwnStaleConnections() {
  * stats and achievements, and leaves V8 only the index to add. Newest is V8's own order - latest login,
  * then highest id - so both pick the same survivor.
  *
- * The duplicate accounts are asked of the database rather than grouped here, so the engine's collation
- * decides what counts as the same account, exactly as it will for the unique index. Once V8 has run the
- * index makes the grouping query return nothing, so on every later boot this is one cheap read.
+ * The duplicate accounts are asked of the database rather than grouped here, folded with `lower()` the way
+ * the account lookups and PostgreSQL's V10 index fold them - on MySQL the column's collation still decides
+ * the rest, accents included, exactly as it does for V8's index. Once the indexes exist the grouping query
+ * returns nothing, so on every later boot this is one cheap read.
  */
 internal suspend fun mergeDuplicateAccounts() {
+    val folded = PlayerTable.accountID.lowerCase()
     val duplicated = runCatching {
         suspendTransaction {
-            PlayerTable.select(PlayerTable.accountID)
+            PlayerTable.select(folded)
                 .where { PlayerTable.accountID.isNotNull() and (PlayerTable.accountID neq "") }
-                .groupBy(PlayerTable.accountID)
+                .groupBy(folded)
                 .having { PlayerTable.id.count() greater 1L }
-                .mapNotNull { it[PlayerTable.accountID] }
+                .mapNotNull { it[folded] }
                 .toList()
         }
     }.onFailure {
@@ -412,7 +416,7 @@ internal suspend fun mergeDuplicateAccounts() {
     for (account in duplicated) {
         val rows = suspendTransaction {
             PlayerTable.select(PlayerTable.id, PlayerTable.uuid, PlayerTable.lastLoginDate)
-                .where { PlayerTable.accountID eq account }
+                .where { folded eq stringParam(account).lowerCase() }
                 .map { Triple(it[PlayerTable.id], it[PlayerTable.uuid], it[PlayerTable.lastLoginDate]) }
                 .toList()
         }.sortedWith(compareByDescending<Triple<UInt, String, LocalDateTime>> { it.third }.thenByDescending { it.first })

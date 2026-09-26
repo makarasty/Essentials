@@ -31,10 +31,15 @@ class DuplicateAccountMergeTest {
     }
 
     @Test
-    fun theOlderDuplicateIsMergedIntoTheNewestRow() {
+    fun theOlderDuplicateIsMergedIntoTheNewestRow() = mergesIntoTheNewest("dup-${System.nanoTime()}") { it }
+
+    /** Account lookups ignore case, and so does PostgreSQL's V10 index, so "Bob" and "bob" are one account. */
+    @Test
+    fun accountsDifferingOnlyInCaseAreMergedToo() = mergesIntoTheNewest("case-${System.nanoTime()}") { it.uppercase() }
+
+    private fun mergesIntoTheNewest(account: String, olderSpelling: (String) -> String) {
         val (older, _) = PluginTest.newPlayer()
         val (newer, _) = PluginTest.newPlayer()
-        val account = "dup-${System.nanoTime()}"
 
         runBlocking {
             // The boot already ran V8, and its unique index is what normally makes this state impossible.
@@ -42,7 +47,7 @@ class DuplicateAccountMergeTest {
             try {
                 suspendTransaction {
                     PlayerTable.update({ PlayerTable.uuid eq older.uuid() }) {
-                        it[accountID] = account
+                        it[accountID] = olderSpelling(account)
                         it[exp] = 10
                         it[lastLoginDate] = LocalDateTime(2020, 1, 1, 0, 0)
                     }
