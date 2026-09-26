@@ -240,8 +240,8 @@ class ConcurrentInsertRaceTest {
         // would keep only the high-order digits of nanoTime, which change every hundred seconds or so,
         // and a probe left behind by a run that died would be refused here and read as a missing index.
         val uuid = "uip-${System.nanoTime()}".take(25)
-        // players.name carries its own unique index and is varchar(256), so the two probes differ by
-        // name: only the uuid index can be what refuses the second one.
+        // The two probes still differ by name, though only the uuid index is what refuses the second
+        // one now: players.name is varchar(256) and carries no unique index of its own any more.
         suspend fun insert(name: String) = createPlayerData(name, uuid, name, name)
         try {
             runCatching { insert("$uuid-a") }.onFailure {

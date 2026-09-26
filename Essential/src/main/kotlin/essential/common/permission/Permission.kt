@@ -224,9 +224,8 @@ object Permission {
      * Most of them timed out and threw, which is how entries went missing silently.
      *
      * Still one transaction per entry, deliberately. One transaction for the whole file would make a
-     * single bad row - a `name:` colliding with another row's, the unique index on PlayerTable.name -
-     * roll back every other entry with it, and would hold each row lock for as long as the whole file
-     * takes.
+     * single bad row roll back every other entry with it, and would hold each row lock for as long as
+     * the whole file takes.
      *
      * Exposed reports how many rows each update changed. Zero means the database has no row for that
      * uuid yet, so nothing was persisted for them - the entry still applies the moment they join,

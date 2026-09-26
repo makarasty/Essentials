@@ -474,8 +474,8 @@ class LiveDatabaseBootTest {
         // send an operator to look for an index that was never missing.
         assertTrue(
             declined.any { it.startsWith(DECLINED_TAG + "players:") },
-            "no repair was declined against players, whose uuid and name unique indexes are the ones " +
-                "the legacy schema is missing. Declined: ${declined.report()}"
+            "no repair was declined against players, whose uuid unique index and name index are the " +
+                "ones the legacy schema is missing. Declined: ${declined.report()}"
         )
     }
 

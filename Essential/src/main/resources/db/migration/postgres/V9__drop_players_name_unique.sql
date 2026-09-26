@@ -1,0 +1,5 @@
+ALTER TABLE players DROP CONSTRAINT IF EXISTS "name";
+
+DROP INDEX IF EXISTS "name";
+
+CREATE INDEX IF NOT EXISTS "name" ON players ("name");

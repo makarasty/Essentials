@@ -362,9 +362,8 @@ class SharedMariaDbTest {
     }
 
     /**
-     * A player joining two servers at the same instant. players.uuid and players.name both carry a
-     * unique index, so one of the two inserts is refused - and this is the test that measures what the
-     * loser does with that.
+     * A player joining two servers at the same instant. players.uuid carries a unique index, so one of
+     * the two inserts is refused - and this is the test that measures what the loser does with that.
      *
      * It used to assert that the loser logged "Failed to load player data": createPlayerData let the
      * constraint violation out, loadJoinedPlayerData (CoreEvent.kt:620-635) caught it and returned a

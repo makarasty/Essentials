@@ -6,7 +6,7 @@ import org.jetbrains.exposed.v1.datetime.datetime
 
 object PlayerTable : Table("players") {
     val id = uinteger("id").autoIncrement()
-    val name = varchar("name", 256).uniqueIndex("name")
+    val name = varchar("name", 256).index("name")
     val uuid = varchar("uuid", 25).uniqueIndex("uuid")
     val languageTag = varchar("language_tag", 10).default("en")
 
