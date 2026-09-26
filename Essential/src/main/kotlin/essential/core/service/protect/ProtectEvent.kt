@@ -168,13 +168,6 @@ fun playerJoin(e: EventType.PlayerJoin) {
         if (conf.account.getAuthType() == ProtectConfig.AuthType.None || !conf.account.enabled) {
             val result = loadJoinedPlayerData(player, plainName)
             when {
-                result.duplicateName -> {
-                    val reason = Bundle(locale)["event.player.name.duplicate"]
-                    arc.Core.app.post {
-                        con.kick(reason, 0L)
-                    }
-                }
-
                 result.data != null -> {
                     result.data.player = player
                     firePlayerDataLoad(result.data)

@@ -132,21 +132,6 @@ class FeatureTest {
         }
     }
 
-    private fun captureLogs(block: () -> Unit): List<String> {
-        val original = Log.logger
-        val captured = CopyOnWriteArrayList<String>()
-        Log.logger = Log.LogHandler { level, text ->
-            captured.add(text)
-            println("[$level] $text")
-        }
-        try {
-            block()
-        } finally {
-            Log.logger = original
-        }
-        return captured
-    }
-
     private fun pumpAppTasksStrict() {
         pumpApp()
     }
@@ -956,57 +941,10 @@ class FeatureTest {
                 val elapsed = System.currentTimeMillis() - started
 
                 assertNull(result.data, "A hanging read must time out instead of pinning the thread.")
-                assertFalse(result.duplicateName)
                 assertTrue(elapsed < 10000L, "The read should have been abandoned after the timeout, took $elapsed ms.")
             } finally {
                 Main.conf = originalConf
                 leavePlayer(target)
-            }
-        }
-    }
-
-    @Test
-    fun duplicateNameStopsTheReloadInsteadOfRetryingForever() {
-        val originalConf = Main.conf
-        val existing = newPlayer()
-        var target: mindustry.gen.Player? = null
-
-        withoutLogErrors {
-            try {
-                withRetryAttempts(30)
-                breakDatabase()
-
-                val duplicate = createPlayer()
-                duplicate.name(existing.first.name())
-                target = duplicate
-                Events.fire(PlayerJoin(duplicate))
-                assertTrue(awaitPumped(10000L) { playerDataOf(duplicate.uuid())?.temporary == true })
-
-                restoreDatabase()
-
-                assertTrue(
-                    awaitPumped(25000L) { playerDataRetries[duplicate.uuid()] == null },
-                    "A duplicate name must end the background reload instead of retrying forever."
-                )
-                assertEquals(
-                    true,
-                    playerDataOf(duplicate.uuid())?.temporary,
-                    "A duplicate name must never be turned into real player data."
-                )
-
-                val logs = captureLogs {
-                    serverCommand.handleMessage("reloadplayer ${duplicate.uuid()}")
-                    awaitPumped(10000L) { false }
-                }
-                assertTrue(
-                    logs.any { it.contains("duplicate name") },
-                    "reloadplayer must report a duplicate name, got: $logs"
-                )
-            } finally {
-                Main.conf = originalConf
-                if (defaultDatabase == null) restoreDatabase()
-                target?.let { leavePlayer(it) }
-                leavePlayer(existing.first)
             }
         }
     }

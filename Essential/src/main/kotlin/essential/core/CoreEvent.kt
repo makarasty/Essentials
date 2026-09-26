@@ -14,7 +14,6 @@ import essential.common.database.WorldHistoryBuffer
 import essential.common.database.data.*
 import essential.common.database.data.plugin.WarpBlock
 import essential.common.database.data.plugin.WarpZone
-import essential.common.database.table.PlayerTable
 import essential.common.event.CustomEvents
 import essential.common.log.LogType
 import essential.common.log.writeLog
@@ -57,9 +56,6 @@ import mindustry.ui.Menus
 import mindustry.world.Tile
 import mindustry.world.blocks.ConstructBlock
 import mindustry.world.blocks.storage.CoreBlock
-import org.jetbrains.exposed.v1.core.eq
-import org.jetbrains.exposed.v1.r2dbc.select
-import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import java.io.IOException
 import java.math.BigInteger
 import java.nio.file.Files
@@ -629,10 +625,6 @@ fun syncProtectFallbackJoinListener() {
             val result = loadJoinedPlayerData(player, name)
 
             when {
-                result.duplicateName -> Core.app.post {
-                    Call.kick(con, Bundle(locale)["event.player.name.duplicate"])
-                }
-
                 result.data != null -> {
                     result.data.player = player
                     firePlayerDataLoad(result.data)
@@ -647,16 +639,11 @@ fun syncProtectFallbackJoinListener() {
     eventListeners[PlayerJoin::class.java] = listener
 }
 
-class JoinedPlayerData(val data: PlayerData?, val duplicateName: Boolean)
+class JoinedPlayerData(val data: PlayerData?)
 
 suspend fun readJoinedPlayerData(player: Playerc, name: String): JoinedPlayerData {
     val data = getPlayerData(player.uuid())
-    if (data != null) return JoinedPlayerData(data, false)
-
-    val nameExists = suspendTransaction {
-        PlayerTable.select(PlayerTable.name).where { PlayerTable.name eq name }.empty().not()
-    }
-    if (nameExists) return JoinedPlayerData(null, true)
+    if (data != null) return JoinedPlayerData(data)
 
     val newData = createPlayerData(player)
     // createPlayerData's insert already committed with PlayerTable.permission's column default
@@ -668,7 +655,7 @@ suspend fun readJoinedPlayerData(player: Playerc, name: String): JoinedPlayerDat
         newData.permission = "user"
         newData.update()
     }
-    return JoinedPlayerData(newData, false)
+    return JoinedPlayerData(newData)
 }
 
 suspend fun loadJoinedPlayerData(
@@ -679,12 +666,12 @@ suspend fun loadJoinedPlayerData(
     return try {
         withTimeoutOrNull(conf.feature.playerData.loadTimeout.seconds) {
             read(player, name)
-        } ?: JoinedPlayerData(null, false).also {
+        } ?: JoinedPlayerData(null).also {
             Log.err("Player data load timed out for ${player.plainName()} (${player.uuid()})")
         }
     } catch (e: Exception) {
         Log.err("Failed to load player data for ${player.plainName()} (${player.uuid()})", e)
-        JoinedPlayerData(null, false)
+        JoinedPlayerData(null)
     }
 }
 
@@ -717,12 +704,6 @@ private fun isCurrentConnection(player: Playerc): Boolean {
     return Groups.player.find { p -> p.uuid() == player.uuid() }?.con() === con
 }
 
-private fun kickDuplicateName(player: Playerc) {
-    val con = player.con() ?: return
-    val locale = player.locale()
-    Core.app.post { Call.kick(con, Bundle(locale)["event.player.name.duplicate"]) }
-}
-
 fun cancelPlayerDataRetry(uuid: String) {
     playerDataRetries.remove(uuid)?.cancel()
 }
@@ -738,10 +719,6 @@ fun retryPlayerDataLoad(player: Playerc, name: String, temporary: PlayerData, pu
             remaining--
 
             val result = loadJoinedPlayerData(player, name)
-            if (result.duplicateName) {
-                kickDuplicateName(player)
-                return@launch
-            }
             val data = result.data ?: continue
 
             if (published) {

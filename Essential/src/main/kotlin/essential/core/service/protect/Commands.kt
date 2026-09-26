@@ -127,16 +127,6 @@ class Commands {
                         return@launch
                     }
 
-                    val nameTaken = !suspendTransaction {
-                        PlayerTable.select(PlayerTable.name).where {
-                            PlayerTable.name eq player.plainName()
-                        }.empty()
-                    }
-                    if (nameTaken) {
-                        Core.app.post { player.sendMessage(bundle["command.reg.name.exists"]) }
-                        return@launch
-                    }
-
                     val existing = getPlayerData(currentUuid)
                     val data = if (existing != null) {
                         existing.accountID = arg[0]

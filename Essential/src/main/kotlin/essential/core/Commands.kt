@@ -3483,10 +3483,6 @@ class Commands {
         scope.launch {
             cancelPlayerDataRetry(target.uuid())
             val result = loadJoinedPlayerData(target, target.name())
-            if (result.duplicateName) {
-                Log.err("Player data for ${target.plainName()} (${target.uuid()}) has a duplicate name.")
-                return@launch
-            }
             val data = result.data
             if (data == null) {
                 Log.err("Player data for ${target.plainName()} (${target.uuid()}) could not be loaded.")

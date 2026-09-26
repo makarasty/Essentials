@@ -20,6 +20,7 @@ import kotlinx.datetime.toLocalDateTime
 import ksp.table.GenerateCode
 import mindustry.gen.Player
 import mindustry.gen.Playerc
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.*
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
@@ -302,9 +303,9 @@ suspend fun createPlayerData(player: Playerc): PlayerData {
     // Cancellation is not a refusal and must not be turned into one.
     if (refused is CancellationException) throw refused
     if (refused != null) {
-        // Deliberately not phrased as "another server won the race": the commonest other cause is the
-        // unique index on players.name, and an operator chasing a duplicate-name kick should not find
-        // a line telling them it was something else.
+        // Deliberately not phrased as "another server won the race": the uuid unique index is the only
+        // expected refusal here, but an operator chasing something else should not find a line telling
+        // them it was a race when it was not.
         Log.info("Insert refused for ${player.uuid()}, re-reading: ${refused.message}")
     }
 
@@ -347,10 +348,16 @@ suspend fun getPlayerData(uuid: String): PlayerData? {
     }.firstOrNull()
 }
 
+/**
+ * Names are no longer unique - a player whose uuid changed gets a fresh row under the same name - so
+ * more than one row can answer here. The most recently seen one is the closest thing to "the player
+ * this name means right now".
+ */
 suspend fun getPlayerDataByName(name: String): PlayerData? {
     return suspendTransaction {
         PlayerTable.selectAll()
             .where { PlayerTable.name eq name }
+            .orderBy(PlayerTable.lastLoginDate, SortOrder.DESC)
             .mapToPlayerDataList()
     }.firstOrNull()
 }
