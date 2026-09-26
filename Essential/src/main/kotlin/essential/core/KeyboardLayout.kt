@@ -37,6 +37,11 @@ object KeyboardLayout {
         lastMessage[player.uuid()] = message
     }
 
+    /** Only an unknown command clears an entry otherwise, so every player who ever chatted kept one. */
+    fun forget(uuid: String) {
+        lastMessage.remove(uuid)
+    }
+
     fun install(handler: CommandHandler = Vars.netServer.clientCommands) {
         Vars.netServer.admins.addChatFilter(Administration.ChatFilter { player, message ->
             val fixed = fix(handler, message) ?: return@ChatFilter message

@@ -1193,6 +1193,7 @@ fun playerLeave(event: PlayerLeave) {
         mapRateSessions.remove(data.uuid)
         lastLoggedTap.remove(data.uuid)
     }
+    KeyboardLayout.forget(event.player.uuid())
 }
 
 
