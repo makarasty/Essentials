@@ -22,6 +22,7 @@ import mindustry.gen.Player
 import mindustry.gen.Playerc
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.r2dbc.*
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mindrot.jbcrypt.BCrypt
@@ -362,11 +363,16 @@ suspend fun getPlayerDataByName(name: String): PlayerData? {
     }.firstOrNull()
 }
 
-/** Account IDs are unique (see the V8 migration), so unlike [getPlayerDataByName] this can only match one row. */
+/**
+ * Account IDs are unique (see the V8 migration), so unlike [getPlayerDataByName] this can only match one
+ * row. Compared case-insensitively: MySQL's utf8mb4_0900_ai_ci collation already treated two IDs
+ * differing only in case as the same account, and that behaviour is kept rather than changed underfoot
+ * by a move to a database whose default collation is case-sensitive.
+ */
 suspend fun getPlayerDataByAccountID(accountID: String): PlayerData? {
     return suspendTransaction {
         PlayerTable.selectAll()
-            .where { PlayerTable.accountID eq accountID }
+            .where { PlayerTable.accountID.lowerCase() eq accountID.lowercase() }
             .mapToPlayerDataList()
     }.firstOrNull()
 }
