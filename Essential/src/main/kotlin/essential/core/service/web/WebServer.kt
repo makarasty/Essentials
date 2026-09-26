@@ -159,9 +159,16 @@ class WebServer {
 
         // Create the server with a regular function
         server = embeddedServer(
-            factory = Netty, 
-            port = boundPort
-        ) { 
+            factory = Netty,
+            // Netty's defaults size every pool by core count, and connections are handed to its
+            // threads round-robin, so a 16-core host grew ~30 threads per server for an admin panel
+            configure = {
+                connector { port = boundPort }
+                connectionGroupSize = 1
+                workerGroupSize = 2
+                callGroupSize = 2
+            }
+        ) {
             configureModule(this)
         }
 
