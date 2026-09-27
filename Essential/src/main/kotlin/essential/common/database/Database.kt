@@ -336,13 +336,17 @@ private suspend fun migrateWorldHistoryColumns(db: R2dbcDatabase) {
  * runs in its own transaction: on PostgreSQL a failed statement poisons the transaction it is
  * in, and both statements are allowed to fail - the old index may be gone already, the new
  * one may already exist.
+ *
+ * `IF NOT EXISTS` wherever the engine has it: the new index exists on every boot after the first, and
+ * on PostgreSQL the refused CREATE was an ERROR in the server log from every server on every start,
+ * followed by the pool's validation query failing on the aborted connection. MySQL has no such clause.
  */
 private suspend fun reshapeMapRatingIndex() {
-    val dropOld = when (defaultDatabase?.config?.explicitDialect) {
-        is MysqlDialect -> "ALTER TABLE map_ratings DROP INDEX map_ratings_player_uuid_unique"
-        else -> "ALTER TABLE map_ratings DROP CONSTRAINT IF EXISTS map_ratings_player_uuid_unique"
-    }
-    val createNew = "CREATE UNIQUE INDEX map_ratings_player_uuid_map_name_unique ON map_ratings (player_uuid, map_name)"
+    val mysql = defaultDatabase?.config?.explicitDialect is MysqlDialect
+    val dropOld = if (mysql) "ALTER TABLE map_ratings DROP INDEX map_ratings_player_uuid_unique"
+    else "ALTER TABLE map_ratings DROP CONSTRAINT IF EXISTS map_ratings_player_uuid_unique"
+    val createNew = "CREATE UNIQUE INDEX ${if (mysql) "" else "IF NOT EXISTS "}map_ratings_player_uuid_map_name_unique " +
+        "ON map_ratings (player_uuid, map_name)"
     for (statement in listOf(dropOld, createNew)) {
         runCatching { suspendTransaction { exec(statement) } }
     }
