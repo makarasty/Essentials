@@ -6,35 +6,22 @@ on:
   workflow_dispatch:
 
 permissions:
-  issues: write
+  contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
 
     steps:
-    # Keeps a single open issue while Kieaer/Essentials has commits this fork has not merged, and closes it
-    # once they are in.
+    # Fails - and so mails the repository owner - only while Kieaer/Essentials has commits this fork has not
+    # merged. Issues are switched off on this fork, so a failed run is the notification.
     - name: Compare with upstream
       env:
         GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
       run: |
         ahead=$(gh api "repos/$GH_REPO/compare/main...Kieaer:main" --jq .ahead_by)
+        [ "$ahead" -eq 0 ] && { echo "Upstream is merged."; exit 0; }
         release=$(gh api repos/Kieaer/Essentials/releases/latest --jq .tag_name)
-        issue=$(gh issue list --state open --search '"Merge upstream" in:title' --json number --jq '.[0].number // empty')
-
-        if [ "$ahead" -eq 0 ]; then
-          [ -z "$issue" ] || gh issue close "$issue" --comment "Upstream is merged."
-          exit 0
-        fi
-
-        body="Kieaer/Essentials \`main\` has **$ahead** commits that are not in this fork.
-        Latest upstream release: [$release](https://github.com/Kieaer/Essentials/releases/tag/$release)
-
-        https://github.com/$GH_REPO/compare/main...Kieaer:Essentials:main"
-        if [ -n "$issue" ]; then
-          gh issue edit "$issue" --body "$body"
-        else
-          gh issue create --title "Merge upstream Kieaer/Essentials" --body "$body"
-        fi
+        echo "::error::Kieaer/Essentials main has $ahead commits not in this fork (latest release $release): https://github.com/$GH_REPO/compare/main...Kieaer:Essentials:main"
+        exit 1
