@@ -98,6 +98,14 @@ class PlayerLookupTest {
     }
 
     @Test
+    fun lookup_nameStartingWithAtIsStillAName() {
+        val (player, _) = join("@qlxat")
+
+        assertEquals(player.uuid(), found(PlayerLookup.findOnline("@qlxat")).uuid())
+        runBlocking { assertEquals(player.uuid(), found(PlayerLookup.findOffline("@qlxat")).uuid) }
+    }
+
+    @Test
     fun lookup_digitNameIsOnlyAnIdWhenOnline() {
         val (player, _) = join("987654")
 

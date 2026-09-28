@@ -100,10 +100,7 @@ object PlayerLookup {
             val id = text.drop(1).toIntOrNull() ?: return Result.NotFound()
             return byEntityId(id)?.let { Result.Found(it) } ?: Result.NotFound()
         }
-        if (text.startsWith("@")) {
-            val id = text.drop(1).toUIntOrNull() ?: return Result.NotFound()
-            return byRowId(id)?.player?.let { Result.Found(it) } ?: Result.NotFound()
-        }
+        rowId(text)?.let { id -> byRowId(id)?.player?.let { return Result.Found(it) } }
 
         val id = text.toIntOrNull()
         if (id != null) byEntityId(id)?.let { return Result.Found(it) }
@@ -122,6 +119,9 @@ object PlayerLookup {
     /** `@<id>` is the database row id: stable across sessions and servers, and unlike the uuid safe to show. */
     private fun byRowId(id: UInt): PlayerData? = players.find { !it.temporary && it.id == id }
 
+    /** `@<digits>` only, and only a row that exists wins: anything else is still matched as a name, `@Bob` included. */
+    private fun rowId(text: String): UInt? = if (text.startsWith("@")) text.drop(1).toUIntOrNull() else null
+
     suspend fun findOffline(query: String): Result<PlayerData> = lookup(query, false)
 
     suspend fun findExact(query: String): Result<PlayerData> = lookup(query, true)
@@ -134,10 +134,7 @@ object PlayerLookup {
             val id = text.drop(1).toIntOrNull() ?: return Result.NotFound()
             return players.find { it.entityId == id }?.let { Result.Found(it) } ?: Result.NotFound()
         }
-        if (text.startsWith("@")) {
-            val id = text.drop(1).toUIntOrNull() ?: return Result.NotFound()
-            return (byRowId(id) ?: getPlayerDataById(id))?.let { Result.Found(it) } ?: Result.NotFound()
-        }
+        rowId(text)?.let { id -> (byRowId(id) ?: getPlayerDataById(id))?.let { return Result.Found(it) } }
 
         text.toIntOrNull()?.let { id -> players.find { it.entityId == id }?.let { return Result.Found(it) } }
         findPlayerData(text)?.let { return Result.Found(it) }
