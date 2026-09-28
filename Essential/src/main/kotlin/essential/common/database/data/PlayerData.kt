@@ -13,6 +13,7 @@ import essential.common.systemTimezone
 import essential.core.Main
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.datetime.LocalDateTime
@@ -22,6 +23,7 @@ import mindustry.gen.Player
 import mindustry.gen.Playerc
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.core.stringParam
 import org.jetbrains.exposed.v1.r2dbc.*
@@ -348,6 +350,26 @@ suspend fun getPlayerData(uuid: String): PlayerData? {
             .where { PlayerTable.uuid eq uuid }
             .mapToPlayerDataList()
     }.firstOrNull()
+}
+
+/** By the row id, which unlike the uuid is safe to show anyone: it is what `@<id>` in a command means. */
+suspend fun getPlayerDataById(id: UInt): PlayerData? {
+    return suspendTransaction {
+        PlayerTable.selectAll()
+            .where { PlayerTable.id eq id }
+            .mapToPlayerDataList()
+    }.firstOrNull()
+}
+
+/** Row ids for these uuids; a uuid with no row (temporary data) is left out. */
+suspend fun playerIdsByUuid(uuids: Collection<String>): Map<String, UInt> {
+    if (uuids.isEmpty()) return emptyMap()
+    return suspendTransaction {
+        PlayerTable.select(PlayerTable.uuid, PlayerTable.id)
+            .where { PlayerTable.uuid inList uuids }
+            .map { it[PlayerTable.uuid] to it[PlayerTable.id] }
+            .toList()
+    }.toMap()
 }
 
 /**

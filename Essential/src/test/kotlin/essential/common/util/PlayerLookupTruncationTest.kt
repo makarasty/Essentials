@@ -1,6 +1,7 @@
 package essential.common.util
 
 import PluginTest.Companion.loadGame
+import essential.common.database.data.getPlayerData
 import essential.common.database.table.PlayerTable
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.core.LikePattern
@@ -80,9 +81,10 @@ class PlayerLookupTruncationTest {
             when (val capped = PlayerLookup.findOffline(PREFIX)) {
                 is PlayerLookup.Result.Ambiguous -> {
                     assertTrue(capped.truncated, "a capped query must say so rather than look like an ordinary match")
+                    val exactId = getPlayerData("$PREFIX-exact")?.id
                     assertTrue(
-                        capped.candidates.any { it.contains("$PREFIX-exact") },
-                        "the answer must carry the full uuid it tells the admin to use, but was ${capped.candidates}"
+                        exactId != null && capped.candidates.any { it.endsWith("(@$exactId)") },
+                        "the answer must carry the @id it tells the player to use, but was ${capped.candidates}"
                     )
                 }
 

@@ -94,6 +94,7 @@ class PlayerLookupTest {
         assertEquals(player.uuid(), found(PlayerLookup.findOnline("#${data.entityId}")).uuid())
         assertEquals(player.uuid(), found(PlayerLookup.findOnline("${data.entityId}")).uuid())
         assertTrue(PlayerLookup.findOnline("#999999") is PlayerLookup.Result.NotFound)
+        assertEquals(player.uuid(), found(PlayerLookup.findOnline("@${data.id}")).uuid())
     }
 
     @Test
@@ -141,10 +142,14 @@ class PlayerLookupTest {
 
                 val result = ambiguous(PlayerLookup.findOffline("offlinecandidate"))
                 assertEquals(2, result.candidates.size)
+                val oneId = found(PlayerLookup.findOffline("offline-lookup-one")).id
                 assertTrue(
-                    result.candidates.any { it == "offlinecandidate_one (offline-)" },
-                    "candidate list ${result.candidates} should show the name and the uuid prefix"
+                    result.candidates.any { it == "offlinecandidate_one (@$oneId)" },
+                    "candidate list ${result.candidates} should show the name and the @id to pick it by"
                 )
+                // The @id is how a player names an offline account, e.g. from /log, without its uuid
+                assertEquals("offline-lookup-one", found(PlayerLookup.findOffline("@$oneId")).uuid)
+                assertTrue(PlayerLookup.findOffline("@4000000000") is PlayerLookup.Result.NotFound)
 
                 assertTrue(PlayerLookup.findOffline("offlinecandidate_three") is PlayerLookup.Result.NotFound)
             } finally {
@@ -195,19 +200,21 @@ class PlayerLookupTest {
     }
 
     @Test
-    fun lookup_ambiguousOfflineShowsUuidAndKeepsFullNames() {
+    fun lookup_ambiguousOfflineShowsIdAndKeepsFullNames() {
         val long = "qlxambiguous_first_candidate_with_a_very_long_name"
 
         withRows(long to "qlx-ambiguous-one", "qlxambiguous_second" to "qlx-ambiguous-two") {
             val result = ambiguous(PlayerLookup.findOffline("qlxambiguous"))
+            val one = found(PlayerLookup.findOffline("qlx-ambiguous-one")).id
+            val two = found(PlayerLookup.findOffline("qlx-ambiguous-two")).id
 
             assertTrue(result.offline, "offline candidates should be flagged as offline")
             assertTrue(
-                result.candidates.contains("$long (qlx-ambi)"),
-                "candidate list ${result.candidates} should keep the full name and show the uuid prefix"
+                result.candidates.contains("$long (@$one)"),
+                "candidate list ${result.candidates} should keep the full name and show the @id"
             )
             assertTrue(
-                result.candidates.contains("qlxambiguous_second (qlx-ambi)"),
+                result.candidates.contains("qlxambiguous_second (@$two)"),
                 "candidate list ${result.candidates} should contain the second account"
             )
         }

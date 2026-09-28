@@ -4,6 +4,7 @@ import arc.util.Log
 import arc.util.Strings
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
+import essential.common.database.data.getPlayerDataById
 import essential.common.database.data.mapToPlayerDataList
 import essential.common.database.table.PlayerTable
 import essential.common.players
@@ -29,7 +30,6 @@ object PlayerLookup {
 
     private const val MAX_CANDIDATES = 10
     private const val MAX_NAME_LENGTH = 24
-    private const val UUID_PREVIEW = 8
 
     sealed interface Result<out T> {
         data class Found<T>(val value: T) : Result<T>
@@ -59,7 +59,7 @@ object PlayerLookup {
 
     private fun labelOf(data: PlayerData) =
         if (isOnline(data)) "[${data.entityId}] ${shortName(nameOf(data))}"
-        else "${Strings.stripColors(data.name)} (${data.uuid.take(UUID_PREVIEW)})"
+        else "${Strings.stripColors(data.name)} (@${data.id})"
 
     private fun <T> pick(
         items: List<T>,
@@ -100,6 +100,10 @@ object PlayerLookup {
             val id = text.drop(1).toIntOrNull() ?: return Result.NotFound()
             return byEntityId(id)?.let { Result.Found(it) } ?: Result.NotFound()
         }
+        if (text.startsWith("@")) {
+            val id = text.drop(1).toUIntOrNull() ?: return Result.NotFound()
+            return byRowId(id)?.player?.let { Result.Found(it) } ?: Result.NotFound()
+        }
 
         val id = text.toIntOrNull()
         if (id != null) byEntityId(id)?.let { return Result.Found(it) }
@@ -115,6 +119,9 @@ object PlayerLookup {
 
     private fun byEntityId(id: Int): Playerc? = players.find { it.entityId == id }?.player
 
+    /** `@<id>` is the database row id: stable across sessions and servers, and unlike the uuid safe to show. */
+    private fun byRowId(id: UInt): PlayerData? = players.find { !it.temporary && it.id == id }
+
     suspend fun findOffline(query: String): Result<PlayerData> = lookup(query, false)
 
     suspend fun findExact(query: String): Result<PlayerData> = lookup(query, true)
@@ -126,6 +133,10 @@ object PlayerLookup {
         if (text.startsWith("#")) {
             val id = text.drop(1).toIntOrNull() ?: return Result.NotFound()
             return players.find { it.entityId == id }?.let { Result.Found(it) } ?: Result.NotFound()
+        }
+        if (text.startsWith("@")) {
+            val id = text.drop(1).toUIntOrNull() ?: return Result.NotFound()
+            return (byRowId(id) ?: getPlayerDataById(id))?.let { Result.Found(it) } ?: Result.NotFound()
         }
 
         text.toIntOrNull()?.let { id -> players.find { it.entityId == id }?.let { return Result.Found(it) } }
@@ -144,9 +155,10 @@ object PlayerLookup {
         // whatever the query was, and a match it recovers is as good as an uncapped one.
         if (capped && result is Result.Found && !isOnline(result.value)) {
             val hit = result.value
-            // The full uuid rather than labelOf's eight characters: the message tells them to use it.
+            // The row id, which the message tells them to use: it names this account exactly, and unlike
+            // the uuid it is safe to show whoever ran the command.
             return Result.Ambiguous(
-                listOf("${Strings.stripColors(hit.name)} (${hit.uuid})"),
+                listOf("${Strings.stripColors(hit.name)} (@${hit.id})"),
                 spacedNames = nameOf(hit).contains(' '),
                 offline = true,
                 truncated = true
