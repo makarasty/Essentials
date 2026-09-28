@@ -806,6 +806,41 @@ class ClientCommandTest {
 
 
     @Test
+    fun client_logShowsTheIdAndLeavesOutTheReadersOwnTaps() {
+        val wall = world.tile(47, 53)
+        wall.setBlock(Blocks.thoriumWall, player.team(), 0)
+        val ground = world.tile(48, 53)
+        ground.setBlock(Blocks.air)
+        if (playerData.viewHistoryMode) clientCommand.handleMessage("/log", player)
+
+        // One ordinary tap on the wall and one on bare ground, spaced past the per-player tap throttle
+        Events.fire(EventType.TapEvent(player.self(), wall))
+        sleep(150)
+        Events.fire(EventType.TapEvent(player.self(), ground))
+        sleep(150)
+
+        clientCommand.handleMessage("/log", player)
+        try {
+            val tapped = Bundle()["event.log.tap"]
+            for ((tile, taps) in listOf(wall to 1, ground to 0)) {
+                val header = Bundle()["event.log.position", tile.x, tile.y]
+                Events.fire(EventType.TapEvent(player.self(), tile))
+                assertTrue(waitUntil(5000) { playerData.lastReceivedMessage.startsWith(header) }, "no history for $header")
+                val shown = playerData.lastReceivedMessage
+                // The reading tap itself is not history, and the ground tap never was
+                assertEquals(taps, shown.split(tapped).size - 1, "taps shown at ${tile.x},${tile.y}: $shown")
+                if (taps > 0) {
+                    assertTrue("@${playerData.id}" in shown, "the history must name the player by @id: $shown")
+                    assertTrue(".name" !in shown, "a block shown by its bundle key rather than its name: $shown")
+                }
+                sleep(150)
+            }
+        } finally {
+            clientCommand.handleMessage("/log", player)
+        }
+    }
+
+    @Test
     fun client_maps() {
         // Test maps command shows the list of available maps
         clientCommand.handleMessage("/maps", player)

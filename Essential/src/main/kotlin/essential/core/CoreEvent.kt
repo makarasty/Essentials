@@ -217,8 +217,13 @@ fun tap(event: TapEvent) {
     val now = System.currentTimeMillis()
     val lastLogged = lastLoggedTap[uuid]
     val shouldLog = lastLogged == null || now - lastLogged >= TAP_LOG_INTERVAL_MS
+    val data = findPlayerData(uuid)
     if (shouldLog) {
         lastLoggedTap[uuid] = now
+    }
+    // Someone reading the history taps to read it, and a tap on bare ground says nothing: logging either
+    // buried the entries worth reading under the reader's own clicks.
+    if (shouldLog && data?.viewHistoryMode != true && event.tile.block() != Blocks.air) {
         writeLog(LogType.Tap) { Bundle()["log.tap", event.player.plainName(), checkValidBlock(event.tile)] }
         addLog(
             TileLog(
@@ -236,7 +241,6 @@ fun tap(event: TapEvent) {
         )
     }
 
-    val data = findPlayerData(event.player.uuid())
     if (data != null) {
         if (data.status.containsKey("chars_text")) {
             val text = Commands.charsPlacing[data.uuid]
@@ -373,9 +377,17 @@ fun tap(event: TapEvent) {
 
                 str.append(bundle["event.log.position", event.tile.x, event.tile.y]).append("\n")
 
-                buf.sortedByDescending { it.time }
-                    .take(8)
-                    .forEach { two ->
+                val shown = buf.sortedByDescending { it.time }.take(8)
+                // The row id, not the uuid: anyone can open this view, and `@<id>` is what the player
+                // commands take, /ban included.
+                val ids = runCatching { playerIdsByUuid(shown.mapNotNull { it.uuid }.toSet()) }
+                    .onFailure { Log.err("Error reading player ids for the history view", it) }
+                    .getOrDefault(emptyMap())
+
+                shown.forEach { two ->
+                        val who = ids[two.uuid]?.let { "${two.player}[lightgray] @$it[]" } ?: two.player
+                        val block = coreBundle["block.${two.tile}.name"].takeUnless { it == "block.${two.tile}.name" }
+                            ?: Vars.content.block(two.tile)?.localizedName ?: two.tile
                         val action = when (two.action) {
                             "tap" -> "[royal]${bundle["event.log.tap"]}[]"
                             "break" -> "[scarlet]${bundle["event.log.break"]}[]"
@@ -389,17 +401,17 @@ fun tap(event: TapEvent) {
 
                         if (two.action == "message") {
                             str.append(
-                                bundle["event.log.format.message", dateformat.format(two.time), two.player, coreBundle["block.${two.tile}.name"], two.value as String]
+                                bundle["event.log.format.message", dateformat.format(two.time), who, block, two.value as String]
                             ).append("\n")
                         } else {
                             str.append(
-                                bundle["event.log.format", dateformat.format(two.time), two.player, coreBundle["block.${two.tile}.name"], action]
+                                bundle["event.log.format", dateformat.format(two.time), who, block, action]
                             ).append("\n")
                         }
                     }
 
                 Call.effect(event.player.con(), Fx.shockwave, event.tile.getX(), event.tile.getY(), 0f, Color.cyan)
-                event.player.sendMessage(str.toString().trim())
+                data.sendDirect(str.toString().trim())
             }
         }
 
