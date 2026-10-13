@@ -4,15 +4,19 @@ import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
+import arc.util.Time
+import essential.common.database.data.PlayerData
 import essential.common.isVoting
 import essential.core.VoteData
 import essential.core.VoteType
 import mindustry.Vars
 import mindustry.game.Team
+import mindustry.gen.Player
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -154,6 +158,113 @@ class VoteElectorateTest {
         } finally {
             isVoting = false
             (listOf(starter) + bystanders).forEach { leavePlayer(it.first) }
+        }
+    }
+
+    @Test
+    fun aPlayerWhoJoinedAfterTheVoteStartedCannotCarryIt() {
+        val wasPvp = Vars.state.rules.pvp
+        val starter = newPlayer()
+        val bystander = newPlayer()
+        var lateJoiner: Pair<Player, PlayerData>? = null
+        try {
+            Vars.state.rules.pvp = false
+            isVoting = true
+            val vote = VoteSystem(VoteData(type = VoteType.Skip, wave = 1, starter = starter.second))
+
+            // Three players, threshold 2: the starter's seeded vote plus this one 'y' would pass it.
+            lateJoiner = newPlayer()
+            Vars.netServer.admins.filterMessage(lateJoiner.first, "y")
+            vote.run()
+
+            assertTrue(isVoting, "a 'y' from someone who was not on the server when the vote started must not count")
+            vote.cancel()
+        } finally {
+            isVoting = false
+            Vars.state.rules.pvp = wasPvp
+            listOfNotNull(starter, bystander, lateJoiner).forEach { leavePlayer(it.first) }
+        }
+    }
+
+    @Test
+    fun playersWhoJoinAfterTheVoteStartedDoNotRaiseItsThreshold() {
+        val wasPvp = Vars.state.rules.pvp
+        val electors = (1..4).map { newPlayer() }
+        val lateJoiners = ArrayList<Pair<Player, PlayerData>>()
+        try {
+            Vars.state.rules.pvp = false
+            isVoting = true
+            val vote = VoteSystem(VoteData(type = VoteType.Skip, wave = 1, starter = electors[0].second))
+
+            // Four electors give a threshold of 2. Eight players online would make it 5, which the
+            // four people allowed to vote could never reach.
+            repeat(4) { lateJoiners.add(newPlayer()) }
+            Vars.netServer.admins.filterMessage(electors[1].first, "y")
+            vote.run()
+
+            assertFalse(isVoting, "late joiners cannot vote, so they must not raise the bar for those who can")
+        } finally {
+            isVoting = false
+            Vars.state.rules.pvp = wasPvp
+            (electors + lateJoiners).forEach { leavePlayer(it.first) }
+        }
+    }
+
+    @Test
+    fun aVoteCastByAPlayerWhoHasSinceGoneAfkNoLongerCounts() {
+        val wasPvp = Vars.state.rules.pvp
+        val starter = newPlayer()
+        val voter = newPlayer()
+        try {
+            Vars.state.rules.pvp = false
+            isVoting = true
+            val vote = VoteSystem(VoteData(type = VoteType.Skip, wave = 1, starter = starter.second))
+
+            Vars.netServer.admins.filterMessage(voter.first, "y")
+            voter.second.afk = true
+            vote.run()
+
+            assertTrue(isVoting, "an afk voter's yes must leave the tally the way they leave the threshold")
+            vote.cancel()
+        } finally {
+            isVoting = false
+            Vars.state.rules.pvp = wasPvp
+            voter.second.afk = false
+            listOf(starter, voter).forEach { leavePlayer(it.first) }
+        }
+    }
+
+    @Test
+    fun aKickTargetWhoLeftMidVoteIsKickedForThreeHoursNotBanned() {
+        val wasPvp = Vars.state.rules.pvp
+        val starter = newPlayer()
+        val voter = newPlayer()
+        val target = newPlayer()
+        val targetUUID = target.first.uuid()
+        val targetIP = target.first.con.address
+        try {
+            Vars.state.rules.pvp = false
+            isVoting = true
+            val vote = VoteSystem(
+                VoteData(type = VoteType.Kick, target = target.first, targetUUID = targetUUID, reason = "test", starter = starter.second)
+            )
+            leavePlayer(target.first)
+
+            Vars.netServer.admins.filterMessage(voter.first, "y")
+            vote.run()
+
+            assertFalse(isVoting, "the vote must have passed for this test to mean anything")
+            assertFalse(Vars.netServer.admins.isIDBanned(targetUUID), "a target who left mid-vote must not be banned")
+            val kickedUntil = Vars.netServer.admins.kickedIPs.get(targetIP, 0L)
+            assertTrue(
+                kickedUntil > Time.millis() + 2 * 60 * 60 * 1000L,
+                "the target's last address must carry the same three hour kick an online target gets"
+            )
+        } finally {
+            isVoting = false
+            Vars.state.rules.pvp = wasPvp
+            Vars.netServer.admins.kickedIPs.remove(targetIP)
+            listOf(starter, voter).forEach { leavePlayer(it.first) }
         }
     }
 }

@@ -8,17 +8,13 @@ import arc.graphics.Color
 import arc.util.Timer
 import essential.common.*
 import essential.common.database.data.PlayerData
-import essential.common.database.data.getPlayerData
-import essential.common.database.data.update
 import essential.common.event.CustomEvents
 import essential.common.permission.Permission
 import essential.common.util.findPlayerData
-import essential.core.Main.Companion.scope
 import essential.core.earnEXP
 import essential.core.ModuleRuntime
 import essential.core.VoteData
 import essential.core.VoteType
-import kotlinx.coroutines.launch
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.content.Fx
@@ -40,6 +36,9 @@ import kotlin.time.Duration.Companion.minutes
 
 private val yesWords = setOf("y", "yes", "так", "+")
 private val noWords = setOf("n", "no", "ні", "-")
+
+/** How long a passed kick vote keeps its target out, in milliseconds: three hours. */
+private const val voteKickDuration = 3L * 60 * 60 * 1000
 
 private fun isYes(message: String) = message.trim().lowercase() in yesWords
 private fun isNo(message: String) = message.trim().lowercase() in noWords
@@ -160,6 +159,14 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var isCanceled = false
     private var isPvP = Vars.state.rules.pvp
 
+    /**
+     * Who may vote: the players on the server (on a PvP map, on the vote's team) when the vote started.
+     * Without it a raid could start a kick and then join bots to answer it, each new connection one more
+     * yes, and nothing about a vote that is already running would stop them.
+     */
+    private val electorate: Set<String> =
+        players.filter { !isPvP || it.player.team() == voteData.team }.mapTo(HashSet()) { it.uuid }
+
     private var chatFilter: Administration.ChatFilter
     private var gameoverEvent: Cons<GameOverEvent>
     private var worldLoadEvent: Cons<WorldLoadEvent>
@@ -214,7 +221,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                     if (isVoting && isYes(message) && voteData.starter == data && isAdmin && !isAdminVote) {
                         isAdminVote = true
                         data.send("command.vote.voted")
-                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
+                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid()) && player.uuid() in electorate) {
                         if (Vars.state.rules.pvp && voteData.team == player.team()) {
                             voted.add(player.uuid())
                         } else if (!Vars.state.rules.pvp) {
@@ -258,9 +265,18 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
         }
     }
 
+    /**
+     * The yes votes that still count: from voters who are online and not afk right now. [check] leaves
+     * afk and departed players out of the threshold, so a vote cast by one has to leave the tally too,
+     * or idle bots could carry a vote that the active players on the server never reached.
+     */
+    private fun votes() = voted.count { players.byUuid(it)?.afk == false }
+
     fun check(): Int {
+        // Sized from the electorate only: anyone who joined later cannot vote, so counting them would
+        // let a raid block a running vote just by joining bots, and would fail ordinary votes too.
         val threshold = if (!isPvP) {
-            when (players.filterNot { it.afk }.size) {
+            when (players.count { it.uuid in electorate && !it.afk }) {
                 1 -> 1
                 in 2..4 -> 2
                 in 5..6 -> 3
@@ -271,7 +287,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 else -> 8
             }
         } else {
-            when (players.count { a -> a.player.team() == voteData.team && !a.afk }) {
+            when (players.count { a -> a.uuid in electorate && a.player.team() == voteData.team && !a.afk }) {
                 1 -> 1
                 in 2..4 -> 2
                 in 5..6 -> 3
@@ -314,19 +330,19 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             if (it.team() == voteData.team) {
                                 val data = findPlayerData(it.uuid())
                                 if (data != null && voteData.targetUUID != data.uuid) {
-                                    data.send("command.vote.count", count.toString(), check() - voted.size)
+                                    data.send("command.vote.count", count.toString(), check() - votes())
                                 }
                             }
                         }
                     } else {
-                        send("command.vote.count", count.toString(), check() - voted.size)
+                        send("command.vote.count", count.toString(), check() - votes())
                         if (voteData.type == VoteType.Kick && Groups.player.find { a -> a.uuid() == voteData.targetUUID } == null) {
                             send("command.vote.kick.target.leave")
                         }
                     }
                 }
                 count--
-                if ((count == 0 && check() <= voted.size) || check() <= voted.size || isAdminVote) {
+                if ((count == 0 && check() <= votes()) || check() <= votes() || isAdminVote) {
                     send("command.vote.success")
 
                     val onlinePlayers = players.joinToString(", ") { it.name }
@@ -337,15 +353,13 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             val name = Vars.netServer.admins.getInfo(targetUUID).lastName
                             val targetPlayer = Groups.player.find { a -> a.uuid() == targetUUID }
                             if (targetPlayer == null) {
-                                Vars.netServer.admins.banPlayerID(targetUUID)
-                                send("command.vote.kick.target.banned", name)
-                                scope.launch {
-                                    val data = getPlayerData(targetUUID)
-                                    if (data != null) {
-                                        data.isBanned = true
-                                        data.update()
-                                    }
-                                }
+                                // The same three hours an online target is kicked for, recorded against the
+                                // uuid and last address the way the engine records a kick. This used to be
+                                // banPlayerID, a permanent ban that the ban listener copies to every server
+                                // sharing the database - so leaving mid-vote turned a raid's kick into a
+                                // fleet-wide ban.
+                                Vars.netServer.admins.handleKicked(targetUUID, Vars.netServer.admins.getInfo(targetUUID).lastIP, voteKickDuration)
+                                send("command.vote.kick.target.kicked", name)
                                 Events.fire(
                                     CustomEvents.PlayerVoteBanned(
                                         voteData.starter.name,
@@ -363,7 +377,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                         ModuleRuntime.awardVotingBan(voteData.starter)
                                     }
                                 }
-                                targetPlayer.kick(Packets.KickReason.kick, 60 * 60 * 3000)
+                                targetPlayer.kick(Packets.KickReason.kick, voteKickDuration)
                                 send("command.vote.kick.target.kicked", name)
                                 Events.fire(
                                     CustomEvents.PlayerVoteKicked(
@@ -540,7 +554,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                     }
 
                     this.cancel()
-                } else if ((count == 0 && check() > voted.size) || isCanceled) {
+                } else if ((count == 0 && check() > votes()) || isCanceled) {
                     if (isPvP) {
                         players.forEach {
                             if (it.player.team() == voteData.team) {

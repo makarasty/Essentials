@@ -6,6 +6,10 @@ import java.nio.file.WatchEvent
 
 object CustomEvents {
     class PlayerVoteKicked(val voteStarter: String, val name: String, val voteReason: String, val online: String)
+    /**
+     * A kick vote passed against a player who had already left. The name is kept for the listeners that
+     * already subscribe to it; the target is kicked for the same three hours as [PlayerVoteKicked], not banned.
+     */
     class PlayerVoteBanned(val voteStarter: String, val name: String, val voteReason: String, val online: String)
     class PlayerTempUnbanned(val name: String)
     class PlayerTempBanned(val name: String, val by: String, val date: String)
