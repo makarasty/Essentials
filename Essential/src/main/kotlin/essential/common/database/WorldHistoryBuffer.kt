@@ -3,6 +3,7 @@ package essential.common.database
 import arc.util.Log
 import essential.common.database.table.WorldHistoryTable
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.jetbrains.exposed.v1.r2dbc.batchInsert
@@ -63,6 +64,13 @@ object WorldHistoryBuffer {
     private val lastFlushWarn = AtomicLong()
 
     private var flushJob: Job? = null
+
+    /**
+     * Set by the flush loop before it checks the queue and parks on [wake]; a producer that finds it
+     * set sends the one signal that unparks it. A stale signal only costs one empty pass.
+     */
+    private val idle = AtomicBoolean(false)
+    private val wake = Channel<Unit>(Channel.CONFLATED)
 
     private val lastBlockCache = ConcurrentHashMap<Int, String>()
 
@@ -132,6 +140,7 @@ object WorldHistoryBuffer {
                 createdAt = System.currentTimeMillis(),
             )
         )
+        if (idle.get() && idle.compareAndSet(true, false)) wake.trySend(Unit)
     }
 
     /**
@@ -252,6 +261,11 @@ object WorldHistoryBuffer {
 
     private suspend fun flushLoop() {
         while (true) {
+            // Parked on the signal while there is nothing to write, rather than waking five times a
+            // second to find that out. A row that arrives still waits at most FLUSH_INTERVAL_MS.
+            idle.set(true)
+            if (queue.isEmpty()) wake.receive()
+            idle.set(false)
             delay(FLUSH_INTERVAL_MS.milliseconds)
             if (stopped.get()) break
             if (queue.isEmpty()) continue

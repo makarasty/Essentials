@@ -106,6 +106,18 @@ class WorldHistoryBufferBoundsTest {
     }
 
     @Test
+    fun aRowAfterAnIdleSpellIsFlushedByTheLoopAlone() {
+        // Long enough for the loop to find the queue empty and park on its signal.
+        Thread.sleep(500)
+        record("woken", 13)
+
+        assertTrue(
+            waitUntil(2000) { runBlocking { getAllWorldHistory() }.any { it.player == "woken" } },
+            "a row recorded while the flush loop was idle never reached the table without a manual flush"
+        )
+    }
+
+    @Test
     fun aStalledDatabaseBoundsTheQueueAndSaysSoOnce() {
         previousLogger = Log.logger
         // PluginTest's handler turns Log.err into a throw, and a stalled flush logs err every tick.
