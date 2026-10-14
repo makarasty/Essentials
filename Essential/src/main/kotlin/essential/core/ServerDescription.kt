@@ -115,7 +115,7 @@ object ServerDescription {
         if (text.length > ServerDescriptionTuning.LIMIT_CHARS && text != tooLongWarned) {
             tooLongWarned = text
             Log.warn(
-                "[Description] ${text.length} characters, the server list cuts it at $ServerDescriptionTuning.LIMIT_CHARS " +
+                "[Description] ${text.length} characters, the server list cuts it at ${ServerDescriptionTuning.LIMIT_CHARS} " +
                     "(100 on an unpatched client). Colour tags count too."
             )
         }
