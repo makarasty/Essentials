@@ -1,6 +1,7 @@
 package essential.common.util
 
 import PluginTest.Companion.loadGame
+import essential.common.PlayerLookupTuning
 import essential.common.database.data.getPlayerData
 import essential.common.database.table.PlayerTable
 import kotlinx.coroutines.runBlocking
@@ -23,7 +24,7 @@ import kotlin.test.fail
  * as "the" match - callers act on [PlayerLookup.Result.Found] directly and one of them bans it.
  *
  * The fallback scan's cap is a different thing wearing the same word. It is reached on any table larger
- * than [PlayerLookup.SCAN_LIMIT] whatever the query was, and its whole purpose is to recover a player
+ * than [PlayerLookupTuning.SCAN_LIMIT] whatever the query was, and its whole purpose is to recover a player
  * whose colour codes hide the query from a raw LIKE. Refusing those would take the feature away from
  * every large table, which is the second half of this test.
  */
@@ -70,7 +71,7 @@ class PlayerLookupTruncationTest {
                     it[name] = PREFIX
                     it[uuid] = "$PREFIX-exact"
                 }
-                repeat(PlayerLookup.SCAN_LIMIT - 1) { i ->
+                repeat(PlayerLookupTuning.SCAN_LIMIT - 1) { i ->
                     PlayerTable.insert {
                         it[name] = "$PREFIX${i + 1}"
                         it[uuid] = "$PREFIX-${i + 1}"

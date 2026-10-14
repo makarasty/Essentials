@@ -3,6 +3,7 @@ package essential.common.service
 import arc.Core
 import arc.Events
 import arc.util.Log
+import essential.common.FileWatchTuning
 import essential.common.event.CustomEvents
 import essential.common.rootPath
 import java.nio.file.*
@@ -13,7 +14,7 @@ import java.nio.file.*
  */
 private fun awaitSettled(file: Path) {
     var previous: Pair<Long, Long>? = null
-    repeat(20) {
+    repeat(FileWatchTuning.SETTLE_CHECKS) {
         val current = try {
             Files.size(file) to Files.getLastModifiedTime(file).toMillis()
         } catch (_: java.io.IOException) {
@@ -22,7 +23,7 @@ private fun awaitSettled(file: Path) {
         }
         if (current == previous) return
         previous = current
-        Thread.sleep(100)
+        Thread.sleep(FileWatchTuning.SETTLE_POLL_MS)
     }
 }
 

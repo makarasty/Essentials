@@ -1,5 +1,6 @@
 package essential.common.database.data
 
+import essential.common.ContributionTuning
 import essential.common.database.table.ContributionTable
 import essential.common.database.table.PlayerTable
 import kotlinx.coroutines.flow.map
@@ -103,7 +104,7 @@ data class ContributionRanking(
  * Average-contribution ranking across all players with at least one recorded game.
  * Sorted by average descending, limited to [limit] entries.
  */
-suspend fun getContributionRanking(limit: Int = 10): List<ContributionRanking> {
+suspend fun getContributionRanking(limit: Int = ContributionTuning.RANKING_SIZE): List<ContributionRanking> {
     // Aggregate per player in Kotlin to stay dialect-agnostic (H2/Postgres/MySQL).
     val rows = suspendTransaction {
         ContributionTable.select(ContributionTable.playerId, ContributionTable.score)

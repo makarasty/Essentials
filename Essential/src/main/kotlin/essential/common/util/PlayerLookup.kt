@@ -2,6 +2,7 @@ package essential.common.util
 
 import arc.util.Log
 import arc.util.Strings
+import essential.common.PlayerLookupTuning
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.database.data.getPlayerDataById
@@ -26,11 +27,6 @@ object PlayerLookup {
     const val TRUNCATED = "player.lookup.truncated"
     const val SPACES = "player.lookup.spaces"
 
-    const val SCAN_LIMIT = 5000
-
-    private const val MAX_CANDIDATES = 10
-    private const val MAX_NAME_LENGTH = 24
-
     sealed interface Result<out T> {
         data class Found<T>(val value: T) : Result<T>
         data class Ambiguous(
@@ -45,7 +41,7 @@ object PlayerLookup {
 
     fun shortName(name: String): String {
         val plain = Strings.stripColors(name)
-        return if (plain.length > MAX_NAME_LENGTH) plain.take(MAX_NAME_LENGTH - 1) + "…" else plain
+        return if (plain.length > PlayerLookupTuning.MAX_NAME_LENGTH) plain.take(PlayerLookupTuning.MAX_NAME_LENGTH - 1) + "…" else plain
     }
 
     fun sessionId(uuid: String): Int? = findPlayerData(uuid)?.entityId
@@ -71,7 +67,7 @@ object PlayerLookup {
         offline: (T) -> Boolean = { false }
     ): Result<T> {
         fun ambiguous(candidates: List<T>) = Result.Ambiguous(
-            candidates.take(MAX_CANDIDATES).map(label),
+            candidates.take(PlayerLookupTuning.MAX_CANDIDATES).map(label),
             candidates.any { name(it).contains(' ') },
             candidates.any(offline),
             truncated
@@ -148,7 +144,7 @@ object PlayerLookup {
 
         // The query matched more accounts than it was allowed to read, so the row it happens to hold
         // cannot be named as the match: callers act on Found directly and one of them bans it. Only the
-        // query's own cap counts. The whole-table scan is capped on every table over SCAN_LIMIT rows
+        // query's own cap counts. The whole-table scan is capped on every table over PlayerLookupTuning.SCAN_LIMIT rows
         // whatever the query was, and a match it recovers is as good as an uncapped one.
         if (capped && result is Result.Found && !isOnline(result.value)) {
             val hit = result.value
@@ -166,8 +162,8 @@ object PlayerLookup {
 
     /**
      * @property truncated part of the table went unread, which is what the user is told.
-     * @property capped this query's own result set hit [SCAN_LIMIT], so accounts matching it were left
-     *   behind. The scan below is capped on any table larger than [SCAN_LIMIT] whatever the query was,
+     * @property capped this query's own result set hit [PlayerLookupTuning.SCAN_LIMIT], so accounts matching it were left
+     *   behind. The scan below is capped on any table larger than [PlayerLookupTuning.SCAN_LIMIT] whatever the query was,
      *   so it never sets this.
      */
     private data class Rows(val rows: List<PlayerData>, val truncated: Boolean, val capped: Boolean)
@@ -177,23 +173,23 @@ object PlayerLookup {
         val matched = suspendTransaction {
             PlayerTable.selectAll().where {
                 (PlayerTable.uuid eq text) or (PlayerTable.name.lowerCase() like LikePattern("%$pattern%", '\\'))
-            }.limit(SCAN_LIMIT).mapToPlayerDataList()
+            }.limit(PlayerLookupTuning.SCAN_LIMIT).mapToPlayerDataList()
         }
         // A leading-wildcard LIKE cannot use an index, so a one-character query matched most of a
         // shared table and shipped every row back. Same cap as the scan below.
         if (matched.isNotEmpty()) {
-            val capped = matched.size >= SCAN_LIMIT
+            val capped = matched.size >= PlayerLookupTuning.SCAN_LIMIT
             return Rows(matched, capped, capped)
         }
 
         val scanned = suspendTransaction {
-            PlayerTable.selectAll().limit(SCAN_LIMIT).mapToPlayerDataList()
+            PlayerTable.selectAll().limit(PlayerLookupTuning.SCAN_LIMIT).mapToPlayerDataList()
         }
         // The raw name can hide the query behind colour codes, so this pass strips them before matching.
         // Its cap is on the table rather than on the match, which is why it does not set capped.
         return Rows(
             scanned.filter { Strings.stripColors(it.name).contains(text, true) },
-            scanned.size >= SCAN_LIMIT,
+            scanned.size >= PlayerLookupTuning.SCAN_LIMIT,
             false
         )
     }
@@ -249,12 +245,12 @@ object PlayerLookup {
                 val key = if (result.offline) AMBIGUOUS_OFFLINE else AMBIGUOUS
                 warn(key, shortName(query), result.candidates.joinToString("\n"))
                 if (result.spacedNames) warn(SPACES)
-                if (result.truncated) warn(TRUNCATED, SCAN_LIMIT)
+                if (result.truncated) warn(TRUNCATED, PlayerLookupTuning.SCAN_LIMIT)
             }
 
             is Result.NotFound -> {
                 warn(missing)
-                if (result.truncated) warn(TRUNCATED, SCAN_LIMIT)
+                if (result.truncated) warn(TRUNCATED, PlayerLookupTuning.SCAN_LIMIT)
             }
         }
         return null

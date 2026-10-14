@@ -4,6 +4,7 @@ import PluginTest.Companion.expectingErrors
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.waitUntil
 import arc.util.Log
+import essential.common.WorldHistoryTuning
 import essential.common.database.data.getAllWorldHistory
 import essential.common.database.table.WorldHistoryTable
 import kotlinx.coroutines.runBlocking
@@ -127,12 +128,12 @@ class WorldHistoryBufferBoundsTest {
 
         // One row past the ceiling. Nothing can leave the queue while the table is gone, so the only
         // thing that stops this growing is the bound.
-        repeat(WorldHistoryBuffer.QUEUE_CAPACITY + 50) { record("flood", 12) }
+        repeat(WorldHistoryTuning.QUEUE_CAPACITY + 50) { record("flood", 12) }
 
         assertTrue(
             waitUntil(10000) { warnings.isNotEmpty() },
-            "the queue took ${WorldHistoryBuffer.QUEUE_CAPACITY + 50} rows against a ceiling of " +
-                "${WorldHistoryBuffer.QUEUE_CAPACITY} without dropping any, so it is still unbounded"
+            "the queue took ${WorldHistoryTuning.QUEUE_CAPACITY + 50} rows against a ceiling of " +
+                "${WorldHistoryTuning.QUEUE_CAPACITY} without dropping any, so it is still unbounded"
         )
         assertTrue(
             warnings.first().contains("dropped"),

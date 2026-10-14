@@ -1,6 +1,7 @@
 package essential.common.database
 
 import arc.util.Log
+import essential.common.WorldHistoryTuning
 import essential.common.database.table.WorldHistoryTable
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -34,28 +35,11 @@ object WorldHistoryBuffer {
         val createdAt: Long,
     )
 
-    private const val MAX_BATCH_SIZE = 100
-    private const val FLUSH_INTERVAL_MS = 200L
-
-    /**
-     * How many rows may be waiting to be written before the oldest are dropped.
-     *
-     * The queue used to be unbounded while its producer is `tap()` on the game thread, so a database
-     * that stalled grew it until the server ran out of heap. Blocking the producer instead is not
-     * available: that would stall the game thread behind the database. So the buffer keeps the newest
-     * rows and drops the oldest, which is the right direction for rollback history - the recent edits
-     * are the ones an admin is about to undo.
-     *
-     * 20000 rows is a few megabytes and roughly forty seconds of one player building flat out.
-     */
-    internal const val QUEUE_CAPACITY = 20000
-    private const val WARN_INTERVAL_MS = 60000L
-
     // A deque rather than a queue so a batch whose write failed can go back at the head it came from.
     // Putting it at the tail reordered it behind rows recorded later and, worse, made the failing batch
     // the last thing the drop-oldest policy would ever evict - the exact inversion of what that policy
     // is for.
-    private val queue = LinkedBlockingDeque<PendingInsert>(QUEUE_CAPACITY)
+    private val queue = LinkedBlockingDeque<PendingInsert>(WorldHistoryTuning.QUEUE_CAPACITY)
     private val flushMutex = Mutex()
     private val stopped = AtomicBoolean(false)
 
@@ -167,7 +151,7 @@ object WorldHistoryBuffer {
         if (evicted != null) reportDropped(1)
     }
 
-    /** Adds [count] to the running loss and says so at most once per [WARN_INTERVAL_MS]. */
+    /** Adds [count] to the running loss and says so at most once per [WorldHistoryTuning.WARN_INTERVAL_MS]. */
     private fun reportDropped(count: Int) {
         val total = dropped.addAndGet(count.toLong())
         if (allowedNow(lastDropWarn)) {
@@ -176,7 +160,7 @@ object WorldHistoryBuffer {
     }
 
     /**
-     * True at most once per [WARN_INTERVAL_MS] per gate.
+     * True at most once per [WorldHistoryTuning.WARN_INTERVAL_MS] per gate.
      *
      * Both things this rate-limits fire per row or per flush tick: a stalled database drops rows as fast
      * as players place blocks, and the flush loop retries five times a second for as long as it stays
@@ -186,14 +170,14 @@ object WorldHistoryBuffer {
     private fun allowedNow(gate: AtomicLong): Boolean {
         val now = System.currentTimeMillis()
         val last = gate.get()
-        return now - last >= WARN_INTERVAL_MS && gate.compareAndSet(last, now)
+        return now - last >= WorldHistoryTuning.WARN_INTERVAL_MS && gate.compareAndSet(last, now)
     }
 
     /**
      * Puts a batch whose write did not happen back at the head, in the order it was drained.
      *
      * What no longer fits is the oldest history in the buffer, which is what the bound discards anyway,
-     * so a database that stays down converges on keeping the newest [QUEUE_CAPACITY] rows rather than
+     * so a database that stays down converges on keeping the newest [WorldHistoryTuning.QUEUE_CAPACITY] rows rather than
      * on preserving the one batch that keeps failing.
      */
     private fun requeueOldest(batch: List<PendingInsert>) {
@@ -205,10 +189,10 @@ object WorldHistoryBuffer {
     }
 
     private fun drain(): List<PendingInsert> {
-        val batch = ArrayList<PendingInsert>(MAX_BATCH_SIZE)
+        val batch = ArrayList<PendingInsert>(WorldHistoryTuning.MAX_BATCH_SIZE)
         // Capped so one transaction stays one transaction rather than becoming however much the queue
         // grew to while the database was away. flushAll is what puts the whole backlog back together.
-        queue.drainTo(batch, MAX_BATCH_SIZE)
+        queue.drainTo(batch, WorldHistoryTuning.MAX_BATCH_SIZE)
         return batch
     }
 
@@ -226,7 +210,7 @@ object WorldHistoryBuffer {
      * The caller holds [flushMutex].
      */
     private suspend fun flushAll() {
-        var remaining = queue.size + MAX_BATCH_SIZE
+        var remaining = queue.size + WorldHistoryTuning.MAX_BATCH_SIZE
         while (remaining > 0) {
             val batch = drain()
             if (batch.isEmpty()) return
@@ -262,11 +246,11 @@ object WorldHistoryBuffer {
     private suspend fun flushLoop() {
         while (true) {
             // Parked on the signal while there is nothing to write, rather than waking five times a
-            // second to find that out. A row that arrives still waits at most FLUSH_INTERVAL_MS.
+            // second to find that out. A row that arrives still waits at most WorldHistoryTuning.FLUSH_INTERVAL_MS.
             idle.set(true)
             if (queue.isEmpty()) wake.receive()
             idle.set(false)
-            delay(FLUSH_INTERVAL_MS.milliseconds)
+            delay(WorldHistoryTuning.FLUSH_INTERVAL_MS.milliseconds)
             if (stopped.get()) break
             if (queue.isEmpty()) continue
             flushMutex.withLock { flushAll() }

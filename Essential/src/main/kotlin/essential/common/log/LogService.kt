@@ -1,6 +1,7 @@
 package essential.common.log
 
 import arc.util.Log
+import essential.common.LogTuning
 import essential.common.rootPath
 import essential.core.Main
 import java.io.File
@@ -21,15 +22,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.concurrent.thread
 
-private const val QUEUE_CAPACITY = 4096
-private const val MAX_LOG_SIZE = 2048L * 1024L
-private const val MAX_LOG_FILE = 20
-private const val DROP_WARN_INTERVAL = 60000L
-private const val ROTATE_RETRY_INTERVAL = 60000L
-
 private data class LogLine(val type: LogType, val text: String, val time: LocalDateTime, val name: String?)
 
-private val queue = ArrayBlockingQueue<LogLine>(QUEUE_CAPACITY)
+private val queue = ArrayBlockingQueue<LogLine>(LogTuning.QUEUE_CAPACITY)
 private val logFiles = HashMap<LogType, FileAppender>()
 private val rotateFailed = HashMap<LogType, Long>()
 private val running = AtomicBoolean(false)
@@ -91,7 +86,7 @@ fun writeLog(type: LogType, text: String, vararg name: String) {
         val total = dropped.incrementAndGet()
         val now = System.currentTimeMillis()
         val last = lastDropWarn.get()
-        if (now - last >= DROP_WARN_INTERVAL && lastDropWarn.compareAndSet(last, now)) {
+        if (now - last >= LogTuning.DROP_WARN_INTERVAL_MS && lastDropWarn.compareAndSet(last, now)) {
             Log.warn("[Essentials] Log queue is full, dropped $total lines")
         }
     }
@@ -105,7 +100,7 @@ private fun startWriter() {
     val next = thread(name = "essential-log", isDaemon = true, start = false) {
         while (running.get()) {
             try {
-                val first = queue.poll(1, TimeUnit.SECONDS) ?: continue
+                val first = queue.poll(LogTuning.WRITER_POLL_SECONDS, TimeUnit.SECONDS) ?: continue
                 val batch = ArrayList<LogLine>()
                 batch.add(first)
                 queue.drainTo(batch)
@@ -197,11 +192,11 @@ private fun appender(type: LogType): FileAppender =
 
 private fun rotate(type: LogType, time: String) {
     val current = logFiles[type] ?: return
-    if (current.length() <= MAX_LOG_SIZE) return
+    if (current.length() <= LogTuning.MAX_LOG_SIZE_BYTES) return
 
     val now = System.currentTimeMillis()
     val failedAt = rotateFailed[type]
-    if (failedAt != null && now - failedAt < ROTATE_RETRY_INTERVAL) return
+    if (failedAt != null && now - failedAt < LogTuning.ROTATE_RETRY_INTERVAL_MS) return
 
     val source = rootPath.child("log/$type.log")
     val folder = rootPath.child("log/old/$type")
@@ -231,7 +226,7 @@ private fun rotate(type: LogType, time: String) {
     target.writeString("\nend of file. $time", true)
 
     val rotated = folder.file().listFiles { file -> file.name.endsWith(".log") } ?: return
-    if (rotated.size < MAX_LOG_FILE) return
+    if (rotated.size < LogTuning.MAX_LOG_FILES) return
 
     ZipOutputStream(FileOutputStream(folder.child("$time.zip").file())).use { zip ->
         for (file in rotated) {

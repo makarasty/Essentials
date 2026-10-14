@@ -1,6 +1,7 @@
 package essential.common.database.data
 
 import arc.util.Log
+import essential.common.ServerRoutingTuning
 import essential.common.database.table.ServerRoutingTable
 import essential.common.systemTimezone
 import kotlinx.coroutines.flow.map
@@ -55,7 +56,7 @@ suspend fun grantRoutingPermission(
     targetServerName: String,
     targetPort: Int,
     hubConnectionTime: LocalDateTime,
-    validSeconds: Int = 60
+    validSeconds: Int = ServerRoutingTuning.GRANT_VALID_SECONDS
 ): ServerRoutingData? {
     val routingAllowedTime = Clock.System.now().toLocalDateTime(systemTimezone)
     val expiresAt = (Clock.System.now() + validSeconds.seconds).toLocalDateTime(systemTimezone)
@@ -84,15 +85,6 @@ suspend fun grantRoutingPermission(
 }
 
 /**
- * How many expired rows one grant clears.
- *
- * The table has been growing since the feature landed, so the first grant after this ships meets the
- * whole accumulated backlog. Bounded, that is a short transaction repeated over the next few hundred
- * grants; unbounded, it is one long lock hold on a table five other servers are reading.
- */
-private const val PRUNE_LIMIT = 200
-
-/**
  * Deletes expired routing permissions, a bounded slice at a time.
  *
  * This exists because [cleanupExpiredRoutingPermissions] never runs. Its only caller sits after the
@@ -118,7 +110,7 @@ private const val PRUNE_LIMIT = 200
 private suspend fun pruneExpiredRoutingPermissions() {
     runCatching {
         suspendTransaction {
-            ServerRoutingTable.deleteWhere(limit = PRUNE_LIMIT) { expiresAt less CurrentDateTime }
+            ServerRoutingTable.deleteWhere(limit = ServerRoutingTuning.PRUNE_LIMIT) { expiresAt less CurrentDateTime }
         }
     }.onFailure {
         Log.warn("[ServerRouting] could not clear expired routing permissions: ${it.message}")

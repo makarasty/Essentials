@@ -1,6 +1,7 @@
 package essential.common.database
 
 import arc.util.Log
+import essential.common.DatabasePoolTuning
 import essential.common.bundle
 import essential.common.database.data.getPluginData
 import essential.common.database.data.mergePlayerAccounts
@@ -99,16 +100,14 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
 
     val h2HistoryFactory = h2("worldHistory")
 
-    // One steady writer (the WorldHistoryBuffer flush loop), plus readers that do not queue behind it:
-    // a /rollback and every tap of an admin in history view. Twenty was headroom nothing used; six
-    // leaves room for a rollback and a few viewers at once without anyone waiting on the pool.
+    // Pool sizes and timeouts, and why six connections: DatabasePoolTuning in essential/common/Tuning.kt.
     val h2PoolConfig = ConnectionPoolConfiguration.builder(h2HistoryFactory.first)
-        .maxSize(6)
-        .initialSize(1)
-        .maxIdleTime(Duration.ofMinutes(10))
-        .maxAcquireTime(Duration.ofSeconds(10))
-        .maxCreateConnectionTime(Duration.ofSeconds(5))
-        .maxLifeTime(Duration.ofMinutes(30))
+        .maxSize(DatabasePoolTuning.HISTORY_MAX_SIZE)
+        .initialSize(DatabasePoolTuning.HISTORY_INITIAL_SIZE)
+        .maxIdleTime(Duration.ofMinutes(DatabasePoolTuning.HISTORY_MAX_IDLE_MINUTES))
+        .maxAcquireTime(Duration.ofSeconds(DatabasePoolTuning.HISTORY_MAX_ACQUIRE_SECONDS))
+        .maxCreateConnectionTime(Duration.ofSeconds(DatabasePoolTuning.HISTORY_MAX_CREATE_CONNECTION_SECONDS))
+        .maxLifeTime(Duration.ofMinutes(DatabasePoolTuning.HISTORY_MAX_LIFE_MINUTES))
         .validationQuery("SELECT 1")
         .validationDepth(ValidationDepth.LOCAL)
         .build()
@@ -134,12 +133,12 @@ suspend fun databaseInit(r2dbcUrl: String, user: String, pass: String) {
     }
 
     val poolConfig = ConnectionPoolConfiguration.builder(connectionFactory)
-        .maxSize(5)
-        .initialSize(2)
-        .maxIdleTime(Duration.ofMinutes(10))
-        .maxAcquireTime(Duration.ofSeconds(10))
-        .maxCreateConnectionTime(Duration.ofSeconds(5))
-        .maxLifeTime(Duration.ofMinutes(10))
+        .maxSize(DatabasePoolTuning.MAIN_MAX_SIZE)
+        .initialSize(DatabasePoolTuning.MAIN_INITIAL_SIZE)
+        .maxIdleTime(Duration.ofMinutes(DatabasePoolTuning.MAIN_MAX_IDLE_MINUTES))
+        .maxAcquireTime(Duration.ofSeconds(DatabasePoolTuning.MAIN_MAX_ACQUIRE_SECONDS))
+        .maxCreateConnectionTime(Duration.ofSeconds(DatabasePoolTuning.MAIN_MAX_CREATE_CONNECTION_SECONDS))
+        .maxLifeTime(Duration.ofMinutes(DatabasePoolTuning.MAIN_MAX_LIFE_MINUTES))
         .validationQuery("SELECT 1")
         .validationDepth(ValidationDepth.REMOTE)
         .build()

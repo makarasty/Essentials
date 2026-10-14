@@ -10,6 +10,7 @@ import com.charleskorn.kaml.YamlMap
 import com.charleskorn.kaml.YamlNode
 import com.charleskorn.kaml.YamlPath
 import com.charleskorn.kaml.YamlScalar
+import essential.common.PermissionTuning
 import essential.common.bundle.Bundle
 import essential.common.command.CommandRegistry
 import essential.common.database.data.PlayerData
@@ -54,10 +55,6 @@ object Permission {
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
     private val userBackupFile: Fi = rootPath.child("permission_user.yaml.bak")
-
-    // The connection pool is five (Database.kt), and the game thread wants one of them for
-    // whatever a player is doing while this runs.
-    private const val OFFLINE_WRITE_LIMIT = 4
 
     private val bundle = Bundle(Locale.getDefault().toLanguageTag())
     private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
@@ -233,7 +230,7 @@ object Permission {
      */
     private fun applyOffline(entries: Map<String, PermissionData>) {
         scope.launch {
-            val gate = Semaphore(OFFLINE_WRITE_LIMIT)
+            val gate = Semaphore(PermissionTuning.OFFLINE_WRITE_LIMIT)
             val unpersisted = entries.map { (uuid, permissionData) ->
                 async {
                     gate.withPermit {
@@ -263,7 +260,7 @@ object Permission {
                 Log.info(
                     "[Permission] permission_user.yaml names ${unpersisted.size} uuid with no player row yet, " +
                         "so their group is not stored in the database; it applies when they join: " +
-                        unpersisted.take(10).joinToString(", ")
+                        unpersisted.take(PermissionTuning.UNPERSISTED_LOG_SAMPLE).joinToString(", ")
                 )
             }
         }
