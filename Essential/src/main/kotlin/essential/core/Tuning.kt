@@ -111,9 +111,6 @@ internal object VoteStartTuning {
 
 /** Who may vote (Electorate.kt). */
 internal object ElectorateTuning {
-    /** While BlockIP's vote rule is not found, how often it is looked for again, in minutes. */
-    const val HOOK_RETRY_MINUTES = 1
-
     /** Least time between two logs of BlockIP's vote rule failing, in minutes. */
     const val HOOK_FAILURE_LOG_MINUTES = 1
 }

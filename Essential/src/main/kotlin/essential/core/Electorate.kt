@@ -9,6 +9,7 @@ import mindustry.Vars
 import mindustry.game.Team
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /**
  * Who may vote in one vote, and so who counts toward what it needs: the single rule for /rtv, /vote and its kick,
@@ -17,9 +18,8 @@ import kotlin.time.TimeMark
  * spectators, newcomers and a raid's bots that BlockIP refuses - still raised every threshold, so /rtv and a
  * kick of raiders could not pass while they were online.
  *
- * A player may vote when they are on the server with their data loaded (not temporary), not afk (Trigger's flag,
- * set after `afk.time` idle seconds whether or not afk kicking is on, and cleared by moving or by any chat line or
- * command), playing (not derelict, not a PvP spectator), on [team] when the vote is a team's, one of [members]
+ * A player may vote when they are on the server with their data loaded (not temporary), present (Trigger.present:
+ * not afk, or gave chat or vote input within `afk.time` seconds), playing (not derelict, not a PvP spectator), on [team] when the vote is a team's, one of [members]
  * when the vote fixed them at its start, holding [node] - the vote's own command node, `rtv` or `vote` - and
  * BlockIP, when installed, lets them (see [BlockIpHook]).
  */
@@ -32,7 +32,7 @@ class Electorate(
     fun mayVote(data: PlayerData, starts: Boolean = false): Boolean {
         val player = data.player
         val con = player.con()
-        return !data.temporary && !data.afk
+        return !data.temporary && Trigger.present(data)
             && con != null && !con.hasDisconnected
             && player.team() != Team.derelict && data.uuid !in pvpSpecters
             && (team == null || player.team() == team)
@@ -54,9 +54,15 @@ class Electorate(
         /** The node of /vote, its kick included. */
         const val VOTE = "vote"
 
-        /** The uuids online now, on [team] when it is given: the members of a vote that fixes them at its start. */
-        fun online(team: Team?): Set<String> =
-            players.filter { team == null || it.player.team() == team }.mapTo(HashSet()) { it.uuid }
+        /**
+         * A /vote's electorate: [team]'s players on a PvP map, the whole server otherwise. [fixMembers]: only the
+         * players online now may ever vote in it - a running vote, which bots joining later must not answer.
+         */
+        fun forVote(team: Team, fixMembers: Boolean = false): Electorate {
+            val scope = team.takeIf { Vars.state.rules.pvp }
+            val members = if (fixMembers) players.filter { scope == null || it.player.team() == scope }.mapTo(HashSet()) { it.uuid } else null
+            return Electorate(VOTE, scope, members)
+        }
     }
 }
 
@@ -67,31 +73,27 @@ class Electorate(
 internal object BlockIpHook {
     private const val CLASS = "BlockIp.BlockPlugin"
 
-    private var found: ((String, Boolean, Boolean) -> String?)? = null
-    private var nextLookup: TimeMark? = null
+    /** Looked up at the first vote; Mindustry loads every plugin before any init, so later is no different. */
+    private val found by lazy { lookup(CLASS) }
+
+    /** Stands in for BlockIP in tests; null uses the real lookup. */
+    internal var replacement: ((String, Boolean, Boolean) -> String?)? = null
+
     private var nextFailureLog: TimeMark? = null
 
-    /**
-     * The hook in use. While BlockIP is not found it is looked for again every [ElectorateTuning.HOOK_RETRY_MINUTES],
-     * as a plugin loaded later appears; once found it is kept. Tests set it.
-     */
-    internal var external: ((String, Boolean, Boolean) -> String?)?
-        get() {
-            if (found == null && nextLookup?.hasPassedNow() != false) {
-                found = lookup(CLASS)
-                nextLookup = timeSource.markNow().plus(ElectorateTuning.HOOK_RETRY_MINUTES.minutes)
-            }
-            return found
-        }
+    /** The clock the failure log is spaced by; tests replace it, which starts the spacing over. */
+    internal var clock: TimeSource = timeSource
         set(value) {
-            found = value
-            // A test that clears it means "absent": not looked up again on the next call
-            nextLookup = timeSource.markNow().plus(ElectorateTuning.HOOK_RETRY_MINUTES.minutes)
+            field = value
+            nextFailureLog = null
         }
 
-    /** Whether BlockIP lets [data] vote; true without BlockIP, and when the call fails (Essentials' rules still apply). */
+    /**
+     * Whether BlockIP lets [data] vote: true without BlockIP, and when the call fails - Essentials' own rules still
+     * apply then, and the failure is logged at most every [ElectorateTuning.HOOK_FAILURE_LOG_MINUTES].
+     */
     fun allows(data: PlayerData, starts: Boolean): Boolean {
-        val hook = external ?: return true
+        val hook = replacement ?: found ?: return true
         // A session on a device the uuid is not bound to may be someone presenting another player's uuid:
         // BlockIP is told so, and does not lend it that uuid's trust.
         val untrusted = Permission.heldBack(data.uuid, Permission.sessionUsid(data.player))
@@ -100,7 +102,7 @@ internal object BlockIpHook {
         } catch (e: Throwable) {
             if (nextFailureLog?.hasPassedNow() != false) {
                 Log.err("[Essential] BlockIP's vote rule failed; votes follow Essentials' rules only", e)
-                nextFailureLog = timeSource.markNow().plus(ElectorateTuning.HOOK_FAILURE_LOG_MINUTES.minutes)
+                nextFailureLog = clock.markNow().plus(ElectorateTuning.HOOK_FAILURE_LOG_MINUTES.minutes)
             }
             true
         }

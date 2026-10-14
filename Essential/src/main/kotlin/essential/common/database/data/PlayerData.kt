@@ -35,6 +35,7 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+import kotlin.time.TimeMark
 
 internal val statusJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -151,6 +152,9 @@ data class PlayerData(
     var afk = false
     var afkTime: UShort = 0u
     var mousePosition: Float = 0F
+
+    /** The last chat line or vote command of this session; voting reads it (Trigger.present), afk kicking does not. */
+    var lastInput: TimeMark? = null
 
     // Logging
     var viewHistoryMode = false

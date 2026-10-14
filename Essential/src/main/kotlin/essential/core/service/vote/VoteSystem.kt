@@ -15,6 +15,7 @@ import essential.core.Electorate
 import essential.core.earnEXP
 import essential.core.endMap
 import essential.core.ModuleRuntime
+import essential.core.Trigger
 import essential.core.VoteData
 import essential.core.VoteType
 import mindustry.Vars
@@ -158,15 +159,12 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var isCanceled = false
     private var isPvP = Vars.state.rules.pvp
 
-    /** The team that votes on a PvP map; null where the whole server does. */
-    private val team: Team? = voteData.team.takeIf { isPvP }
-
     /**
      * Who may vote: [Electorate]'s rule, among the players on the server (on a PvP map, on the vote's team) when
      * the vote started. Without the members fixed, a raid could start a kick and then join bots to answer it,
      * each new connection one more yes, and nothing about a vote that is already running would stop them.
      */
-    private val electorate = Electorate(Electorate.VOTE, team, Electorate.online(team))
+    private val electorate = Electorate.forVote(voteData.team, fixMembers = true)
 
     private var chatFilter: Administration.ChatFilter
     private var gameoverEvent: Cons<GameOverEvent>
@@ -223,6 +221,8 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         isAdminVote = true
                         data.send("command.vote.voted")
                     } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
+                        // Every filter before this one let the line through: it is input, and may make an idle player present
+                        Trigger.markInput(data)
                         if (electorate.mayVote(data)) {
                             voted.add(player.uuid())
                             data.send("command.vote.voted")

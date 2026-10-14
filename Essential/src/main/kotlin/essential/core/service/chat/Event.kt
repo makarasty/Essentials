@@ -10,6 +10,7 @@ import essential.common.rootPath
 import essential.common.util.findPlayerData
 import essential.core.KeyboardLayout
 import essential.core.Main
+import essential.core.Trigger
 import essential.core.service.chat.ChatFormatResolver.resolve
 import essential.core.service.chat.ChatService.Companion.conf
 import ksp.event.Event
@@ -130,6 +131,8 @@ fun serverLoaded(event: EventType.ServerLoadEvent) {
     Vars.netServer.chatFormatter = NetServer.ChatFormatter { player, message ->
         if (player != null) {
             val data: PlayerData? = findPlayerData(player.uuid())
+            // Only a line every filter let through gets here: it shows the player is at the keyboard
+            if (data != null && message != null) Trigger.markInput(data)
             if (message != null) {
                 if (player === publicSender) {
                     publicSender = null

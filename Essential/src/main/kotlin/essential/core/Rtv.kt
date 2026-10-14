@@ -1,11 +1,11 @@
 package essential.core
 
+import arc.files.Fi
 import arc.util.Timer
 import essential.common.database.data.PlayerData
 import essential.common.players
 import essential.common.timeSource
 import essential.core.Main.Companion.conf
-import mindustry.maps.Map
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 import kotlin.time.Duration.Companion.seconds
@@ -17,9 +17,12 @@ object Rtv {
     private var timeout: Timer.Task? = null
     private var deadline: TimeMark? = null
 
-    /** The map the running vote is for; null for the next map. */
-    internal var target: Map? = null
-        private set
+    /** The map the running vote is for, by file (see [mapByFile]) and with the name it was shown by; null for the next map. */
+    private class Target(val file: Fi, val name: String)
+
+    private var target: Target? = null
+
+    internal val targetFile: Fi? get() = target?.file
     private var changing = false
 
     /** Every player online who may use /rtv: late joiners vote and count like anyone else. */
@@ -39,13 +42,18 @@ object Rtv {
         val settings = conf.feature.vote.rtv
         val uuid = playerData.uuid
 
+        Trigger.markInput(playerData)
         if (changing) {
             playerData.err("command.rtv.changing")
             return
         }
-        val map = id?.let { mapsById().getOrNull(it.toIntOrNull() ?: -1) }
+        val map = id?.let(::findMap)
         if (id != null && map == null) {
             playerData.err("command.rtv.map.invalid", id)
+            return
+        }
+        if (map != null && isCurrentMap(map)) {
+            playerData.err("command.vote.map.current", map.plainName())
             return
         }
         if (!electorate.mayVote(playerData)) {
@@ -58,9 +66,9 @@ object Rtv {
             return
         }
         val running = votes.isNotEmpty()
-        if (running && map != null && map != target) {
-            val other = target
-            if (other == null) playerData.err("command.rtv.other.next") else playerData.err("command.rtv.other.map", other.plainName())
+        val current = target
+        if (running && map != null && map.file != current?.file) {
+            if (current == null) playerData.err("command.rtv.other.next") else playerData.err("command.rtv.other.map", current.name)
             return
         }
         cooldown[uuid] = timeSource.markNow().plus(settings.cooldown.seconds)
@@ -70,12 +78,12 @@ object Rtv {
             return
         }
         if (!running) {
-            target = map
+            target = map?.let { Target(it.file, it.plainName()) }
             startTimeout(settings.timeout)
         }
 
         val name = playerData.player.plainName()
-        val to = target?.plainName()
+        val to = target?.name
         when {
             required == 1 && to == null -> broadcast("command.rtv.alone", name)
             required == 1 -> broadcast("command.rtv.alone.map", name, to!!)
@@ -93,7 +101,7 @@ object Rtv {
         }
         // The leaver is still in players while PlayerLeave runs
         val needed = requiredFor(electorate.count(except = uuid))
-        val to = target?.plainName()
+        val to = target?.name
         if (voted) {
             if (to == null) broadcast("command.rtv.left", name, count, needed) else broadcast("command.rtv.left.map", name, count, needed, to)
         }
@@ -109,9 +117,15 @@ object Rtv {
     private fun requiredFor(playerCount: Int): Int =
         ceil(conf.feature.vote.rtv.ratio * playerCount).toInt().coerceAtLeast(1)
 
+    /** Passes the vote: on to its map, found again by file, or cancelled when that map has left the server meanwhile. */
     private fun change() {
-        val map = target
+        val wanted = target
+        val map = wanted?.let { mapByFile(it.file) }
         clearVotes()
+        if (wanted != null && map == null) {
+            broadcast("command.rtv.map.gone", wanted.name)
+            return
+        }
         changing = true
         broadcast("command.rtv.done")
         endMap(map)

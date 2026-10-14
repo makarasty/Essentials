@@ -177,7 +177,7 @@ Kick a player, or move them to ``feature.afk.server``, once they have been idle 
 ### feature.afk.time
 
 Default: ``300``<br>
-Seconds of inactivity before a player counts as AFK. This applies whether or not ``feature.afk.enabled`` is on: an AFK player may not vote and does not count toward what ``/rtv`` or ``/evote`` needs. Moving, or any chat line or command, ends it at once.
+Seconds of inactivity before a player counts as AFK. This applies whether or not ``feature.afk.enabled`` is on: an AFK player may not vote and does not count toward what ``/rtv`` or ``/evote`` needs, unless they said something in chat or used ``/rtv`` or ``/evote`` within the last ``feature.afk.time`` seconds. Only moving ends AFK itself, so chatting does not hold off an AFK kick.
 
 ### feature.afk.server
 
@@ -201,7 +201,7 @@ In this fork, ``false`` (the default) removes vanilla's ``/votekick`` as well, a
 ### feature.vote.rtv.ratio
 
 Default: ``0.6``<br>
-Share of the players who may vote that must use ``/rtv`` before the server moves on: to the next map, or with ``/rtv <id>`` to the map with that ID in ``/maps`` (0.6 = 60%, rounded up, at least one vote). Players who are AFK, spectating, without the ``rtv`` permission, or refused by BlockIP when it is installed may not vote and are not counted.
+Share of the players who may vote that must use ``/rtv`` before the server moves on: to the next map, or with ``/rtv <id>`` to the map with that ID in ``/maps`` (a name works too; not the map being played) (0.6 = 60%, rounded up, at least one vote). Players who are AFK, spectating, without the ``rtv`` permission, or refused by BlockIP when it is installed may not vote and are not counted.
 
 ### feature.vote.rtv.cooldown
 

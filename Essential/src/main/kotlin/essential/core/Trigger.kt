@@ -23,6 +23,7 @@ import essential.common.players
 import essential.common.pluginData
 import essential.common.rootPath
 import essential.common.systemTimezone
+import essential.common.timeSource
 import essential.common.util.changeTeam
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
@@ -56,6 +57,7 @@ import java.util.function.Consumer
 import kotlin.math.floor
 import kotlin.random.Random
 import kotlin.time.Clock
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import essential.common.database.data.update
 
@@ -125,14 +127,21 @@ object Trigger {
     }
 
     /**
-     * Ends [data]'s afk spell: they moved, or said or typed something (CoreEvent's chat handler). The flag is set
-     * after `afk.time` idle seconds whether or not afk kicking is on, and an afk player may not vote (Electorate),
-     * so a player back at the keyboard has to be able to vote at once, not after the next second's check.
+     * Records that [data] gave input that reached the server: a chat line every filter let through, or one of
+     * this plugin's vote commands run. It counts for voting only (see [present]); afk kicking and the afk
+     * statistics follow movement alone, so a chat macro cannot hold off an afk kick.
      */
-    fun markActive(data: PlayerData) {
-        data.afkTime = 0u
-        data.afk = false
+    fun markInput(data: PlayerData) {
+        data.lastInput = timeSource.markNow()
     }
+
+    /**
+     * Present enough to vote: not afk, or gave input (see [markInput]) within the last `afk.time` seconds. The afk
+     * flag is set after `afk.time` idle seconds whether or not afk kicking is on, so a player who watches and
+     * types without moving would otherwise be shut out of votes until they move.
+     */
+    fun present(data: PlayerData): Boolean =
+        !data.afk || data.lastInput?.let { it.elapsedNow() < conf.feature.afk.time.seconds } == true
 
     /**
      * A player with no unit is dead on a team with no core to respawn from - every pvp loser
@@ -887,7 +896,8 @@ object Trigger {
                         }
                     }
                 } else {
-                    markActive(it)
+                    it.afkTime = 0u
+                    it.afk = false
                     it.mousePosition = activityMark(it)
                 }
 

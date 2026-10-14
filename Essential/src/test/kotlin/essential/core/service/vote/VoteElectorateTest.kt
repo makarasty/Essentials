@@ -222,6 +222,8 @@ class VoteElectorateTest {
 
             Vars.netServer.admins.filterMessage(voter.first, "y")
             voter.second.afk = true
+            // ...and afk.time has passed since that "y", which counted as input (Trigger.present)
+            voter.second.lastInput = null
             vote.run()
 
             assertTrue(isVoting, "an afk voter's yes must leave the tally the way they leave the threshold")

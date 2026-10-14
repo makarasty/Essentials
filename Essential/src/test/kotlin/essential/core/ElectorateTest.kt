@@ -1,22 +1,23 @@
 package essential.core
 
+import PluginTest.Companion.clientCommand
 import PluginTest.Companion.err
 import PluginTest.Companion.expectingErrors
 import PluginTest.Companion.leavePlayer
-import PluginTest.Companion.log
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.log
 import PluginTest.Companion.newPlayer
+import PluginTest.Companion.setPermission
 import arc.Core
 import arc.Events
+import arc.util.Log
 import essential.common.database.data.PlayerData
 import essential.common.isVoting
 import essential.common.permission.Permission
 import essential.common.players
+import essential.common.timeSource
 import essential.core.service.vote.VoteSystem
-import mindustry.Vars
-import mindustry.game.EventType.GameOverEvent
-import mindustry.game.EventType.PlayerChatEvent
-import mindustry.gen.Player
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -25,6 +26,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.TestTimeSource
+import mindustry.Vars
+import mindustry.game.EventType.GameOverEvent
+import mindustry.game.EventType.PlayerChatEvent
+import mindustry.gen.Player
 
 /** Stands in for BlockIp.BlockPlugin's static voteRefusal, so the reflective lookup has something to find. */
 object FakeBlockIp {
@@ -71,7 +78,7 @@ class ElectorateTest {
 
     @AfterTest
     fun cleanup() {
-        BlockIpHook.external = null
+        BlockIpHook.replacement = null
         isVoting = false
         Rtv.reset()
         joined.forEach { leavePlayer(it.first) }
@@ -81,7 +88,7 @@ class ElectorateTest {
     private fun join(n: Int) = (1..n).map { newPlayer().also(joined::add) }
 
     private fun useFakeBlockIp() {
-        BlockIpHook.external = assertNotNull(BlockIpHook.lookup(FakeBlockIp::class.java.name))
+        BlockIpHook.replacement = assertNotNull(BlockIpHook.lookup(FakeBlockIp::class.java.name))
     }
 
     private fun gameOverDuring(action: () -> Unit): Boolean {
@@ -99,7 +106,7 @@ class ElectorateTest {
     @Test
     fun withoutBlockIpOnlyEssentialsRulesApply() {
         assertNull(BlockIpHook.lookup("BlockIp.BlockPlugin"), "BlockIP is not on the test classpath")
-        BlockIpHook.external = null
+        BlockIpHook.replacement = null
         val (a, b) = join(2)
         assertTrue(electorate.mayVote(a.second))
         b.second.afk = true
@@ -119,16 +126,29 @@ class ElectorateTest {
     }
 
     @Test
-    fun anAfkPlayersRtvIsRefusedAndAVoteStopsCountingOnceItsVoterGoesAfk() {
+    fun anIdlePlayerWhoVotesIsPresentAndAVoteStopsCountingOnceItsVoterIsAway() {
         val voters = join(4)
         voters[3].second.afk = true
+        assertFalse(electorate.mayVote(voters[3].second), "idle, and no input: away")
         Rtv.vote(voters[3].second)
-        assertEquals(0, Rtv.count, "an afk /rtv is refused")
+        assertEquals(1, Rtv.count, "typing /rtv is input: an idle player who votes is at the keyboard")
 
-        Rtv.vote(voters[0].second)
-        assertEquals(1, Rtv.count)
-        voters[0].second.afk = true
-        assertEquals(0, Rtv.count, "a vote from a player gone afk stops counting")
+        voters[3].second.lastInput = null // as if afk.time passed since
+        assertEquals(0, Rtv.count, "a vote from a player away again stops counting")
+    }
+
+    @Test
+    fun chatSeenBeforeTheFiltersIsNotInputAndDoesNotEndAfk() {
+        val (a) = join(1)
+        a.second.afk = true
+        a.second.afkTime = 7u
+        Events.fire(PlayerChatEvent(a.first, "hello"))
+        assertFalse(electorate.mayVote(a.second), "a line no filter has passed yet proves nothing")
+        assertTrue(a.second.afk)
+        assertEquals(7u, a.second.afkTime.toUInt(), "chat never holds off afk kicking")
+        Trigger.markInput(a.second)
+        assertTrue(electorate.mayVote(a.second), "input within afk.time makes an idle player present")
+        assertTrue(a.second.afk, "but not active")
     }
 
     @Test
@@ -209,26 +229,91 @@ class ElectorateTest {
         }
     }
 
+    /** IDs of two maps that are not the one being played. */
+    private fun twoOtherMaps(): Pair<Int, Int> {
+        val ids = mapsById().indices.filter { !isCurrentMap(mapsById()[it]) }
+        assertTrue(ids.size >= 2, "the test server has at least two maps besides the current one")
+        return ids[0] to ids[1]
+    }
+
     @Test
     fun rtvWithAnIdVotesForThatMapAndAPassPlaysIt() {
-        val maps = mapsById()
-        assertTrue(maps.size >= 2, "the test server has at least two maps")
+        val (id, other) = twoOtherMaps()
+        val map = mapsById()[id]
         val voters = join(4)
         val (a, b, c) = voters
         val name = a.first.plainName()
 
-        Rtv.vote(a.second, "1")
-        assertEquals(maps[1], Rtv.target)
-        assertEquals(log("command.rtv.voted.map", name, 1, 3, maps[1].plainName()), a.second.lastReceivedMessage)
+        Rtv.vote(a.second, "$id")
+        assertEquals(map.file, Rtv.targetFile)
+        assertEquals(log("command.rtv.voted.map", name, 1, 3, map.plainName()), a.second.lastReceivedMessage)
 
-        Rtv.vote(b.second, "0")
-        assertEquals(err("command.rtv.other.map", maps[1].plainName()), b.second.lastReceivedMessage, "another id is refused")
+        Rtv.vote(b.second, "$other")
+        assertEquals(err("command.rtv.other.map", map.plainName()), b.second.lastReceivedMessage, "another id is refused")
         assertEquals(1, Rtv.count)
 
-        Rtv.vote(b.second, "1")
+        Rtv.vote(b.second, "$id")
         assertEquals(2, Rtv.count, "the same id joins the running vote")
+        mapVotes[c.first.uuid()] = mapsById()[other] // a /nextmap round, which the vote's map replaces
         assertTrue(gameOverDuring { Rtv.vote(c.second) }, "no id joins it too")
-        assertEquals(maps[1], Vars.maps.getNextMap(Vars.state.rules.mode(), Vars.state.map), "the vote's map is played next")
+        assertEquals(map.file, Vars.maps.getNextMap(Vars.state.rules.mode(), Vars.state.map)?.file, "the vote's map is played next")
+        assertTrue(mapVotes.isEmpty(), "and the /nextmap tally is not announced over it")
+    }
+
+    @Test
+    fun rtvIsCancelledWhenItsMapLeavesTheServer() {
+        val (id, _) = twoOtherMaps()
+        val map = mapsById()[id]
+        val (a, b, _) = join(3)
+        Rtv.vote(a.second, "$id")
+        Vars.maps.all().remove(map)
+        try {
+            assertFalse(gameOverDuring { Rtv.vote(b.second) })
+            assertEquals(log("command.rtv.map.gone", map.plainName()), b.second.lastReceivedMessage)
+            assertEquals(0, Rtv.count)
+        } finally {
+            Vars.maps.all().add(map)
+        }
+    }
+
+    @Test
+    fun aVoteForTheMapBeingPlayedIsRefused() {
+        val (id, _) = twoOtherMaps()
+        val map = mapsById()[id]
+        val (a) = join(1)
+        val playing = Vars.state.map
+        Vars.state.map = map
+        try {
+            Rtv.vote(a.second, "$id")
+            assertEquals(err("command.vote.map.current", map.plainName()), a.second.lastReceivedMessage)
+            assertEquals(0, Rtv.count)
+        } finally {
+            Vars.state.map = playing
+        }
+    }
+
+    @Test
+    fun aLonePlayerChangesTheMapWithVoteMapEvenWhenTheyMayNotVote() {
+        players.toList().forEach { leavePlayer(it.player) }
+        val (id, _) = twoOtherMaps()
+        val (a) = join(1)
+        setPermission(a.first, "owner", false)
+        refuse(listOf(a))
+        clientCommand.handleMessage("/vote map $id alone", a.first)
+        assertEquals(mapsById()[id].file, Vars.state.map.file, "alone, vote map is a direct change, not a vote")
+    }
+
+    @Test
+    fun voteMapIsRefusedToAPlayerWhoMayNotVoteOnceAnotherPlayerIsOn() {
+        val (id, _) = twoOtherMaps()
+        val (a, _) = join(2)
+        setPermission(a.first, "owner", false)
+        refuse(listOf(a))
+        val playing = Vars.state.map.file
+        clientCommand.handleMessage("/vote map $id together", a.first)
+        assertEquals(err("command.vote.ineligible"), a.second.lastReceivedMessage)
+        assertEquals(playing, Vars.state.map.file)
+        assertFalse(isVoting)
     }
 
     @Test
@@ -236,18 +321,19 @@ class ElectorateTest {
         val (a) = join(1)
         Rtv.vote(a.second, "9999")
         assertEquals(err("command.rtv.map.invalid", "9999"), a.second.lastReceivedMessage)
-        Rtv.vote(a.second, "abc")
-        assertEquals(err("command.rtv.map.invalid", "abc"), a.second.lastReceivedMessage)
+        Rtv.vote(a.second, "no-such-map-name")
+        assertEquals(err("command.rtv.map.invalid", "no-such-map-name"), a.second.lastReceivedMessage)
         assertEquals(0, Rtv.count)
     }
 
     @Test
     fun rtvWithoutAnIdIsForTheNextMapAndRefusesAnIdWhileItRuns() {
+        val (id, _) = twoOtherMaps()
         val (a, b, _) = join(3)
         Rtv.vote(a.second)
-        assertNull(Rtv.target)
+        assertNull(Rtv.targetFile)
         assertEquals(log("command.rtv.voted", a.first.plainName(), 1, 2), a.second.lastReceivedMessage)
-        Rtv.vote(b.second, "0")
+        Rtv.vote(b.second, "$id")
         assertEquals(err("command.rtv.other.next"), b.second.lastReceivedMessage)
         assertEquals(1, Rtv.count)
     }
@@ -260,17 +346,29 @@ class ElectorateTest {
     }
 
     @Test
-    fun aChatLineOrCommandEndsAfkAtOnce() {
+    fun aFailingHookFallsBackToEssentialsRulesAndLogsAtMostOnceAMinute() {
         val (a) = join(1)
-        a.second.afk = true
-        Events.fire(PlayerChatEvent(a.first, "/rtv"))
-        assertTrue(electorate.mayVote(a.second), "a player who typed something is back and may vote")
-    }
-
-    @Test
-    fun aFailingHookFallsBackToEssentialsRules() {
-        val (a) = join(1)
-        BlockIpHook.external = { _, _, _ -> throw IllegalStateException("broken") }
-        assertTrue(expectingErrors("BlockIP's vote rule failed") { electorate.mayVote(a.second) })
+        val clock = TestTimeSource()
+        BlockIpHook.clock = clock
+        BlockIpHook.replacement = { _, _, _ -> throw IllegalStateException("broken") }
+        val logged = AtomicInteger()
+        val previous = Log.logger
+        Log.logger = Log.LogHandler { level, text ->
+            if (text.contains("BlockIP's vote rule failed")) logged.incrementAndGet()
+            previous.log(level, text)
+        }
+        try {
+            expectingErrors("BlockIP's vote rule failed") {
+                assertTrue(electorate.mayVote(a.second), "a failing hook allows")
+                assertTrue(electorate.mayVote(a.second))
+                assertEquals(1, logged.get(), "logged once")
+                clock += ElectorateTuning.HOOK_FAILURE_LOG_MINUTES.minutes
+                electorate.mayVote(a.second)
+                assertEquals(2, logged.get(), "and again a minute later")
+            }
+        } finally {
+            Log.logger = previous
+            BlockIpHook.clock = timeSource
+        }
     }
 }

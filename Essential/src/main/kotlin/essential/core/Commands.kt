@@ -277,6 +277,17 @@ class Commands {
          * fires one. The flush first is so that rows still sitting in the buffer cannot land after the
          * table has been emptied.
          */
+        /** Replaces the world with [map] now, in [mode]: /changemap, and `vote map` from a player alone on the server. */
+        private fun loadMapNow(map: Map, mode: Gamemode) {
+            val reloader = WorldReloader()
+            reloader.begin()
+            Vars.world.loadMap(map, map.applyRules(mode))
+            Vars.state.rules = Vars.state.map.applyRules(mode)
+            Vars.logic.play()
+            reloader.end()
+            discardWorldHistory()
+        }
+
         private fun discardWorldHistory() {
             scope.launch {
                 WorldHistoryBuffer.flush()
@@ -323,17 +334,7 @@ class Commands {
 
     @ClientCommand("changemap", "<name> [gamemode]", "Change the world or game mode immediately.")
     fun changeMap(playerData: PlayerData, arg: Array<out String>) {
-        val arr = HashMap<Int, Map>()
-        mapsById().forEachIndexed { index, map ->
-            arr[index] = map
-        }
-
-        val map: Map? = if (arg[0].toIntOrNull() != null) {
-            arr[arg[0].toInt()]
-        } else {
-            Vars.maps.all().find { e -> e.name().contains(arg[0], true) }
-        }
-
+        val map = findMap(arg[0])
         if (map != null) {
             try {
                 val mode = if (arg.size != 1) {
@@ -341,14 +342,7 @@ class Commands {
                 } else {
                     Vars.state.rules.mode()
                 }
-
-                val reloader = WorldReloader()
-                reloader.begin()
-                Vars.world.loadMap(map, map.applyRules(mode))
-                Vars.state.rules = Vars.state.map.applyRules(mode)
-                Vars.logic.play()
-                reloader.end()
-                discardWorldHistory()
+                loadMapNow(map, mode)
             } catch (_: IllegalArgumentException) {
                 playerData.err("command.changeMap.mode.not.found", arg[1])
             }
@@ -2842,6 +2836,7 @@ class Commands {
             }
         }
 
+        Trigger.markInput(playerData)
         if (arg.isEmpty()) {
             playerData.err("command.vote.arg.empty")
             return
@@ -2873,7 +2868,7 @@ class Commands {
         // can be blocked from starting any vote by players elsewhere on the map who were never going to
         // vote in it anyway. The starter is seeded as the first yes, so they have to be able to vote too.
         // A lone player's `vote map` is no vote at all (the solo hatch below loads the map directly).
-        val electorate = Electorate(Electorate.VOTE, if (Vars.state.rules.pvp) playerData.player.team() else null)
+        val electorate = Electorate.forVote(playerData.player.team())
         if (!solo && !electorate.mayVote(playerData, starts = arg[0] == "kick")) {
             playerData.err("command.vote.ineligible")
             return
@@ -2938,60 +2933,29 @@ class Commands {
                     playerData.err(noReason)
                     return
                 }
-                try {
-                    var target: Map? = null
-                    // Index lookup only applies when arg[1] is numeric; the name search below must run
-                    // regardless, or a real map name never reaches it and this branch always fails.
-                    if (arg[1].toIntOrNull() != null) {
-                        val list = mapsById()
-                        val arr = HashMap<Map, Int>()
-                        list.forEachIndexed { index, map ->
-                            arr[map] = index
-                        }
-                        arr.forEach {
-                            if (it.value == arg[1].toInt()) {
-                                target = it.key
-                                return@forEach
-                            }
-                        }
-                    }
-
-                    if (target == null) {
-                        target = Vars.maps.all().find { e -> e.plainName().contains(arg[1]) }
-                    }
-
-                    if (target != null) {
-                        if (players.size != 1) {
-                            // gg/skip/random/draw all obey this cooldown; map did not. The solo path below
-                            // is a direct change with no vote and is rightly exempt, same as the gate above.
-                            if (!nextVoteAvailable.hasPassedNow()) {
-                                playerData.err(coolTime)
-                            } else {
-                                val voteData = VoteData(
-                                    type = VoteType.Map,
-                                    map = target,
-                                    reason = arg[2],
-                                    starter = playerData
-                                )
-                                nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
-                                start(voteData)
-                            }
-                        } else {
-                            isSurrender = true
-                            val currentRule = Vars.state.rules.mode()
-                            val reloader = WorldReloader()
-                            reloader.begin()
-                            Vars.world.loadMap(target, target.applyRules(currentRule))
-                            Vars.state.rules = Vars.state.map.applyRules(currentRule)
-                            Vars.logic.play()
-                            reloader.end()
-                            discardWorldHistory()
-                        }
-                    } else {
-                        playerData.err(mapNotFound)
-                    }
-                } catch (_: IndexOutOfBoundsException) {
+                val target = findMap(arg[1])
+                if (target == null) {
                     playerData.err(mapNotFound)
+                } else if (isCurrentMap(target)) {
+                    playerData.err("command.vote.map.current", target.plainName())
+                } else if (players.size != 1) {
+                    // gg/skip/random/draw all obey this cooldown; map did not. The solo path below
+                    // is a direct change with no vote and is rightly exempt, same as the gate above.
+                    if (!nextVoteAvailable.hasPassedNow()) {
+                        playerData.err(coolTime)
+                    } else {
+                        val voteData = VoteData(
+                            type = VoteType.Map,
+                            map = target,
+                            reason = arg[2],
+                            starter = playerData
+                        )
+                        nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
+                        start(voteData)
+                    }
+                } else {
+                    isSurrender = true
+                    loadMapNow(target, Vars.state.rules.mode())
                 }
             }
 
@@ -3144,80 +3108,58 @@ class Commands {
             return
         }
 
-        try {
-            var target: Map? = null
-            if (arg[0].toIntOrNull() != null) {
-                val list = mapsById()
-                val arr = HashMap<Map, Int>()
-                list.forEachIndexed { index, map ->
-                    arr[map] = index
-                }
-                arr.forEach {
-                    if (it.value == arg[0].toInt()) {
-                        target = it.key
-                        return@forEach
-                    }
-                }
+        val target = findMap(arg[0])
+        if (target != null) {
+            val playerUuid = playerData.uuid
+            // mapVotes only empties between rounds (the game-over handler clears it), so seeing it
+            // empty right before this vote lands means a fresh round is starting and any earlier
+            // admin override no longer applies to it.
+            if (mapVotes.isEmpty()) {
+                nextMapAdminOverride = null
             }
 
-            if (target == null) {
-                target = Vars.maps.all().find { e -> e.plainName().contains(arg[0]) }
-            }
-
-            if (target != null) {
-                val playerUuid = playerData.uuid
-                // mapVotes only empties between rounds (the game-over handler clears it), so seeing it
-                // empty right before this vote lands means a fresh round is starting and any earlier
-                // admin override no longer applies to it.
-                if (mapVotes.isEmpty()) {
+            // Check if player already voted for this map
+            if (mapVotes[playerUuid] == target) {
+                // Cancel the vote
+                mapVotes.remove(playerUuid)
+                playerData.send("command.nextmap.vote.canceled", target.plainName())
+                if (nextMapAdminOverride == target) {
                     nextMapAdminOverride = null
                 }
-
-                // Check if player already voted for this map
-                if (mapVotes[playerUuid] == target) {
-                    // Cancel the vote
-                    mapVotes.remove(playerUuid)
-                    playerData.send("command.nextmap.vote.canceled", target.plainName())
-                    if (nextMapAdminOverride == target) {
-                        nextMapAdminOverride = null
-                    }
-                } else {
-                    // Record the vote
-                    val previousVote = mapVotes.put(playerUuid, target)
-
-                    if (previousVote != null) {
-                        playerData.send("command.nextmap.vote.changed", previousVote.plainName(), target.plainName())
-                    } else {
-                        playerData.send("command.nextmap.vote.cast", target.plainName())
-                    }
-
-                    // If admin, they can still override the next map. That choice is remembered so the
-                    // tally below - which runs after every vote from here on, including someone else's -
-                    // re-affirms it instead of silently recomputing over it.
-                    if (Permission.check(playerData, "nextmap.admin")) {
-                        nextMapAdminOverride = target
-                        Vars.maps.setNextMapOverride(target)
-                        playerData.send("command.nextmap.set", target.plainName())
-                        return
-                    }
-                }
-
-                if (mapVotes.isNotEmpty()) {
-                    val winner = nextMapAdminOverride ?: run {
-                        val voteCount = HashMap<Map, Int>()
-                        mapVotes.values.forEach { map ->
-                            voteCount[map] = voteCount.getOrDefault(map, 0) + 1
-                        }
-                        voteCount.maxByOrNull { it.value }?.key
-                    }
-                    if (winner != null) {
-                        Vars.maps.setNextMapOverride(winner)
-                    }
-                }
             } else {
-                playerData.err("command.nextmap.not.found")
+                // Record the vote
+                val previousVote = mapVotes.put(playerUuid, target)
+
+                if (previousVote != null) {
+                    playerData.send("command.nextmap.vote.changed", previousVote.plainName(), target.plainName())
+                } else {
+                    playerData.send("command.nextmap.vote.cast", target.plainName())
+                }
+
+                // If admin, they can still override the next map. That choice is remembered so the
+                // tally below - which runs after every vote from here on, including someone else's -
+                // re-affirms it instead of silently recomputing over it.
+                if (Permission.check(playerData, "nextmap.admin")) {
+                    nextMapAdminOverride = target
+                    Vars.maps.setNextMapOverride(target)
+                    playerData.send("command.nextmap.set", target.plainName())
+                    return
+                }
             }
-        } catch (_: IndexOutOfBoundsException) {
+
+            if (mapVotes.isNotEmpty()) {
+                val winner = nextMapAdminOverride ?: run {
+                    val voteCount = HashMap<Map, Int>()
+                    mapVotes.values.forEach { map ->
+                        voteCount[map] = voteCount.getOrDefault(map, 0) + 1
+                    }
+                    voteCount.maxByOrNull { it.value }?.key
+                }
+                if (winner != null) {
+                    Vars.maps.setNextMapOverride(winner)
+                }
+            }
+        } else {
             playerData.err("command.nextmap.not.found")
         }
     }
