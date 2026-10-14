@@ -8,6 +8,8 @@ import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
 import essential.common.rootPath
 import essential.common.util.findPlayerData
+import essential.core.KeyboardLayout
+import essential.core.Main
 import essential.core.service.chat.ChatFormatResolver.resolve
 import essential.core.service.chat.ChatService.Companion.conf
 import ksp.event.Event
@@ -96,8 +98,22 @@ fun markPublicChat(event: EventType.PlayerChatEvent) {
     if (!ChatTranslator.active(conf.translate)) return
     // A command clears the mark rather than leaving it: a public line a filter dropped earlier this frame
     // would otherwise mark the /t that follows from the same player, and translate team chat for everyone.
-    publicSender = if (event.message.startsWith(Vars.netServer.clientCommands.prefix)) null else event.player
+    publicSender = if (isCommand(event.message)) null else event.player
     Core.app.post { publicSender = null }
+}
+
+/**
+ * A command typed with the prefix, or one the keyboard-layout filter will run from ".е msg" (/t) or
+ * ".ф msg" (/a) inside the filter chain, where the formatter it calls would otherwise find this line marked.
+ */
+private fun isCommand(message: String): Boolean {
+    val handler = Vars.netServer.clientCommands
+    return message.startsWith(handler.prefix) || (Main.conf.command.layoutFix && KeyboardLayout.fix(handler, message) != null)
+}
+
+@Event
+fun forgetTranslationSender(event: EventType.PlayerLeave) {
+    if (ChatTranslator.active(conf.translate)) ChatTranslator.forget(event.player.uuid())
 }
 
 @Event

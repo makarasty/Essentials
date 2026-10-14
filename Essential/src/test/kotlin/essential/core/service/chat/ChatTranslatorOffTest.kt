@@ -11,6 +11,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 /**
  * The translator ships off. With the default config a chat line between two players of different languages
@@ -63,6 +64,30 @@ class ChatTranslatorOffTest {
             // A filter dropped that line, so the formatter never consumed the mark. Team chat comes next
             // in the same frame: it must not inherit it, or /t would be translated for both teams.
             markPublicChat(EventType.PlayerChatEvent(player, "/t secret plan"))
+            assertNull(publicSender)
+        } finally {
+            conf.enabled = false
+            conf.google = false
+            publicSender = null
+            leavePlayer(player)
+        }
+    }
+
+    @Test
+    fun aLayoutFixedTeamCommandIsNotPublic() {
+        // ".е msg" is /t typed on a Cyrillic layout; the layout filter runs it inside the filter chain, and
+        // the team-chat formatter call it makes must not find the line marked public.
+        val (player, _) = newPlayer()
+        val conf = ChatService.conf.translate
+        try {
+            conf.enabled = true
+            conf.google = true
+            assertTrue(essential.core.Main.conf.command.layoutFix, "the shipped default")
+            markPublicChat(EventType.PlayerChatEvent(player, "hello there"))
+            assertSame(player, publicSender)
+            markPublicChat(EventType.PlayerChatEvent(player, ".е secret plan"))
+            assertNull(publicSender)
+            markPublicChat(EventType.PlayerChatEvent(player, ".ф admins only"))
             assertNull(publicSender)
         } finally {
             conf.enabled = false
