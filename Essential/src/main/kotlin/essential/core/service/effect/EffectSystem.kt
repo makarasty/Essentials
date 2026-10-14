@@ -12,6 +12,8 @@ import mindustry.content.Fx
 import mindustry.entities.Effect
 import mindustry.gen.Call
 import mindustry.gen.Playerc
+import mindustry.net.NetConnection
+import kotlin.math.abs
 import kotlin.random.Random
 
 /**
@@ -21,6 +23,10 @@ import kotlin.random.Random
 private val hexColorCache = HashMap<String, Color>()
 
 class EffectSystem : Timer.Task() {
+    companion object {
+        /** Eight tiles of camera travel between a client's view report and an effect reaching it. */
+        private const val VIEW_MARGIN = 8f * Vars.tilesize
+    }
     class EffectPos(
         val player: Playerc,
         val effect: Effect,
@@ -362,9 +368,22 @@ class EffectSystem : Timer.Task() {
             val x = unit.x + it.offsetX + (it.random?.random() ?: 0)
             val y = unit.y + it.offsetY + (it.random?.random() ?: 0)
             target.forEach { p ->
-                Call.effect(p.con(), it.effect, x, y, it.rotate, it.color)
+                if (inView(p.con(), x, y, it.effect.clip)) Call.effect(p.con(), it.effect, x, y, it.rotate, it.color)
             }
         }
+    }
+
+    /**
+     * Whether a viewer could draw an effect at ([x], [y]). The client drops an effect whose clip
+     * rectangle misses its camera when it arrives (Effect.create), so a packet sent outside the view
+     * it last reported only costs bandwidth. [VIEW_MARGIN] covers the camera moving between that
+     * report and the packet landing. A connection that has not reported a view yet gets everything.
+     */
+    internal fun inView(con: NetConnection?, x: Float, y: Float, clip: Float): Boolean {
+        if (con == null || con.viewWidth <= 0f || con.viewHeight <= 0f) return true
+        val margin = clip + VIEW_MARGIN
+        return abs(x - con.viewX) <= con.viewWidth / 2f + margin &&
+            abs(y - con.viewY) <= con.viewHeight / 2f + margin
     }
 
     /**
