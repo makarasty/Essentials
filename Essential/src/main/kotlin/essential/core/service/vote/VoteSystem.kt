@@ -13,6 +13,7 @@ import essential.common.permission.Permission
 import essential.common.util.findPlayerData
 import essential.core.Electorate
 import essential.core.earnEXP
+import essential.core.endMap
 import essential.core.ModuleRuntime
 import essential.core.VoteData
 import essential.core.VoteType
@@ -389,9 +390,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                             for (it in players) {
                                 earnEXP(Vars.state.rules.waveTeam, it.player, it, true)
                             }
-                            isSurrender = true
-                            Vars.maps.setNextMapOverride(voteData.map)
-                            Events.fire(GameOverEvent(Vars.state.rules.waveTeam))
+                            endMap(voteData.map)
                         }
 
                         VoteType.GameOver -> {
@@ -405,8 +404,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                     }
                                 }
                             } else {
-                                isSurrender = true
-                                Events.fire(GameOverEvent(Vars.state.rules.waveTeam))
+                                endMap()
                             }
                         }
 

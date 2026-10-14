@@ -1,6 +1,8 @@
 package essential.core
 
+import PluginTest.Companion.err
 import PluginTest.Companion.leavePlayer
+import PluginTest.Companion.log
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import arc.Core
@@ -200,5 +202,48 @@ class ElectorateTest {
         } finally {
             Core.settings.remove("essential-device-$uuid")
         }
+    }
+
+    @Test
+    fun rtvWithAnIdVotesForThatMapAndAPassPlaysIt() {
+        val maps = mapsById()
+        assertTrue(maps.size >= 2, "the test server has at least two maps")
+        val voters = join(4)
+        val (a, b, c) = voters
+        val name = a.first.plainName()
+
+        Rtv.vote(a.second, "1")
+        assertEquals(maps[1], Rtv.target)
+        assertEquals(log("command.rtv.voted.map", name, 1, 3, maps[1].plainName()), a.second.lastReceivedMessage)
+
+        Rtv.vote(b.second, "0")
+        assertEquals(err("command.rtv.other.map", maps[1].plainName()), b.second.lastReceivedMessage, "another id is refused")
+        assertEquals(1, Rtv.count)
+
+        Rtv.vote(b.second, "1")
+        assertEquals(2, Rtv.count, "the same id joins the running vote")
+        assertTrue(gameOverDuring { Rtv.vote(c.second) }, "no id joins it too")
+        assertEquals(maps[1], Vars.maps.getNextMap(Vars.state.rules.mode(), Vars.state.map), "the vote's map is played next")
+    }
+
+    @Test
+    fun rtvRefusesAnIdThatIsNoMap() {
+        val (a) = join(1)
+        Rtv.vote(a.second, "9999")
+        assertEquals(err("command.rtv.map.invalid", "9999"), a.second.lastReceivedMessage)
+        Rtv.vote(a.second, "abc")
+        assertEquals(err("command.rtv.map.invalid", "abc"), a.second.lastReceivedMessage)
+        assertEquals(0, Rtv.count)
+    }
+
+    @Test
+    fun rtvWithoutAnIdIsForTheNextMapAndRefusesAnIdWhileItRuns() {
+        val (a, b, _) = join(3)
+        Rtv.vote(a.second)
+        assertNull(Rtv.target)
+        assertEquals(log("command.rtv.voted", a.first.plainName(), 1, 2), a.second.lastReceivedMessage)
+        Rtv.vote(b.second, "0")
+        assertEquals(err("command.rtv.other.next"), b.second.lastReceivedMessage)
+        assertEquals(1, Rtv.count)
     }
 }

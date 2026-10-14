@@ -1,14 +1,11 @@
 package essential.core
 
-import arc.Events
 import arc.util.Timer
 import essential.common.database.data.PlayerData
-import essential.common.isSurrender
 import essential.common.players
 import essential.common.timeSource
 import essential.core.Main.Companion.conf
-import mindustry.Vars
-import mindustry.game.EventType.GameOverEvent
+import mindustry.maps.Map
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.ceil
 import kotlin.time.Duration.Companion.seconds
@@ -19,6 +16,10 @@ object Rtv {
     private val cooldown = ConcurrentHashMap<String, TimeMark>()
     private var timeout: Timer.Task? = null
     private var deadline: TimeMark? = null
+
+    /** The map the running vote is for; null for the next map. */
+    internal var target: Map? = null
+        private set
     private var changing = false
 
     /** Votes that count: from players who may still vote (see [Electorate]). Ones gone afk count again once back. */
@@ -27,12 +28,21 @@ object Rtv {
     /** Sized from the players who may vote now, late joiners included: anyone who may vote, may vote here. */
     val required: Int get() = requiredFor(Electorate.count())
 
-    fun vote(playerData: PlayerData) {
+    /**
+     * A vote to move on: to the next map, or with [id] (an ID /maps shows) to that map. The first vote sets the
+     * target; later ones without an id, or with the same one, join it, and another id is refused until it ends.
+     */
+    fun vote(playerData: PlayerData, id: String? = null) {
         val settings = conf.feature.vote.rtv
         val uuid = playerData.uuid
 
         if (changing) {
             playerData.err("command.rtv.changing")
+            return
+        }
+        val map = id?.let { mapsById().getOrNull(it.toIntOrNull() ?: -1) }
+        if (id != null && map == null) {
+            playerData.err("command.rtv.map.invalid", id)
             return
         }
         if (!Electorate.mayVote(playerData)) {
@@ -44,18 +54,30 @@ object Rtv {
             playerData.err("command.rtv.cooldown")
             return
         }
+        val running = votes.isNotEmpty()
+        if (running && map != null && map != target) {
+            val other = target
+            if (other == null) playerData.err("command.rtv.other.next") else playerData.err("command.rtv.other.map", other.plainName())
+            return
+        }
         cooldown[uuid] = timeSource.markNow().plus(settings.cooldown.seconds)
 
         if (!votes.add(uuid)) {
             playerData.err("command.rtv.already", count, required)
             return
         }
-        if (votes.size == 1) startTimeout(settings.timeout)
+        if (!running) {
+            target = map
+            startTimeout(settings.timeout)
+        }
 
-        if (required == 1) {
-            broadcast("command.rtv.alone", playerData.player.plainName())
-        } else {
-            broadcast("command.rtv.voted", playerData.player.plainName(), count, required)
+        val name = playerData.player.plainName()
+        val to = target?.plainName()
+        when {
+            required == 1 && to == null -> broadcast("command.rtv.alone", name)
+            required == 1 -> broadcast("command.rtv.alone.map", name, to!!)
+            to == null -> broadcast("command.rtv.voted", name, count, required)
+            else -> broadcast("command.rtv.voted.map", name, count, required, to)
         }
         if (count >= required) change()
     }
@@ -68,7 +90,10 @@ object Rtv {
         }
         // The leaver is still in players while PlayerLeave runs
         val needed = requiredFor(players.count { it.uuid != uuid && Electorate.mayVote(it) })
-        if (voted) broadcast("command.rtv.left", name, count, needed)
+        val to = target?.plainName()
+        if (voted) {
+            if (to == null) broadcast("command.rtv.left", name, count, needed) else broadcast("command.rtv.left.map", name, count, needed, to)
+        }
         if (count >= needed) change()
     }
 
@@ -82,11 +107,11 @@ object Rtv {
         ceil(conf.feature.vote.rtv.ratio * playerCount).toInt().coerceAtLeast(1)
 
     private fun change() {
+        val map = target
         clearVotes()
         changing = true
         broadcast("command.rtv.done")
-        isSurrender = true
-        Events.fire(GameOverEvent(Vars.state.rules.waveTeam))
+        endMap(map)
     }
 
     /**
@@ -114,6 +139,7 @@ object Rtv {
         timeout?.cancel()
         timeout = null
         deadline = null
+        target = null
         votes.clear()
     }
 

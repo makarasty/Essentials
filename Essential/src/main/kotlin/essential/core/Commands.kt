@@ -324,7 +324,7 @@ class Commands {
     @ClientCommand("changemap", "<name> [gamemode]", "Change the world or game mode immediately.")
     fun changeMap(playerData: PlayerData, arg: Array<out String>) {
         val arr = HashMap<Int, Map>()
-        Vars.maps.all().sortedBy { a -> a.name() }.forEachIndexed { index, map ->
+        mapsById().forEachIndexed { index, map ->
             arr[index] = map
         }
 
@@ -1261,7 +1261,7 @@ class Commands {
 
     @ClientCommand("maps", "[page]", "Show server map lists")
     fun maps(playerData: PlayerData) {
-        val list = Vars.maps.all().sortedBy { a -> a.name() }
+        val list = mapsById()
         val bundle = playerData.bundle
         val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
         val buffer = Mathf.ceil(list.size.toFloat() / CommandsTuning.LIST_PAGE_SIZE)
@@ -2477,9 +2477,9 @@ class Commands {
         vote(playerData, arrayOf("map", arg[0], playerData.bundle["command.votemap.reason"]))
     }
 
-    @ClientCommand("rtv", "", "Vote to move on to the next map")
-    fun rtv(playerData: PlayerData) {
-        Rtv.vote(playerData)
+    @ClientCommand("rtv", "[id]", "Vote to move on to the next map, or to the map with this ID (see /maps)")
+    fun rtv(playerData: PlayerData, arg: Array<out String>) {
+        Rtv.vote(playerData, arg.firstOrNull())
     }
 
     @ClientCommand("team", "<team> [name]", "Set player team")
@@ -2942,7 +2942,7 @@ class Commands {
                     // Index lookup only applies when arg[1] is numeric; the name search below must run
                     // regardless, or a real map name never reaches it and this branch always fails.
                     if (arg[1].toIntOrNull() != null) {
-                        val list = Vars.maps.all().sortedBy { a -> a.name() }
+                        val list = mapsById()
                         val arr = HashMap<Map, Int>()
                         list.forEachIndexed { index, map ->
                             arr[map] = index
@@ -3146,7 +3146,7 @@ class Commands {
         try {
             var target: Map? = null
             if (arg[0].toIntOrNull() != null) {
-                val list = Vars.maps.all().sortedBy { a -> a.name() }
+                val list = mapsById()
                 val arr = HashMap<Map, Int>()
                 list.forEachIndexed { index, map ->
                     arr[map] = index
