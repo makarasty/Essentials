@@ -300,4 +300,31 @@ class DeviceBindingTest {
             Permission.setAuthDefault(before)
         }
     }
+    /** Demoting an online admin by editing permission_user.yaml and reloading drops the binding and flag. */
+    @Test
+    fun aFileDemotionDropsTheBinding() {
+        val admins = Vars.netServer.admins
+        val userFile = rootPath.child("permission_user.yaml")
+        val good = userFile.readString()
+        val (target, _) = newPlayer()
+        val uuid = target.uuid()
+        try {
+            userFile.writeString(good.trimEnd() + "\n$uuid:\n  group: admin\n", false)
+            Permission.load()
+            PluginTest.pumpApp()
+            assertEquals(target.usid(), Permission.boundDevice(uuid), "the file promotion binds the session")
+            assertTrue(admins.getInfo(uuid).admin)
+
+            userFile.writeString(good.trimEnd() + "\n$uuid:\n  group: user\n", false)
+            Permission.load()
+            PluginTest.pumpApp()
+            assertNull(Permission.boundDevice(uuid), "the file demotion drops the binding")
+            assertFalse(admins.getInfo(uuid).admin, "and the vanilla flag")
+            assertFalse(target.admin())
+        } finally {
+            userFile.writeString(good, false)
+            Permission.load()
+            leavePlayer(target)
+        }
+    }
 }

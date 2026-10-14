@@ -154,6 +154,7 @@ object Permission {
 
         main = roles
         fileDefault = nextDefault
+        val previousEntries = user?.keys.orEmpty()
 
         try {
             if (userFile.exists()) {
@@ -183,10 +184,11 @@ object Permission {
             Log.warn(bundle["permission.user.file.invalid", userFileError!!])
         }
 
-        apply()
+        apply(previousEntries)
     }
 
-    fun apply() {
+    /** [previous] are the uuids the file named before this load; an entry dropped since is a demotion too. */
+    fun apply(previous: Set<String> = emptySet()) {
         // Writes Mindustry player entities - admin() and name() - so it is only correct on the game
         // thread, and /reload calls Permission.load() on Dispatchers.IO. The hop is here rather than at
         // that caller so a later caller cannot get it wrong, and `user` is read inside the work rather
@@ -201,13 +203,20 @@ object Permission {
                     offline[uuid] = permissionData
                 } else {
                     player.permission = permissionData.group
-                    if (rank(permissionData.group) > 0 || permissionData.admin) bindSession(uuid)
+                    // A file edit is an explicit decision: a demotion drops the binding and the flag.
+                    syncVanillaAdmin(uuid, permissionData.group)
                     player.player.admin(isAdmin(uuid, permissionData.group))
                     if (permissionData.name.isNotEmpty() && !heldBack(uuid)) {
                         player.name = permissionData.name
                         player.player.name(permissionData.name)
                     }
                 }
+            }
+            // The entry's group was already written into the row, so a dropped entry falls back to it.
+            for (uuid in previous - loaded.keys) {
+                val data = online[uuid] ?: continue
+                syncVanillaAdmin(uuid, data.permission)
+                data.player.admin(isAdmin(uuid, data.permission))
             }
             if (offline.isNotEmpty()) applyOffline(offline)
         }
