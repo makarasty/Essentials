@@ -580,7 +580,7 @@ Public chat translated into each reader's language. The message itself goes out 
 
 Backends are tried in this order: Google (``google``), each of ``groqModels`` when ``groqKey`` is set, each of ``geminiModels`` when ``geminiKey`` is set. All have free tiers. The Google endpoint is unofficial and needs no key; Groq and Gemini allow roughly 30 and 15 requests a minute on their free plans, so they are fallbacks for an outage, not a replacement at peak. On the free Gemini tier Google may use the text sent to it for training. All servers on one host share the host's address, and so share Google's limit.
 
-Nothing runs while it is off or has no backend: no thread, no request, and chat is handled exactly as without it. To turn it on, set ``enabled``, at least one of ``google``, ``groqKey`` or ``geminiKey``, and add the ``tr`` node to the groups in ``permission.yaml`` that should have ``/tr`` (no group has it by default).
+Nothing runs while it is off or has no backend: no thread, no request, and chat is handled exactly as without it. To turn it on, set ``enabled``, at least one of ``google``, ``groqKey`` or ``geminiKey``. ``visitor`` and ``user`` hold ``tr``, so players can turn the lines off for themselves with ``/tr``.
 
 Each player gets a few translated messages in a burst and then one every six seconds, and one server sends at most 5000 backend requests a UTC day; past either limit messages stay untranslated. A translation is shown as a single line no longer than about twice the original, and is checked against ``chat_blacklist.txt`` like the message itself. Each language model request carries a single player's message, so one player's text cannot change the translation of another's.
 

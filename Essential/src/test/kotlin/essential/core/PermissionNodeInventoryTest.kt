@@ -70,16 +70,13 @@ class PermissionNodeInventoryTest {
          *   one too when `feature.vote.enableVotekick` is off, and then neither route exists and
          *   `/votekick` answers "Unknown command". An operator who turns the feature on and wants
          *   the plugin's version under that name grants `votekick` in their own file.
-         * - `tr` toggles chat translation, which ships off. Granting it by default would hand every
-         *   player a command for a feature that is not running; an operator who turns
-         *   `translate.enabled` on grants `tr` to the groups that should have it.
          *
          * A command added without a grant, or a grant added without removing its entry here, fails
          * this test rather than shipping quietly.
          */
         private val ONLY_OWNER = setOf(
             "broadcast", "changename", "exp", "fuck", "hub.build", "js", "kickall", "killall",
-            "killunit", "log", "setitem", "setperm", "tr", "unban", "votekick", "ws",
+            "killunit", "log", "setitem", "setperm", "unban", "votekick", "ws",
         )
 
         private val yaml = Yaml(configuration = YamlConfiguration(strictMode = false))
