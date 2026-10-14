@@ -132,6 +132,25 @@ internal object PermissionTuning {
 
     /** Uuids named in the "no player row yet" log line before the list is cut off. */
     const val UNPERSISTED_LOG_SAMPLE = 10
+
+    /**
+     * IPs one privileged uuid is trusted from fleet-wide (players.admin_trust). The oldest goes when a
+     * confirm adds one more: a home, a phone and one other place, not a history.
+     */
+    const val TRUST_MAX_ENTRIES = 3
+
+    /**
+     * Days a trusted IP stays trusted after the last join that used it. An admin who plays at least
+     * this often never needs a second confirm; an address the ISP hands to somebody else expires.
+     */
+    const val TRUST_TTL_DAYS = 30L
+
+    /**
+     * Seconds between two reads of the online players' group and trust from the shared row, and two
+     * looks at permission_user.yaml's modification time. A demotion made on another server reaches a
+     * session here within this long. One query per server for all its online players together.
+     */
+    const val REFRESH_SECONDS = 30f
 }
 
 /** Player lookup by name, id or uuid (essential.common.util.PlayerLookup). */

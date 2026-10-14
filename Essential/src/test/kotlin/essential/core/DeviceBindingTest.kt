@@ -61,9 +61,9 @@ class DeviceBindingTest {
         }
     }
 
-    /** An offline promote binds nothing; the player's own next join does. */
+    /** An offline promote binds nothing, and neither does the player's own next join: no trust on first use. */
     @Test
-    fun anOfflinePromoteBindsAtTheNextJoin() {
+    fun anOfflinePromoteBindsNothingUntilConfirmed() {
         val admins = Vars.netServer.admins
         val (target, _) = newPlayer()
         val uuid = target.uuid()
@@ -78,7 +78,10 @@ class DeviceBindingTest {
 
         val (back, _) = rejoin(uuid, usid)
         try {
-            assertEquals(usid, Permission.boundDevice(uuid), "the own join binds the connecting device")
+            assertNull(Permission.boundDevice(uuid), "the own join binds nothing without a trusted IP")
+            assertFalse(back.admin())
+            Permission.bindDevice(uuid, usid, back.ip())
+            assertEquals(usid, Permission.boundDevice(uuid), "the confirm binds the connecting device")
             assertTrue(back.admin())
         } finally {
             leavePlayer(back)
@@ -147,7 +150,9 @@ class DeviceBindingTest {
             userFile.writeString(good.trimEnd() + "\n$uuid:\n  name: BoundName\n  group: user\n  admin: true\n", false)
             Permission.load()
             PluginTest.pumpApp()
-            assertEquals(usid, Permission.boundDevice(uuid), "the online session is bound on reload")
+            assertNull(Permission.boundDevice(uuid), "a file entry is not a confirm")
+            Permission.bindDevice(uuid, usid, target.ip())
+            assertEquals(usid, Permission.boundDevice(uuid))
             assertTrue(target.admin(), "the bound device gets the file's admin flag")
             assertEquals("BoundName", target.name(), "and the file's display name")
             leavePlayer(target)
@@ -312,14 +317,17 @@ class DeviceBindingTest {
             userFile.writeString(good.trimEnd() + "\n$uuid:\n  group: admin\n", false)
             Permission.load()
             PluginTest.pumpApp()
-            assertEquals(target.usid(), Permission.boundDevice(uuid), "the file promotion binds the session")
+            assertNull(Permission.boundDevice(uuid), "a file promotion binds only from a trusted IP")
+            Permission.bindDevice(uuid, target.usid(), target.ip())
             assertTrue(admins.getInfo(uuid).admin)
+            assertTrue(findPlayerData(uuid)?.adminTrust != null)
 
             userFile.writeString(good.trimEnd() + "\n$uuid:\n  group: user\n", false)
             Permission.load()
             PluginTest.pumpApp()
             assertNull(Permission.boundDevice(uuid), "the file demotion drops the binding")
             assertFalse(admins.getInfo(uuid).admin, "and the vanilla flag")
+            assertNull(findPlayerData(uuid)?.adminTrust, "and the fleet-wide trust")
             assertFalse(target.admin())
         } finally {
             userFile.writeString(good, false)

@@ -192,7 +192,10 @@ class ServerCommandTest {
         val data = joinPlayer(rejoin)
 
         assertEquals("admin", data.permission)
-        assertTrue(rejoin.admin(), "Group admin flag should be applied on join")
+        // No trust on first use: an offline grant reaches the session once it is confirmed.
+        assertFalse(rejoin.admin(), "an untrusted device is held back")
+        Permission.bindDevice(uuid, rejoin.usid(), rejoin.ip())
+        assertTrue(rejoin.admin(), "Group admin flag should be applied once confirmed")
 
         leavePlayer(rejoin)
     }

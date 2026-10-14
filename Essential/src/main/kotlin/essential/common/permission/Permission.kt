@@ -3,6 +3,7 @@ package essential.common.permission
 import arc.Core
 import arc.files.Fi
 import arc.util.Log
+import arc.util.Timer
 import com.charleskorn.kaml.Yaml
 import com.charleskorn.kaml.YamlConfiguration
 import com.charleskorn.kaml.YamlException
@@ -22,6 +23,9 @@ import essential.core.Main.Companion.scope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -32,9 +36,12 @@ import mindustry.Vars
 import mindustry.gen.Groups
 import mindustry.gen.Playerc
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.r2dbc.update
 import java.util.*
+import java.util.concurrent.CompletableFuture
 
 object Permission {
     // /reload runs load() on Dispatchers.IO while the game thread reads these on every command and
@@ -52,7 +59,14 @@ object Permission {
     // the first answer: load() runs again on reload and the service inits only once, at boot.
     @Volatile private var fileDefault = "user"
     @Volatile private var authDefault: String? = null
-    val default: String get() = authDefault ?: fileDefault
+    /**
+     * The group of a session nothing better is known for: temporary data, a held-back device. Auth off
+     * asks for visitor, and the fleet's permission.yaml has no such group - check() denies every node to
+     * a group it does not define, so those sessions could not even /rtv. A missing group is the file's.
+     */
+    val default: String get() = (authDefault ?: fileDefault).takeIf { it in main } ?: fileDefault
+    // permission_user.yaml's modification time at the last load; another server's write changes it.
+    @Volatile private var userFileStamp = 0L
     private val mainFile: Fi = rootPath.child("permission.yaml")
     private val userFile: Fi = rootPath.child("permission_user.yaml")
     private val userBackupFile: Fi = rootPath.child("permission_user.yaml.bak")
@@ -156,6 +170,13 @@ object Permission {
         fileDefault = nextDefault
         val previousEntries = user?.keys.orEmpty()
 
+        userFileStamp = userFile.lastModified()
+        readUserFile()
+        apply(previousEntries)
+    }
+
+    /** Read permission_user.yaml into [user] and [userRaw]; false, with the reason kept, when it does not parse. */
+    private fun readUserFile(): Boolean {
         try {
             if (userFile.exists()) {
                 val raw = userFile.readString()
@@ -178,13 +199,13 @@ object Permission {
             }
             userFileValid = true
             userFileError = null
+            return true
         } catch (e: Exception) {
             userFileValid = false
             userFileError = if (e is YamlException) "line ${e.line}: ${e.message}" else e.message.orEmpty()
             Log.warn(bundle["permission.user.file.invalid", userFileError!!])
+            return false
         }
-
-        apply(previousEntries)
     }
 
     /** [previous] are the uuids the file named before this load; an entry dropped since is a demotion too. */
@@ -202,10 +223,11 @@ object Permission {
                 if (player == null) {
                     offline[uuid] = permissionData
                 } else {
+                    // A file edit is an explicit group change: a promotion binds this session only from a
+                    // trusted IP, like a join, and a demotion revokes.
                     player.permission = permissionData.group
-                    // A file edit is an explicit decision: a demotion drops the binding and the flag.
-                    syncVanillaAdmin(uuid, permissionData.group)
-                    player.player.admin(isAdmin(uuid, permissionData.group))
+                    recognise(player)
+                    applyGroup(uuid, permissionData.group, player)
                     if (permissionData.name.isNotEmpty() && !heldBack(uuid)) {
                         player.name = permissionData.name
                         player.player.name(permissionData.name)
@@ -217,8 +239,7 @@ object Permission {
                 // Temporary data carries the stand-in default group, not the row's: demoting on it would
                 // drop a real admin's binding during a database stall.
                 val data = online[uuid]?.takeUnless { it.temporary } ?: continue
-                syncVanillaAdmin(uuid, data.permission)
-                data.player.admin(isAdmin(uuid, data.permission))
+                applyGroup(uuid, data.permission, data)
             }
             if (offline.isNotEmpty()) applyOffline(offline)
         }
@@ -251,6 +272,8 @@ object Permission {
                             val changed = suspendTransaction {
                                 PlayerTable.update({ PlayerTable.uuid eq uuid }) {
                                     it[PlayerTable.permission] = permissionData.group
+                                    // An offline revoke: the row half of what [revoke] does in memory.
+                                    if (!privileged(uuid, permissionData.group)) it[PlayerTable.adminTrust] = null
                                     if (permissionData.name.isNotEmpty()) {
                                         it[PlayerTable.name] = permissionData.name
                                     }
@@ -283,7 +306,7 @@ object Permission {
         val result = PermissionData()
 
         // An unrecognised device acts as the default group: its chat prefix, no join alert, no file entry.
-        val held = heldBack(data.uuid, sessionUsid(data.player))
+        val held = heldBack(data)
         val u = user?.get(data.uuid)?.takeUnless { held }
         if (u != null) {
             result.name = u.name.ifEmpty { data.player.name() }
@@ -318,10 +341,9 @@ object Permission {
      */
     fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
         val entry = user?.get(uuid)
-        // A file entry's admin: true names a uuid only, so it also needs this server's device binding.
-        val entryAdmin = entry?.admin == true && boundDevice(uuid) != null
-        return (entryAdmin || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)) &&
-            !heldBack(uuid)
+        // A file entry's admin: true names a uuid only; heldBack below is what ties it to a device.
+        return (entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)) &&
+            !heldBack(uuid, group = fallbackGroup)
     }
 
     fun isAdminGroup(group: String): Boolean = main[group]?.admin == true
@@ -331,20 +353,39 @@ object Permission {
         Vars.netServer?.admins?.getInfoOptional(uuid)?.admin == true && !heldBack(uuid)
 
     /**
-     * Whether [uuid] is connected with a device ([usid]) other than the one this server bound their
-     * admin record to. A uuid is only an identifier the client sends, and the Discord bot shows them in
-     * full, so a modified client can present an owner's uuid; the usid is per server and is not shown
-     * anywhere. While this answers true the session runs with the [default] group and no admin flag.
-     * The shared group column is left alone, so the real admin on the bound device is unaffected, and
-     * adminAdd from Discord rebinds a new device. Null [usid] (not online) is never held back.
+     * Whether [uuid] is connected with a device ([usid]) this server has not recognised for their
+     * privileges. A uuid is only an identifier the client sends, and the Discord bot shows them in full,
+     * so a modified client can present an owner's uuid; the usid is per server and is not shown anywhere.
+     * While this answers true the session plays as an ordinary player: the [default] group, no admin
+     * flag, no file name. The shared group column is left alone, so the real admin is unaffected.
      *
-     * The default reads Groups.player, so only the game thread may leave it out.
+     * Recognised means bound to this device here - by a confirm, or by [recognise] at a join from a
+     * fleet-wide trusted IP. A privileged uuid with no device here yet is held back too: there is no
+     * trust on first use, because the first device to reach an unvisited server is not evidence of
+     * anything. Null [usid] (not online) is never held back.
+     *
+     * This is the one rule: [check], [isAdmin], [effectiveGroup], the chat format, the file name and the
+     * join all ask it, and nothing else decides whether a session acts with its group. [grant] is the
+     * only way out of it, reached by a confirm or by [recognise].
+     *
+     * [group] is the row's group when the caller has it; left out, the online player's data answers
+     * (a permission_user.yaml entry wins over either). The defaults read Groups.player, so only the game
+     * thread may leave them out.
      */
-    fun heldBack(uuid: String, usid: String? = Groups.player.find { it.uuid() == uuid }?.let(::sessionUsid)): Boolean {
+    fun heldBack(uuid: String, usid: String? = liveUsid(uuid), group: String? = null): Boolean {
         if (usid.isNullOrEmpty()) return false
-        val bound = boundDevice(uuid) ?: return false
-        return bound != usid
+        val bound = boundDevice(uuid)
+        if (bound != null) return bound != usid
+        return privileged(uuid, group ?: findPlayerData(uuid)?.permission ?: "")
     }
+
+    /** [heldBack] for [data]'s own session and row. */
+    fun heldBack(data: PlayerData): Boolean = heldBack(data.uuid, sessionUsid(data.player), data.permission)
+
+    private fun liveUsid(uuid: String): String? = Groups.player.find { it.uuid() == uuid }?.let(::sessionUsid)
+
+    /** Whether [uuid], whose row says [group], has anything to hold back: a ranked group or a file admin flag. */
+    fun privileged(uuid: String, group: String): Boolean = rank(groupOf(uuid, group)) > 0 || user?.get(uuid)?.admin == true
 
     private fun deviceKey(uuid: String) = "essential-device-$uuid"
 
@@ -352,42 +393,103 @@ object Permission {
      * The device (usid) this server bound [uuid]'s privileges to, or null when it has none yet. This
      * server's own record first; else a vanilla admin binding, which vanilla never rewrites while the
      * admin flag is set. A non-admin's PlayerInfo.adminUsid is not a binding: vanilla overwrites it on
-     * every join with whoever joined last.
+     * every join with whoever joined last. Neither is fleet-wide trust: that is [AdminTrust], by IP.
      */
     fun boundDevice(uuid: String): String? =
         Core.settings?.getString(deviceKey(uuid), null)?.takeIf { it.isNotEmpty() }
             ?: Vars.netServer?.admins?.getInfoOptional(uuid)?.takeIf { it.admin }?.adminUsid?.takeIf { it.isNotEmpty() }
 
-    /**
-     * Bind [uuid] to [usid] on this server, replacing an earlier device. Only for a decision made by a
-     * person - ServerAdminer's adminAdd from Discord reaches it by name - never from a join.
-     */
-    fun bindDevice(uuid: String, usid: String) {
-        Core.settings.put(deviceKey(uuid), usid)
-        Core.settings.forceSave()
-        val data = findPlayerData(uuid)
-        if (isAdminGroup(groupOf(uuid, data?.permission ?: default))) Vars.netServer?.admins?.adminPlayer(uuid, usid)
-        data?.let { it.player.admin(isAdmin(uuid, it.permission)) }
+    private fun bindLocal(uuid: String, usid: String) {
+        val settings = Core.settings ?: return
+        settings.put(deviceKey(uuid), usid)
+        settings.forceSave()
+    }
+
+    private fun unbindLocal(uuid: String) {
+        val settings = Core.settings ?: return
+        if (settings.has(deviceKey(uuid))) {
+            settings.remove(deviceKey(uuid))
+            settings.forceSave()
+        }
     }
 
     /**
-     * Trust on first use: a privileged [uuid] with no device on this server yet is bound to the one
-     * they are connected with right now. Offline, nothing is bound; that happens at their next own join.
+     * Discord's adminAdd for a player online here; ServerAdminer reaches it by name. [grant]s the
+     * session, so the player is admin on every server they join from [ip], and saves the row.
      */
-    private fun bindSession(uuid: String) {
+    fun bindDevice(uuid: String, usid: String, ip: String) {
+        val data = findPlayerData(uuid)
+        grant(uuid, usid, ip, "discord", data)
+        data?.takeUnless { it.temporary }?.let { scope.launch { it.update() } }
+    }
+
+    /**
+     * The one grant. A person vouched for this live session (setperm on an online player, Discord's
+     * adminAdd), or the row already trusts the IP it comes from ([recognise]): bind [usid] on this
+     * server, stamp [ip] into [data]'s fleet-wide trust, and bring the vanilla flag, the admin flag
+     * and the file's display name in line. The row is changed in memory only; the caller saves it.
+     * [data] null or temporary binds this server only. A plain group gets nothing: the flag sync
+     * [revoke]s it again.
+     */
+    fun grant(uuid: String, usid: String, ip: String, by: String, data: PlayerData?) {
+        bindLocal(uuid, usid)
+        if (data != null && !data.temporary) data.adminTrust = AdminTrust.with(data.adminTrust, ip, by, System.currentTimeMillis())
+        syncVanillaAdmin(uuid, groupOf(uuid, data?.permission ?: default), data = data)
+        data?.let { d ->
+            d.player.admin(isAdmin(uuid, d.permission))
+            // The file's display name was withheld from this session while it was held back.
+            assignedName(uuid)?.let { d.name = it; d.player.name(it) }
+        }
+        // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.
+        Log.info("[Permission] $uuid bound here from $ip (trusted by $by); privileged on every server they join from that IP")
+    }
+
+    /**
+     * The one revoke: [uuid] loses this server's binding and vanilla admin flag, and [data] its
+     * fleet-wide trust, in memory - the caller saves the row. A write for an offline player clears the
+     * column itself ([applyOffline], [storeGroup]).
+     */
+    fun revoke(uuid: String, data: PlayerData?) {
+        unbindLocal(uuid)
+        val admins = Vars.netServer?.admins
+        if (admins?.getInfoOptional(uuid)?.admin == true) admins.unAdminPlayer(uuid)
+        data?.adminTrust = null
+    }
+
+    /**
+     * The join rule for a privileged session; nothing for anybody else. A device bound here: on, and the
+     * IP's trust, if it has one, is re-stamped so it does not expire. Otherwise an IP the row trusts is
+     * [grant]ed. Otherwise the session is held back - [heldBack] answers true - and plays as an ordinary
+     * player. A join never adds trust and never binds an untrusted device: no trust on first use.
+     */
+    fun recognise(data: PlayerData) {
+        val uuid = data.uuid
+        val usid = sessionUsid(data.player) ?: return
+        if (data.temporary || !privileged(uuid, data.permission)) return
+        val ip = data.player.ip()
+        val now = System.currentTimeMillis()
+        val trusted = AdminTrust.read(data.adminTrust, now).find { it.ip == ip }
+        when {
+            boundDevice(uuid) == usid -> if (trusted != null) data.adminTrust = AdminTrust.with(data.adminTrust, ip, trusted.by, now)
+            trusted != null -> grant(uuid, usid, ip, trusted.by, data)
+            else -> Log.warn("${data.player.plainName()} $uuid joined from an unrecognised device and IP ($ip); plays as an ordinary player until confirmed with Discord admin add or setperm while online")
+        }
+    }
+
+    /**
+     * Carry an existing vanilla admin binding into this server's own record, so unAdminPlayer cannot
+     * lose it later. Never the connected session's device: that would be trust on first use.
+     */
+    private fun keepVanillaBinding(uuid: String) {
         val settings = Core.settings ?: return
         if (settings.getString(deviceKey(uuid), null) != null) return
-        // An existing vanilla admin binding is carried over, so unAdminPlayer cannot lose it later.
-        val usid = boundDevice(uuid) ?: Groups.player.find { it.uuid() == uuid }?.let(::sessionUsid) ?: return
-        if (usid.isEmpty()) return
-        settings.put(deviceKey(uuid), usid)
-        settings.forceSave()
+        bindLocal(uuid, boundDevice(uuid) ?: return)
     }
 
     /** The group [data] acts with on this server: their resolved group, or the default one while [heldBack]. */
     fun effectiveGroup(data: PlayerData): String {
         val group = groupOf(data.uuid, data.permission)
-        return if (rank(group) > 0 && heldBack(data.uuid, sessionUsid(data.player))) default else group
+        return if (rank(group) > 0 && heldBack(data)) default else group
     }
 
     /**
@@ -429,24 +531,24 @@ object Permission {
 
     /**
      * Bring this server's device binding and vanilla admin flag in line with [group]. [demote] is true
-     * only for an explicit group change (setperm, adminRemove, undo): that alone may drop a binding. A
-     * join passes false - its group can be a stand-in (temporary data during a database stall) - and
-     * then only clears the vanilla flag for a session on the bound device, as a revoke made elsewhere.
+     * for an explicit group change (setperm, adminRemove, undo, a file edit, a row changed elsewhere): a
+     * plain group then [revoke]s, which also ends [data]'s fleet-wide trust. A join passes false - its
+     * group can be a stand-in (temporary data during a database stall) - and then only clears the
+     * vanilla flag for a session on the bound device, as a revoke made elsewhere.
      */
-    fun syncVanillaAdmin(uuid: String, group: String, demote: Boolean = true) {
+    fun syncVanillaAdmin(uuid: String, group: String, demote: Boolean = true, data: PlayerData? = findPlayerData(uuid)) {
         val admins = Vars.netServer?.admins ?: return
         // A group permission.yaml does not define (parse failure, rename) is not a demotion to anything.
         if (!main.containsKey(group)) return
-        val privileged = rank(group) > 0 || user?.get(uuid)?.admin == true
-        if (privileged) bindSession(uuid)
+        val privileged = privileged(uuid, group)
+        if (!privileged && demote) return revoke(uuid, data)
+        if (privileged) keepVanillaBinding(uuid)
         if (!isAdminGroup(group)) {
             // Guarded: unAdminPlayer saves every PlayerInfo, and this runs on every join.
-            if (admins.getInfoOptional(uuid)?.admin == true && (demote || !heldBack(uuid))) admins.unAdminPlayer(uuid)
+            if (admins.getInfoOptional(uuid)?.admin == true && (demote || !heldBack(uuid, group = group))) admins.unAdminPlayer(uuid)
             // A plain session has nothing to hold back, so a binding left by a demotion made on another
             // server goes on join too - unless a vanilla flag still needs it (a held-back console admin).
-            if (!privileged && (demote || admins.getInfoOptional(uuid)?.admin != true)) {
-                Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }
-            }
+            if (!privileged && admins.getInfoOptional(uuid)?.admin != true) unbindLocal(uuid)
             return
         }
         // Only ever the bound device: a stale adminUsid or an offline promote binds nothing here.
@@ -484,66 +586,170 @@ object Permission {
         authDefault = group
     }
 
-    fun setGroup(uuid: String, group: String): Boolean {
-        if (!writeUser { it[uuid] = patchGroup(it[uuid], group) }) return false
-
-        val map = user.orEmpty().toMutableMap()
-        map[uuid] = (map[uuid] ?: PermissionData()).also { it.group = group }
-        user = map
-
-        applyGroup(uuid, group)
+    /**
+     * [group] for [uuid] here, and in their permission_user.yaml entry when the file has one. Never adds
+     * an entry: the shared row is what all nine servers read, and an entry would mask it on every one of
+     * them. False when the file does not parse. [data] and [confirmedBy] are [applyGroup]'s.
+     */
+    fun setGroup(uuid: String, group: String, data: PlayerData? = findPlayerData(uuid), confirmedBy: String? = null): Boolean {
+        if (!writeUser { if (it.containsKey(uuid)) it[uuid] = patchGroup(it[uuid], group) }) return false
+        applyGroup(uuid, group, data, confirmedBy)
         return true
     }
 
     fun removeUserEntry(uuid: String, fallbackGroup: String): Boolean {
         if (!writeUser { it.remove(uuid) }) return false
-
-        val map = user.orEmpty().toMutableMap()
-        map.remove(uuid)
-        user = map
-
         applyGroup(uuid, fallbackGroup)
         return true
     }
 
     /**
-     * Apply [group] to a player that permission_user.yaml carries no entry for, without going near the
-     * file. An entry in that file wins over [group] everywhere a permission is actually decided -
-     * [isAdmin], [groupOf] and [get] all prefer it - so calling this for a uuid that has one leaves
-     * PlayerData.permission saying one thing and every check answering with another.
+     * The one place a group change lands on this server, for [data] online here or a row read for an
+     * offline player; the caller saves the row. [confirmedBy] names who vouched for a live session in a
+     * privileged group: it is then [grant]ed. Otherwise the binding and flags follow the group, and a
+     * plain group [revoke]s.
      *
-     * It is not free of side effects: [syncVanillaAdmin] reaches Mindustry own admin database, and for
-     * an unknown uuid Administration.unAdminPlayer creates and saves an empty PlayerInfo row there.
+     * Without going near the file: an entry in permission_user.yaml wins over [group] everywhere a
+     * permission is decided, so calling this for a uuid whose entry names another group leaves
+     * PlayerData.permission saying one thing and every check answering with another. And not free of
+     * side effects: for an unknown uuid Administration.unAdminPlayer creates and saves an empty
+     * PlayerInfo row.
      */
-    fun applyGroup(uuid: String, group: String) {
-        syncVanillaAdmin(uuid, group)
+    fun applyGroup(uuid: String, group: String, data: PlayerData? = findPlayerData(uuid), confirmedBy: String? = null) {
+        data?.permission = group
+        val usid = data?.player?.let(::sessionUsid)
+        if (confirmedBy != null && data != null && usid != null && !data.temporary && privileged(uuid, group)) {
+            grant(uuid, usid, data.player.ip(), confirmedBy, data)
+            return
+        }
+        syncVanillaAdmin(uuid, groupOf(uuid, group), data = data)
+        data?.player?.admin(isAdmin(uuid, group))
+    }
 
-        findPlayerData(uuid)?.let { data ->
-            data.permission = group
-            data.player.admin(isAdmin(uuid, group))
+    /**
+     * For ServerAdminer's adminAdd and adminRemove, whether or not the player is online anywhere: [group]
+     * on [uuid]'s shared row, in their permission_user.yaml entry when they have one, and on this server.
+     * [keepAdminLevel] leaves an owner an owner. A plain group clears the fleet-wide trust. Game thread.
+     *
+     * The future completes with false when the database has no row for [uuid], and exceptionally when
+     * the file does not parse or the write failed. It runs on Dispatchers.IO, never on the game thread.
+     */
+    fun storeGroup(uuid: String, group: String, keepAdminLevel: Boolean): CompletableFuture<Boolean> {
+        val result = CompletableFuture<Boolean>()
+        if (!hasGroup(group)) return result.apply { completeExceptionally(IllegalArgumentException("permission.yaml has no group $group")) }
+        val here = findPlayerData(uuid)?.takeUnless { it.temporary }
+        if (!(keepAdminLevel && isAdminGroup(groupOf(uuid, here?.permission ?: "")))) {
+            if (!setGroup(uuid, group)) {
+                return result.apply { completeExceptionally(IllegalStateException("permission_user.yaml does not parse: ${userFileProblem()}")) }
+            }
+        }
+        val plain = !privileged(uuid, group)
+        scope.launch {
+            try {
+                result.complete(suspendTransaction {
+                    val stored = PlayerTable.select(PlayerTable.permission).where { PlayerTable.uuid eq uuid }
+                        .firstOrNull()?.get(PlayerTable.permission) ?: return@suspendTransaction false
+                    if (!(keepAdminLevel && isAdminGroup(stored))) {
+                        PlayerTable.update({ PlayerTable.uuid eq uuid }) {
+                            it[PlayerTable.permission] = group
+                            if (plain) it[PlayerTable.adminTrust] = null
+                        }
+                    }
+                    true
+                })
+            } catch (e: CancellationException) {
+                result.cancel(false)
+                throw e
+            } catch (e: Exception) {
+                result.completeExceptionally(e)
+            }
+        }
+        Log.info("[Permission] $uuid set to $group on the shared row (Discord)")
+        return result
+    }
+
+    /** Runs [refresh] every [PermissionTuning.REFRESH_SECONDS]; once, at server load. */
+    fun startRefresh() {
+        Timer.schedule({ Core.app.post { refresh() } }, PermissionTuning.REFRESH_SECONDS, PermissionTuning.REFRESH_SECONDS)
+    }
+
+    /**
+     * Bring the players online here in line with what the other servers changed. Their group and trust
+     * live on the shared row, which this server read once at the join, so a demotion made elsewhere
+     * stayed unseen here until the player left. And permission_user.yaml is one file symlinked into
+     * every server, whose edits no file watcher here sees. Game thread; the read runs on IO.
+     */
+    fun refresh() {
+        if (userFile.lastModified() != userFileStamp) scope.launch { load() }
+        val online = players.filter { !it.temporary }
+        if (online.isEmpty()) return
+        val uuids = online.map { it.uuid }
+        // A save landing while the read is out replaces the snapshot; the read is older than it then.
+        // By position, not in a map: PlayerData is a data class, so its hash moves with every field.
+        val seen = online.map { it.dbSnapshot }
+        scope.launch {
+            val rows = try {
+                suspendTransaction {
+                    PlayerTable.select(PlayerTable.uuid, PlayerTable.permission, PlayerTable.adminTrust)
+                        .where { PlayerTable.uuid inList uuids }
+                        .map { it[PlayerTable.uuid] to (it[PlayerTable.permission] to it[PlayerTable.adminTrust]) }
+                        .toList().toMap()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.warn("[Permission] could not re-read the online players' groups: ${e.message}")
+                return@launch
+            }
+            Core.app.post {
+                online.forEachIndexed { i, data ->
+                    val (group, trust) = rows[data.uuid] ?: return@forEachIndexed
+                    if (data.dbSnapshot === seen[i]) adopt(data, group, trust)
+                }
+            }
         }
     }
 
-    private fun writeUser(edit: (MutableMap<String, YamlNode>) -> Unit): Boolean {
-        if (!userFileValid) {
-            Log.warn(bundle["permission.user.file.invalid", userFileError.orEmpty()])
-            return false
+    /** What [refresh] read for [data], applied where it differs from the row as this server last saw it. */
+    internal fun adopt(data: PlayerData, group: String, trust: String?) {
+        val base = data.dbSnapshot ?: return
+        if (players.none { it === data }) return
+        if (base.adminTrust != trust) {
+            base.adminTrust = trust
+            data.adminTrust = trust
         }
+        if (base.permission == group) return
+        base.permission = group
+        // Changed elsewhere, and so as explicit as setperm here: a promotion binds only from a trusted
+        // IP, like a join, and a demotion revokes.
+        data.permission = group
+        recognise(data)
+        applyGroup(data.uuid, group, data)
+        Log.info("[Permission] ${data.name} ${data.uuid} now has group $group on the shared row")
+    }
 
-        val next = userRaw.toMutableMap()
+    private fun writeUser(edit: (MutableMap<String, YamlNode>) -> Unit): Boolean {
+        // One file symlinked into every server: the copy loaded here can be behind another server's write,
+        // and writing it back would undo that write. Read it again; a file that no longer parses refuses.
+        if (!readUserFile()) return false
+        val current = userRaw
+
+        val next = current.toMutableMap()
         edit(next)
 
         // An edit that changes nothing still cost the operator their backup and every comment and blank
         // line in the file, because the write re-serialises from the parsed form. Node equality carries
         // the YamlPath, and patchGroup builds its nodes at the root, so the comparison has to be
         // equivalentContentTo rather than ==.
-        if (next.keys == userRaw.keys && next.all { (uuid, node) -> userRaw.getValue(uuid).equivalentContentTo(node) }) {
+        if (next.keys == current.keys && next.all { (uuid, node) -> current.getValue(uuid).equivalentContentTo(node) }) {
             return true
         }
 
+        val encoded = yaml.encodeToString(rawSerializer, next)
         if (userFile.exists()) userFile.copyTo(userBackupFile)
-        userFile.writeString(comment + "\n" + yaml.encodeToString(rawSerializer, next), false)
+        userFile.writeString(comment + "\n" + encoded, false)
         userRaw = next
+        user = yaml.decodeFromString(userSerializer, encoded)
         return true
     }
 

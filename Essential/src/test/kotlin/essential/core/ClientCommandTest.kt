@@ -760,7 +760,7 @@ class ClientCommandTest {
         val data = PluginTest.joinPlayer(newDevice)
         try {
             assertFalse(Permission.check(data, "js"), "held back before the rebind")
-            Permission.bindDevice(uuid, "newDevice")
+            Permission.bindDevice(uuid, "newDevice", newDevice.ip())
             assertTrue(newDevice.admin(), "the flag follows the rebind")
             assertTrue(Permission.check(data, "js"), "and so do the owner's nodes")
             assertEquals("newDevice", Vars.netServer.admins.getInfo(uuid).adminUsid)

@@ -2157,16 +2157,12 @@ class Commands {
         val previous = Permission.groupOf(data.uuid, data.permission)
         val hadUserEntry = Permission.hasUserEntry(data.uuid)
 
-        // permission_user.yaml is per server and wins over the shared permission column, so an entry
-        // written here would mask this group on this server and be pushed back over the shared row on
-        // the next load. An entry the operator wrote by hand is left in place and kept in step; one
-        // this command created is not worth having.
-        val written = if (hadUserEntry) {
-            Permission.setGroup(data.uuid, group)
-        } else {
-            Permission.removeUserEntry(data.uuid, group)
-        }
-        if (!written) {
+        // permission_user.yaml is one file symlinked into every server and wins over the shared
+        // permission column, so an entry written here would mask this group on all of them and be pushed
+        // back over the shared row on every load. An entry the operator wrote by hand is kept in step;
+        // setGroup never creates one. On a player online here setperm is also the confirm: their device
+        // is bound and their IP trusted on every server. A plain group ends that trust.
+        if (!Permission.setGroup(data.uuid, group, data, sender?.player?.plainName() ?: "console")) {
             val problem = Permission.userFileProblem().orEmpty()
             if (sender != null) {
                 sender.err("permission.user.file.invalid", problem)
@@ -2176,8 +2172,7 @@ class Commands {
             return
         }
 
-        data.permission = group
-        // The group change is live on this server the instant data.permission is set above - only its
+        // The group change is live on this server the instant setGroup set data.permission - only its
         // durability is in question here. A failed write is not undone (the file half already committed,
         // and reverting the live group would desync this server from what the file now says), but the
         // admin is told, instead of a persistence failure being reported as an unqualified success.

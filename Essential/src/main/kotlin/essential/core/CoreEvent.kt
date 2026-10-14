@@ -550,6 +550,7 @@ fun serverLoad(event: ServerLoadEvent) {
     ServerDescription.start()
     TempBan.start()
     Undo.start()
+    Permission.startRefresh()
 
     Vars.content.blocks().each { two ->
         var buf = 0
@@ -1577,15 +1578,15 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
 
     // Set nickname and admin permissions based on configured roles
     val group = Permission.groupOf(playerData.uuid, playerData.permission)
-    // Every join: a privileged group of any kind is bound to the device on its first join here, and a
+    // Every join: a privileged group acts only on a device bound here, or binds this one when the row
+    // trusts the IP it comes from; otherwise it plays as an ordinary player (Permission.recognise). A
     // vanilla admin flag on a plain group is cleared - it cannot be told apart from a flag this plugin
     // set before a fleet-wide demotion, so a console `admin add` is no longer imported into a group.
     // Admin is granted only by setperm or Discord's adminAdd. Never on temporary data: its group is a
     // stand-in for a row that could not be read.
-    if (!playerData.temporary) Permission.syncVanillaAdmin(playerData.uuid, group, demote = false)
-    // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.
-    if (Permission.heldBack(playerData.uuid)) {
-        Log.warn("${player.plainName()} ${playerData.uuid} joined with an unrecognised device; admin rights held back until re-granted in Discord")
+    if (!playerData.temporary) {
+        Permission.recognise(playerData)
+        Permission.syncVanillaAdmin(playerData.uuid, group, demote = false)
     }
 
     val permission = Permission[playerData]
