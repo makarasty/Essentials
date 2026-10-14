@@ -59,21 +59,25 @@ class APMTracker {
         private val planFingerprints = ObjectIntMap<String>()
 
         /**
-         * An allocation-free hash of a plan queue, so a tick whose queue is what it was last tick skips
-         * building a set of it. Order counts here though the diff ignores it: a reordered queue only
-         * costs one rebuild that finds nothing to track.
+         * An allocation-free hash of a plan queue, so a tick whose queue holds what it held last tick
+         * skips building a set of it. Order-independent, like the set diff it guards: BuilderComp moves
+         * the head plan to the back every tick it cannot build it, so an order-dependent hash rebuilt
+         * the set and walked both diffs every tick for every builder with a stalled queue.
          * ponytail: a 32-bit collision would let one real change go uncounted; compare exactly if the
          * APM achievements ever need to be exact.
          */
-        private fun planFingerprint(plans: Queue<BuildPlan>): Int {
+        internal fun planFingerprint(plans: Queue<BuildPlan>): Int {
             var h = plans.size
             for (i in 0 until plans.size) {
                 val plan = plans.get(i)
-                h = 31 * h + plan.x
-                h = 31 * h + plan.y
-                h = 31 * h + if (plan.breaking) 1 else 0
-                h = 31 * h + (plan.block?.id?.toInt() ?: -1)
-                h = 31 * h + plan.rotation
+                var p = plan.x
+                p = 31 * p + plan.y
+                p = 31 * p + if (plan.breaking) 1 else 0
+                p = 31 * p + (plan.block?.id?.toInt() ?: -1)
+                p = 31 * p + plan.rotation
+                // Mixed before summing, so two plans trading coordinates do not cancel out.
+                p *= -0x61c88647
+                h += p xor (p ushr 16)
             }
             return h
         }
