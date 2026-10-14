@@ -249,10 +249,12 @@ class LivePostgresUpgradeTest {
         open(DATABASE).use { connection ->
             assertEquals("0", connection.scalar("SELECT count(*) FROM flyway_schema_history WHERE NOT success"))
             assertEquals(
-                "10",
+                "11",
                 connection.scalar("SELECT max(version::int) FROM flyway_schema_history WHERE version IS NOT NULL"),
                 "Flyway did not reach the newest migration:\n${bootLog.report()}"
             )
+            // V11 meets the column the boot's repair or create already made, and has to be a no-op there.
+            assertEquals("text", connection.column("players", "admin_trust")?.first, "players.admin_trust is missing")
             val indexes = buildList {
                 connection.createStatement().use { statement ->
                     statement.executeQuery("SELECT indexdef FROM pg_indexes WHERE tablename = 'players'").use { rows ->
@@ -439,6 +441,7 @@ class LivePostgresUpgradeTest {
             // not asserted beside it: v4_postgres.sql creates plugin_data carrying it already, so that
             // assertion would pass whatever the repair pass did.
             assertNotNull(connection.column("players", "status_data"), "status_data was not added. $why")
+            assertNotNull(connection.column("players", "admin_trust"), "admin_trust was not added. $why")
         }
 
         // A repair statement the engine refuses is logged rather than thrown, and on PostgreSQL a

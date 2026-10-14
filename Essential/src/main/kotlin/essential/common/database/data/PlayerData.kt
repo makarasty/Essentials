@@ -136,7 +136,9 @@ data class PlayerData(
     var banExpireDate: LocalDateTime? = null,
     var attendanceDays: Int = 0,
     /** The `record.*` half of [status] as JSON; read on load, rewritten from the map on every [update]. */
-    var statusData: String? = null
+    var statusData: String? = null,
+    /** Fleet-wide trusted IPs of a privileged player; see [essential.common.database.table.PlayerTable.adminTrust]. */
+    var adminTrust: String? = null
 ) {
     // Exp
     var expMultiplier: Double = 1.0

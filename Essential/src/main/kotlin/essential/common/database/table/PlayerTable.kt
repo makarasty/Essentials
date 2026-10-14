@@ -76,5 +76,16 @@ object PlayerTable : Table("players") {
      */
     val statusData = text("status_data").nullable().default(null)
 
+    /**
+     * The IPs a privileged player was confirmed from, as a JSON list of {ip, at, by}: see
+     * [essential.common.permission.AdminTrust]. Shared, unlike the per-server device binding, so one
+     * confirm makes the player admin on every server they join from that IP. Null for everybody else,
+     * and cleared by a demotion. Nullable TEXT for the same MySQL reason as [statusData].
+     *
+     * The boot's column repair adds it to an existing table, as it did [statusData]; Flyway V11 is the
+     * same addition written down, guarded so it is a no-op after the repair.
+     */
+    val adminTrust = text("admin_trust").nullable().default(null)
+
     override val primaryKey = PrimaryKey(id)
 }
