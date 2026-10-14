@@ -197,7 +197,19 @@ data class PlayerData(
         return updateRow()
     }
 
-    var player: Playerc = Player.create()
+    /**
+     * Built on first read rather than per construction: every row loaded and every [dbSnapshot] copy
+     * used to make a Player (and take an entity id) that the join replaces straight away. Each
+     * instance still gets its own placeholder, so nothing written to one is seen through another.
+     */
+    @Volatile
+    private var playerOrNull: Playerc? = null
+
+    var player: Playerc
+        get() = playerOrNull ?: synchronized(this) { playerOrNull ?: Player.create().also { playerOrNull = it } }
+        set(value) {
+            playerOrNull = value
+        }
 
     /**
      * Only the `record.*` keys are persisted, through [statusData]. Everything else - a half-finished
