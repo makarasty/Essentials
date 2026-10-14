@@ -113,8 +113,6 @@ object ChatTranslator {
         c.enabled && (c.google || c.groqKey.isNotBlank() || c.geminiKey.isNotBlank())
 
     /** Game thread: a player who left needs no rate state. */
-    internal fun forget(uuid: String) = senders.forget(uuid)
-
     /** Called on the game thread with a public message that already passed every chat filter. */
     fun submit(sender: Player, message: String) {
         val c = conf
@@ -590,10 +588,6 @@ internal class SenderBuckets(private val burst: Int, private val refillMs: Long,
     // Least recently used first, so a flood of new names evicts the idlest sender, not everyone's state.
     private val buckets = object : LinkedHashMap<String, Bucket>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bucket>) = size > tracked
-    }
-
-    fun forget(key: String) {
-        buckets.remove(key)
     }
 
     fun take(key: String, now: Long): Boolean {

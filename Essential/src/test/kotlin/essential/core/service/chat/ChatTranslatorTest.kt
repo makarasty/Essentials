@@ -272,8 +272,6 @@ class ChatTranslatorTest {
         assertFalse(b.take("a", 1), "a is spent, and now the most recently used")
         assertTrue(b.take("raider", 2), "evicts b, the least recently used")
         assertFalse(b.take("a", 3), "a kept its spent state through the flood")
-        b.forget("a")
-        assertTrue(b.take("a", 4), "a player who left starts over")
     }
 
     @Test

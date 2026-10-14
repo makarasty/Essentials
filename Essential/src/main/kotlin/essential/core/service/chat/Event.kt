@@ -111,10 +111,6 @@ private fun isCommand(message: String): Boolean {
     return message.startsWith(handler.prefix) || (Main.conf.command.layoutFix && KeyboardLayout.fix(handler, message) != null)
 }
 
-@Event
-fun forgetTranslationSender(event: EventType.PlayerLeave) {
-    if (ChatTranslator.active(conf.translate)) ChatTranslator.forget(event.player.uuid())
-}
 
 @Event
 fun serverLoaded(event: EventType.ServerLoadEvent) {
