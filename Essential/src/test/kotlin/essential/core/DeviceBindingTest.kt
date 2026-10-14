@@ -263,4 +263,29 @@ class DeviceBindingTest {
             Permission.load()
         }
     }
+
+    /** A console `admin add` survives a join from another device: that session is held back, not a revoke. */
+    @Test
+    fun aConsoleAdminSurvivesAnotherDevice() {
+        val admins = Vars.netServer.admins
+        val (first, _) = newPlayer()
+        val uuid = first.uuid()
+        val usid = first.usid()
+        leavePlayer(first)
+        val row = runBlocking { getPlayerData(uuid) }!!
+        row.permission = Permission.default
+        runBlocking { row.update() }
+        admins.adminPlayer(uuid, usid)
+
+        val (impostor, impostorData) = rejoin(uuid, "anotherDevice")
+        try {
+            assertFalse(impostor.admin(), "the other device gets nothing")
+            assertEquals(Permission.default, impostorData.permission, "and is not imported into the admin group")
+            assertTrue(admins.getInfo(uuid).admin, "the console grant stays for the bound device")
+            assertEquals(usid, admins.getInfo(uuid).adminUsid)
+        } finally {
+            leavePlayer(impostor)
+            admins.unAdminPlayer(uuid)
+        }
+    }
 }
