@@ -457,6 +457,24 @@ class AdminTrustTest {
         }
     }
 
+    /** A database error saving the group is a failed save too: the group goes back and nothing is granted. */
+    @Test
+    fun aGroupSaveThatThrowsGrantsNothing() {
+        val (player, data) = join(freshUuid(), "device", "198.51.100.45")
+        val uuid = player.uuid()
+        val name = data.name
+        try {
+            data.name = "x".repeat(300) // longer than players.name holds, so the row save throws
+            val refused = assertNotNull(PluginTest.confirmFromDiscord(player))
+            assertTrue("not saved" in refused, refused)
+            assertEquals("user", data.permission, "the group is put back")
+            assertNull(Permission.boundDevice(uuid))
+            assertFalse(player.admin())
+        } finally {
+            data.name = name
+            leavePlayer(player)
+        }
+    }
     /** An undo only restores while the group is still the one it set, and confirms only the same device. */
     @Test
     fun anUndoChecksTheGroupAndTheDevice() {
