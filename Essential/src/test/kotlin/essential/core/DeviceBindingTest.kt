@@ -244,4 +244,21 @@ class DeviceBindingTest {
             leavePlayer(owner)
         }
     }
+
+    /** Any node the plain player groups lack makes a group privileged, server-acting ones included. */
+    @Test
+    fun aServerActingNodeIsPrivileged() {
+        val mainFile = rootPath.child("permission.yaml")
+        val good = mainFile.readString()
+        try {
+            mainFile.writeString(good.trimEnd() + "\nwarden:\n  inheritance: user\n  permission:\n    - killall\n", false)
+            Permission.load()
+            assertTrue(Permission.rank("warden") > 0, "killall acts on the server")
+            assertEquals(0, Permission.rank("user"))
+            assertEquals(0, Permission.rank(Permission.default))
+        } finally {
+            mainFile.writeString(good, false)
+            Permission.load()
+        }
+    }
 }

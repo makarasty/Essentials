@@ -387,19 +387,9 @@ object Permission {
         player.con()?.takeIf { it.isConnected && !it.hasDisconnected }?.usid
 
     /**
-     * Nodes that act on other players or on the server. A group holding one is privileged: it ranks
-     * above plain players, and like an admin group it is bound to a device.
-     */
-    private val PRIVILEGED_NODES = setOf(
-        "admin", "afk.admin", "chat.admin", "changename", "exp", "god", "info.other", "js", "kick.admin",
-        "kickall", "kill.other", "mute", "nextmap.admin", "pm.other", "rollback", "setperm", "strict",
-        "team.other", "undo", "unban", "unmute", "vote.admin", "vote.pass", "vote.reset", "ws",
-    )
-
-    /**
      * Rank of a group, the only ordering permission.yaml allows: 2 for a group holding `all`, 1 for an
-     * admin group or any non-default group holding a [PRIVILEGED_NODES] node (a moderator), 0 for the
-     * rest. Inheritance is not an order - the default owner inherits nothing. Every rank above 0 is
+     * admin group or any other group holding a node the plain player groups lack (a moderator), 0 for
+     * the rest. Inheritance is not an order - the default owner inherits nothing. Every rank above 0 is
      * held back on an unrecognised device.
      */
     fun rank(group: String): Int {
@@ -407,10 +397,19 @@ object Permission {
         return when {
             role.permission.contains("all") -> 2
             role.admin == true -> 1
-            group != default && role.permission.any { it in PRIVILEGED_NODES } -> 1
+            group !in plainGroups() && role.permission.any { it !in plainNodes() } -> 1
             else -> 0
         }
     }
+
+    /**
+     * The groups every player is in: the default one, and "user", which new rows are created with
+     * (CoreEvent, protect) whatever the default is. With auth off the default is visitor, so comparing
+     * against it alone would make every ordinary player privileged.
+     */
+    private fun plainGroups(): Set<String> = setOf(default, "user")
+
+    private fun plainNodes(): Set<String> = plainGroups().flatMapTo(HashSet()) { main[it]?.permission.orEmpty() }
 
     /** Whether [sender] ranks strictly above [target], each by the group they act with right now. */
     fun outranks(sender: PlayerData, target: PlayerData): Boolean =
