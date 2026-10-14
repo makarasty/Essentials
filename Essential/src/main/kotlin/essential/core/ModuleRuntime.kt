@@ -17,6 +17,12 @@ object ModuleRuntime {
     private data class ServiceDescriptor(
         val id: String,
         val implementationClass: String,
+        /**
+         * Whether the service has a config file of its own, re-read through its companion's reloadConf.
+         * The achievements module has none, and asking it for reloadConf logged an error on every
+         * config.yaml change - which the test harness turns into a failure of whichever test is running.
+         */
+        val reloadsConfig: Boolean = true,
         val enabled: () -> Boolean,
     )
 
@@ -24,7 +30,7 @@ object ModuleRuntime {
         ServiceDescriptor("bridge", "essential.core.service.bridge.BridgeService") { Main.conf.module.bridge },
         ServiceDescriptor("chat", "essential.core.service.chat.ChatService") { Main.conf.module.chat },
         ServiceDescriptor("protect", "essential.core.service.protect.ProtectService") { Main.conf.module.protect },
-        ServiceDescriptor("achievements", "essential.core.service.achievements.AchievementService") { Main.conf.module.achievement },
+        ServiceDescriptor("achievements", "essential.core.service.achievements.AchievementService", reloadsConfig = false) { Main.conf.module.achievement },
         ServiceDescriptor("contribution", "essential.core.service.contribution.ContributionService") { Main.conf.module.contribution },
         ServiceDescriptor("discord", "essential.core.service.discord.DiscordService") { Main.conf.module.discord },
         ServiceDescriptor("web", "essential.core.service.web.WebService") { Main.conf.module.web },
@@ -55,7 +61,7 @@ object ModuleRuntime {
 
     fun reloadEnabledConfigurations() {
         serviceDescriptors
-            .filter { it.enabled() }
+            .filter { it.reloadsConfig && it.enabled() }
             .forEach { descriptor -> invokeCompanion(descriptor.implementationClass, "reloadConf") }
         // ServerLoadEvent used to be the only caller of scheduleLevelEffects, so an operator who
         // turned the feature on - or turned it off, letting the task cancel itself, and then on

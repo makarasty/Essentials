@@ -66,6 +66,17 @@ class LevelEffectLifecycleTest {
         assertTrue(task.isScheduled)
     }
 
+    /**
+     * The achievements module has no config of its own. A reload with it on used to ask it for
+     * reloadConf anyway and log the NoSuchMethodException at err level, on every config.yaml change -
+     * which the harness turns into a failure of whichever test happened to be running.
+     */
+    @Test
+    fun reloadingWithAchievementsOnLogsNoError() {
+        Main.conf = Main.conf.copy(module = Main.conf.module.copy(achievement = true))
+        ModuleRuntime.reloadEnabledConfigurations()
+    }
+
     @Test
     fun schedulingTwiceKeepsOneTask() {
         ModuleRuntime.levelEffects?.cancel()
