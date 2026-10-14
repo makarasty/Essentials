@@ -1136,9 +1136,9 @@ class FeatureTest {
     }
 
     @Test
-    fun vanillaAdminJoinsIntoAdminGroup() {
-        // Only a row still at the configured default group is imported (a new row starts at "user", the
-        // group a revoke also writes), so the row is put there first.
+    fun vanillaAdminOnAPlainGroupIsClearedOnJoin() {
+        // A console `admin add` is not imported: on the bound device the flag on a plain row is cleared,
+        // since it reads the same as a flag left behind by a fleet-wide demotion.
         val first = createPlayer()
         val uuid = first.uuid()
         val usid = first.usid()
@@ -1156,8 +1156,9 @@ class FeatureTest {
         try {
             val data = PluginTest.joinPlayer(target)
 
-            assertEquals(Main.conf.feature.permission.vanillaAdminGroup, data.permission)
-            assertTrue(target.admin(), "A vanilla admin should keep the admin flag after joining")
+            assertEquals(Permission.default, data.permission, "a vanilla admin flag must not move the shared row")
+            assertFalse(target.admin(), "a vanilla admin flag on a plain group grants nothing")
+            assertFalse(Vars.netServer.admins.getInfo(uuid).admin, "and is cleared on the bound device")
             assertFalse(
                 Permission.hasUserEntry(uuid),
                 "Joining as a vanilla admin must not write a permission_user.yaml entry: that file is " +

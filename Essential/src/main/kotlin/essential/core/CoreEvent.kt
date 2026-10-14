@@ -1577,26 +1577,12 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
 
     // Set nickname and admin permissions based on configured roles
     val group = Permission.groupOf(playerData.uuid, playerData.permission)
-    // Imports a console `admin add` (vanilla's list) into vanillaAdminGroup, but only for a row still
-    // at the default group and only on the device vanilla bound. Any other group was set on purpose in
-    // the shared column - a revoke on another server among them - and wins over this server's vanilla
-    // flag, which the sync below then clears.
-    val consoleAdmin = !playerData.temporary && Permission.isVanillaAdmin(playerData.uuid) && !Permission.isAdminGroup(group) &&
-        group == Permission.default && Permission.boundDevice(playerData.uuid) == Permission.sessionUsid(entity)
-    if (consoleAdmin) {
-        val vanillaGroup = conf.feature.permission.vanillaAdminGroup
-        playerData.permission = vanillaGroup
-        scope.launch { playerData.update() }
-        // Not setGroup: it writes a permission_user.yaml entry, and that per-server file masks the
-        // shared database column, so every vanilla admin who joined minted a mask nobody asked for.
-        // syncVanillaAdmin is a no-op on this branch except in the one case that matters, an operator
-        // who pointed vanillaAdminGroup at a group that is not an admin group.
-        Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup, demote = false)
-    } else if (!playerData.temporary) {
-        // Every join: a privileged group of any kind is bound to the device on its first join here.
-        // Never on temporary data: its group is a stand-in for a row that could not be read.
-        Permission.syncVanillaAdmin(playerData.uuid, group, demote = false)
-    }
+    // Every join: a privileged group of any kind is bound to the device on its first join here, and a
+    // vanilla admin flag on a plain group is cleared - it cannot be told apart from a flag this plugin
+    // set before a fleet-wide demotion, so a console `admin add` is no longer imported into a group.
+    // Admin is granted only by setperm or Discord's adminAdd. Never on temporary data: its group is a
+    // stand-in for a row that could not be read.
+    if (!playerData.temporary) Permission.syncVanillaAdmin(playerData.uuid, group, demote = false)
     // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.
     if (Permission.heldBack(playerData.uuid)) {
         Log.warn("${player.plainName()} ${playerData.uuid} joined with an unrecognised device; admin rights held back until re-granted in Discord")

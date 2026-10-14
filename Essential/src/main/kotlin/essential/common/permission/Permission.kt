@@ -602,11 +602,9 @@ object Permission {
      * names them, otherwise their PlayerData.permission row - by the nodes permission.yaml gives
      * that group, and by nothing else. [isAdmin] is not consulted here.
      *
-     * That is deliberate and it is not an oversight, because the bounded version of "a vanilla admin
-     * should get plugin permissions" already ships: the join handler in core/CoreEvent.kt puts a
-     * vanilla admin who is not already in an admin group into `feature.permission.vanillaAdminGroup`
-     * - default `admin` - which moves the row, so [check] then grants them exactly what that group
-     * holds and nothing else. The operator names the group, and it is a group like any other.
+     * That is deliberate. A vanilla admin flag grants no plugin permissions at all: the join no longer
+     * imports a console `admin add` into a group, because that flag cannot be told apart from one this
+     * plugin set before a fleet-wide demotion. Admin is granted by setperm or Discord's adminAdd.
      *
      * The unbounded version is what a short-circuit on [isAdmin] here would be, and it is much wider
      * than it looks: the test would pass for every string, so it grants not what the admin group
@@ -615,10 +613,8 @@ object Permission {
      * ClientCommandTest pins that making somebody a vanilla admin mid-session does not retroactively
      * hand them `/js`.
      *
-     * So the honest reading of the gap: `admin add` grants nothing **for the rest of that session**,
-     * and the promotion happens on their next join. The other direction is wired and is destructive -
-     * [syncVanillaAdmin] calls unAdminPlayer whenever the resolved group is not an admin group, so a
-     * setperm into a non-admin group strips a vanilla admin's flag.
+     * So `admin add` grants nothing, and the next join on the bound device clears the flag again:
+     * [syncVanillaAdmin] calls unAdminPlayer whenever the resolved group is not an admin group.
      */
     fun check(data: PlayerData, command: String): Boolean {
         if (command in ALWAYS_ALLOWED) return true

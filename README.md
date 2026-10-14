@@ -68,8 +68,8 @@ is the newest commit on `main`, rebuilt on every push; you can also build the ja
   rather than by name. World history is only recorded while
   `command.rollback.enabled` is true, and the periodic map backup has its own switch,
   `command.rollback.mapBackup`.
-- **Admin status is synced with the vanilla admin list** in both directions. A vanilla admin joins into
-  `feature.permission.vanillaAdminGroup`, and `setperm` writes the vanilla flag back.
+- **Admin status is written to the vanilla admin list** by `setperm` and Discord's admin add, bound to the
+  player's device. A vanilla admin flag on a plain group is cleared on join; console `admin add` grants nothing.
 - New console commands: `perm` (effective group of a player), `permaban`, `delete` (player data and
   achievements), `mergeplayer`, `reloadplayer` and `undo`.
 
@@ -190,9 +190,8 @@ it in both directions.
 
 - Keep `ban.useDatabase: false`. The plugin then reads the vanilla ban list, so both plugins agree on who
   is banned. With `true` the database list wins and the bot's ban view drifts.
-- A player who is admin in the vanilla admin list joins into the group named by
-  `feature.permission.vanillaAdminGroup` (default `admin`), and `setperm` writes the vanilla admin flag
-  back. A vanilla admin flag this plugin did not set is never cleared on join.
+- Grant admin with `setperm` or Discord's admin add; `setperm` writes the vanilla admin flag. A vanilla
+  admin flag on a plain group is cleared on join (console `admin add` is not imported any more).
 - `tempban` creates a real vanilla ban, so the bot sees it in its ban list.
 
 ServerAdminer calls these console commands when this plugin is loaded:

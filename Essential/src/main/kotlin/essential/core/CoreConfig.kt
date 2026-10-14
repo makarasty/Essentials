@@ -89,7 +89,7 @@ data class PlayerName(
 /** Feature - permission group settings */
 @Serializable
 data class PermissionFeature(
-    @YamlComment("Group given on join to a player who is admin in the Mindustry admin list")
+    @YamlComment("Unused: a vanilla admin is no longer moved into a group on join; grant with setperm")
     val vanillaAdminGroup: String = "admin",
 )
 
