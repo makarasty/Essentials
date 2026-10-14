@@ -1,5 +1,6 @@
 package essential.core.service.web
 
+import essential.common.onGameThread
 import essential.common.database.data.PlayerData
 import essential.common.rootPath
 import essential.core.service.chat.ChatService

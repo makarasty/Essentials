@@ -10,7 +10,7 @@ import essential.common.rootPath
 import essential.core.service.web.MapRenderTuning
 import essential.core.service.web.WebService.Companion.conf
 import essential.core.service.web.auth.UserSession
-import essential.core.service.web.onGameThread
+import essential.common.onGameThread
 import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.application.*

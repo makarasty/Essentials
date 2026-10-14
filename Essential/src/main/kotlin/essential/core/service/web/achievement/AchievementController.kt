@@ -7,7 +7,7 @@ import essential.common.players
 import essential.common.util.toHString
 import essential.core.service.achievements.Achievement
 import essential.core.service.web.auth.UserSession
-import essential.core.service.web.onGameThread
+import essential.common.onGameThread
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
