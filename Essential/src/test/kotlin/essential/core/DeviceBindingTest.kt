@@ -228,4 +228,20 @@ class DeviceBindingTest {
             leavePlayer(owner)
         }
     }
+
+    /** A group permission.yaml no longer defines is not a demotion: the binding and flag stay. */
+    @Test
+    fun anUnknownGroupDropsNothing() {
+        val admins = Vars.netServer.admins
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        try {
+            setPermission(owner, "owner", false)
+            Permission.syncVanillaAdmin(uuid, "renamedAway")
+            assertEquals(owner.usid(), Permission.boundDevice(uuid))
+            assertTrue(admins.getInfo(uuid).admin)
+        } finally {
+            leavePlayer(owner)
+        }
+    }
 }

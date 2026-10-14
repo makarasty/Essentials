@@ -424,6 +424,8 @@ object Permission {
      */
     fun syncVanillaAdmin(uuid: String, group: String, demote: Boolean = true) {
         val admins = Vars.netServer?.admins ?: return
+        // A group permission.yaml does not define (parse failure, rename) is not a demotion to anything.
+        if (!main.containsKey(group)) return
         if (rank(group) > 0 || user?.get(uuid)?.admin == true) {
             bindSession(uuid)
         } else if (demote) {
