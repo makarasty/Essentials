@@ -288,4 +288,16 @@ class DeviceBindingTest {
             admins.unAdminPlayer(uuid)
         }
     }
+    /** With auth on the default is "user"; permission.yaml's default group (visitor) is still plain. */
+    @Test
+    fun theFileDefaultGroupIsPlainWithAuthOn() {
+        val before = Permission.default
+        try {
+            Permission.setAuthDefault("user")
+            assertEquals(0, Permission.rank("visitor"))
+            assertEquals(0, Permission.rank("user"))
+        } finally {
+            Permission.setAuthDefault(before)
+        }
+    }
 }

@@ -403,11 +403,12 @@ object Permission {
     }
 
     /**
-     * The groups every player is in: the default one, and "user", which new rows are created with
-     * (CoreEvent, protect) whatever the default is. With auth off the default is visitor, so comparing
+     * The groups every player is in: the default one, permission.yaml's `default: true` group (with
+     * auth on the default is "user" and that one is visitor), and "user", which new rows are created
+     * with (CoreEvent, protect) whatever the default is. With auth off the default is visitor, so comparing
      * against it alone would make every ordinary player privileged.
      */
-    private fun plainGroups(): Set<String> = setOf(default, "user")
+    private fun plainGroups(): Set<String> = setOf(default, fileDefault, "user")
 
     private fun plainNodes(): Set<String> = plainGroups().flatMapTo(HashSet()) { main[it]?.permission.orEmpty() }
 
