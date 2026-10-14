@@ -214,7 +214,9 @@ object Permission {
             }
             // The entry's group was already written into the row, so a dropped entry falls back to it.
             for (uuid in previous - loaded.keys) {
-                val data = online[uuid] ?: continue
+                // Temporary data carries the stand-in default group, not the row's: demoting on it would
+                // drop a real admin's binding during a database stall.
+                val data = online[uuid]?.takeUnless { it.temporary } ?: continue
                 syncVanillaAdmin(uuid, data.permission)
                 data.player.admin(isAdmin(uuid, data.permission))
             }
