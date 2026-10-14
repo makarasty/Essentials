@@ -416,16 +416,22 @@ object Permission {
     fun outranks(sender: PlayerData, target: PlayerData): Boolean =
         rank(effectiveGroup(sender)) > rank(effectiveGroup(target))
 
-    fun syncVanillaAdmin(uuid: String, group: String) {
+    /**
+     * Bring this server's device binding and vanilla admin flag in line with [group]. [demote] is true
+     * only for an explicit group change (setperm, adminRemove, undo): that alone may drop a binding. A
+     * join passes false - its group can be a stand-in (temporary data during a database stall) - and
+     * then only clears the vanilla flag for a session on the bound device, as a revoke made elsewhere.
+     */
+    fun syncVanillaAdmin(uuid: String, group: String, demote: Boolean = true) {
         val admins = Vars.netServer?.admins ?: return
         if (rank(group) > 0 || user?.get(uuid)?.admin == true) {
             bindSession(uuid)
-        } else {
+        } else if (demote) {
             Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }
         }
         if (!isAdminGroup(group)) {
-            // Guarded: unAdminPlayer saves every PlayerInfo, and this now runs on every join.
-            if (admins.getInfoOptional(uuid)?.admin == true) admins.unAdminPlayer(uuid)
+            // Guarded: unAdminPlayer saves every PlayerInfo, and this runs on every join.
+            if (admins.getInfoOptional(uuid)?.admin == true && (demote || !heldBack(uuid))) admins.unAdminPlayer(uuid)
             return
         }
         // Only ever the bound device: a stale adminUsid or an offline promote binds nothing here.

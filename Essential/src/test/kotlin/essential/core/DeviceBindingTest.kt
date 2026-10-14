@@ -208,4 +208,24 @@ class DeviceBindingTest {
             leavePlayer(back)
         }
     }
+
+    /** A join on temporary data (database stall) leaves the binding and the vanilla flag alone. */
+    @Test
+    fun aTemporaryJoinKeepsTheBinding() {
+        val admins = Vars.netServer.admins
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        val usid = owner.usid()
+        try {
+            setPermission(owner, "owner", false)
+            val stand = essential.common.database.data.createTemporaryPlayerData(owner)
+            stand.temporary = true
+            stand.permission = Permission.default
+            attachPlayerData(stand, false)
+            assertEquals(usid, Permission.boundDevice(uuid), "the binding survives a temporary join")
+            assertTrue(admins.getInfo(uuid).admin, "and so does the vanilla flag")
+        } finally {
+            leavePlayer(owner)
+        }
+    }
 }

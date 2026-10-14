@@ -1581,7 +1581,7 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     // at the default group and only on the device vanilla bound. Any other group was set on purpose in
     // the shared column - a revoke on another server among them - and wins over this server's vanilla
     // flag, which the sync below then clears.
-    val consoleAdmin = Permission.isVanillaAdmin(playerData.uuid) && !Permission.isAdminGroup(group) &&
+    val consoleAdmin = !playerData.temporary && Permission.isVanillaAdmin(playerData.uuid) && !Permission.isAdminGroup(group) &&
         group == Permission.default && Permission.boundDevice(playerData.uuid) == Permission.sessionUsid(entity)
     if (consoleAdmin) {
         val vanillaGroup = conf.feature.permission.vanillaAdminGroup
@@ -1591,10 +1591,11 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         // shared database column, so every vanilla admin who joined minted a mask nobody asked for.
         // syncVanillaAdmin is a no-op on this branch except in the one case that matters, an operator
         // who pointed vanillaAdminGroup at a group that is not an admin group.
-        Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup)
-    } else {
+        Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup, demote = false)
+    } else if (!playerData.temporary) {
         // Every join: a privileged group of any kind is bound to the device on its first join here.
-        Permission.syncVanillaAdmin(playerData.uuid, group)
+        // Never on temporary data: its group is a stand-in for a row that could not be read.
+        Permission.syncVanillaAdmin(playerData.uuid, group, demote = false)
     }
     // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.
     if (Permission.heldBack(playerData.uuid)) {
