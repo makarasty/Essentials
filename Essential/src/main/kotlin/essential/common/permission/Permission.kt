@@ -203,7 +203,7 @@ object Permission {
                     player.permission = permissionData.group
                     if (rank(permissionData.group) > 0 || permissionData.admin) bindSession(uuid)
                     player.player.admin(isAdmin(uuid, permissionData.group))
-                    if (permissionData.name.isNotEmpty()) {
+                    if (permissionData.name.isNotEmpty() && !heldBack(uuid)) {
                         player.name = permissionData.name
                         player.player.name(permissionData.name)
                     }
@@ -438,8 +438,11 @@ object Permission {
         if (info == null || !info.admin || info.adminUsid != bound) admins.adminPlayer(uuid, bound)
     }
 
-    /** The name permission_user.yaml assigns to this player, or null when it assigns none. */
-    fun assignedName(uuid: String): String? = user?.get(uuid)?.name?.takeIf { it.isNotEmpty() }
+    /**
+     * The name permission_user.yaml assigns to this player, or null when it assigns none - or when the
+     * session is on an unrecognised device, which must not wear the bound player's name.
+     */
+    fun assignedName(uuid: String): String? = user?.get(uuid)?.name?.takeIf { it.isNotEmpty() && !heldBack(uuid) }
 
     fun groupOf(uuid: String, fallbackGroup: String): String = user?.get(uuid)?.group ?: fallbackGroup
 

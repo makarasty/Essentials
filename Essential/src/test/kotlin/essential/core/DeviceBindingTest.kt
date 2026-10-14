@@ -144,16 +144,19 @@ class DeviceBindingTest {
         val usid = target.usid()
         try {
             setPermission(target, "user", false)
-            userFile.writeString(good.trimEnd() + "\n$uuid:\n  group: user\n  admin: true\n", false)
+            userFile.writeString(good.trimEnd() + "\n$uuid:\n  name: BoundName\n  group: user\n  admin: true\n", false)
             Permission.load()
             PluginTest.pumpApp()
             assertEquals(usid, Permission.boundDevice(uuid), "the online session is bound on reload")
             assertTrue(target.admin(), "the bound device gets the file's admin flag")
+            assertEquals("BoundName", target.name(), "and the file's display name")
             leavePlayer(target)
 
             val (impostor, _) = rejoin(uuid, "anotherDevice")
             try {
                 assertFalse(impostor.admin(), "the file's admin flag must not reach another device")
+                assertNull(Permission.assignedName(uuid), "nor the file's display name")
+                assertTrue(impostor.name() != "BoundName", "the impostor keeps their own name")
                 assertFalse(Permission.isAdmin(uuid, "user"))
             } finally {
                 leavePlayer(impostor)
