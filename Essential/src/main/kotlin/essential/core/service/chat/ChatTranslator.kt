@@ -7,6 +7,7 @@ import essential.common.players
 import essential.common.util.findPlayerData
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -21,6 +22,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.ceil
 import kotlin.math.min
 
@@ -61,7 +63,6 @@ object ChatTranslator {
     private class OutOfBudget : IOException("daily request cap of ${ChatTuning.TRANSLATE_DAILY_REQUESTS} reached")
 
     private val conf get() = ChatService.conf.translate
-    private val jobs = Channel<Job>(ChatTuning.TRANSLATE_QUEUE_SIZE, BufferOverflow.DROP_OLDEST)
 
     // Lazy: building an HttpClient starts its selector thread, and a server with translation off starts none.
     private val httpLazy = lazy {
@@ -85,15 +86,19 @@ object ChatTranslator {
 
     internal val budget = DailyBudget(ChatTuning.TRANSLATE_DAILY_REQUESTS)
 
-    /** Started on demand and ends when the queue is empty, so an idle server holds no worker and shutdown waits on none. */
-    @Volatile
-    private var worker: kotlinx.coroutines.Job? = null
+    private val worker = OnDemandWorker<Job>(
+        ChatTuning.TRANSLATE_QUEUE_SIZE,
+        launch = { body -> scope.launch { body() } },
+        batchMillis = { conf.batchMillis.coerceIn(0, ChatTuning.TRANSLATE_MAX_BATCH_MILLIS) },
+        // Turned off by a reload while these waited: they are dropped, not sent.
+        process = { batch -> if (active(conf)) process(batch) },
+    )
 
     /** For the tests: whether the HTTP client, and with it its threads, was ever built. */
     internal val httpStarted get() = httpLazy.isInitialized()
 
     /** For the tests: whether a worker was ever started. */
-    internal val workerStarted get() = worker != null
+    internal val workerStarted get() = worker.everStarted
 
     /** On, and with a backend to ask. Anything less costs nothing and sends no chat anywhere. */
     internal fun active(c: TranslateConfig): Boolean =
@@ -130,26 +135,7 @@ object ChatTranslator {
 
         val ordered = readers.entries.sortedByDescending { it.value.size }.associateTo(LinkedHashMap()) { it.key to it.value.toList() }
         val name = sender.plainName().replace(unsafe, " ").replace("[", "[[")
-        jobs.trySend(Job(name, sender.uuid(), text, ordered, System.currentTimeMillis()))
-        // shortcut: a job queued just as the worker finds the queue empty waits for the next message; fine for chat.
-        if (worker?.isActive != true) worker = scope.launch { work() }
-    }
-
-    private suspend fun work() {
-        while (true) {
-            val batch = mutableListOf(jobs.tryReceive().getOrNull() ?: return)
-            delay(conf.batchMillis.coerceIn(0, ChatTuning.TRANSLATE_MAX_BATCH_MILLIS))
-            while (true) batch += jobs.tryReceive().getOrNull() ?: break
-            // Turned off by a reload while these waited: they are dropped, not sent.
-            if (!active(conf)) continue
-            try {
-                process(batch)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.warn("Chat translation failed: @", e.toString())
-            }
-        }
+        worker.offer(Job(name, sender.uuid(), text, ordered, System.currentTimeMillis()))
     }
 
     private fun process(batch: List<Job>) {
@@ -455,6 +441,59 @@ Answer only with JSON: {"items":[{"id":0,"src":"<ISO 639-1 code of the source la
             val ask = asks.getOrNull(id) ?: return@forEachIndexed
             val text = (o["text"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim() ?: return@forEachIndexed
             found[ask] = Translation(text, (o["src"] as? JsonPrimitive)?.contentOrNull.orEmpty())
+        }
+    }
+}
+
+/**
+ * A bounded queue drained in batches by a coroutine that exists only while there is work: an idle server
+ * holds no worker and shutdown waits on none. A full queue drops its oldest item.
+ */
+internal class OnDemandWorker<T>(
+    capacity: Int,
+    private val launch: (suspend () -> Unit) -> Unit,
+    private val batchMillis: () -> Long,
+    private val process: (List<T>) -> Unit,
+    /** Test seam: runs in the window between finding the queue empty and going idle. */
+    private val beforeIdle: () -> Unit = {},
+) {
+    private val queue = Channel<T>(capacity, BufferOverflow.DROP_OLDEST)
+    private val running = AtomicBoolean(false)
+
+    @Volatile
+    var everStarted = false
+        private set
+
+    fun offer(item: T) {
+        queue.trySend(item)
+        if (running.compareAndSet(false, true)) {
+            everStarted = true
+            launch { drain() }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun drain() {
+        while (true) {
+            val first = queue.tryReceive().getOrNull()
+            if (first == null) {
+                beforeIdle()
+                running.set(false)
+                // An offer between the empty read and the line above saw `running` and launched nothing, so its
+                // item is ours: re-check, and carry on unless a newer worker has already claimed it.
+                if (queue.isEmpty || !running.compareAndSet(false, true)) return
+                continue
+            }
+            val batch = mutableListOf(first)
+            delay(batchMillis())
+            while (true) batch += queue.tryReceive().getOrNull() ?: break
+            try {
+                process(batch)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.warn("Chat translation failed: @", e.toString())
+            }
         }
     }
 }

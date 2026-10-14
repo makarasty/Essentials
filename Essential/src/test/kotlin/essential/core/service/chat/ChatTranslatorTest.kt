@@ -1,7 +1,12 @@
 package essential.core.service.chat
 
 import essential.core.service.chat.ChatTranslator.Translation
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -197,5 +202,46 @@ class ChatTranslatorTest {
         assertFalse(ChatTranslator.active(TranslateConfig(google = true, groqKey = "k")), "a backend without enabled does nothing")
         assertTrue(ChatTranslator.active(TranslateConfig(enabled = true, google = true)))
         assertTrue(ChatTranslator.active(TranslateConfig(enabled = true, geminiKey = "k")))
+    }
+
+    @Test
+    fun anItemOfferedAsTheWorkerGoesIdleIsStillProcessed() {
+        // Each batch is one item and processing is instant, so the worker goes idle and exits constantly
+        // while eight threads offer: an item offered in that window must start or keep a worker, never wait.
+        val total = 8 * 5_000
+        val processed = AtomicInteger()
+        val launches = AtomicInteger()
+        val worker = OnDemandWorker<Int>(
+            total,
+            launch = { body -> launches.incrementAndGet(); thread { runBlocking { body() } } },
+            batchMillis = { 0 },
+            process = { batch -> processed.addAndGet(batch.size) },
+        )
+        val start = CountDownLatch(1)
+        val offerers = List(8) { thread { start.await(); repeat(total / 8) { worker.offer(it); repeat(java.util.concurrent.ThreadLocalRandom.current().nextInt(2_000)) { Thread.onSpinWait() } } } }
+        start.countDown()
+        offerers.forEach { it.join() }
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (processed.get() < total && System.nanoTime() < deadline) Thread.sleep(5)
+        assertEquals(total, processed.get(), "every offered item processed, none stranded in the queue")
+        assertTrue(launches.get() > 1, "the worker did exit and restart during the run")
+    }
+
+    @Test
+    fun anOfferInTheIdleWindowIsNotStranded() {
+        // The race made certain: the offer lands after the worker found the queue empty but before it went
+        // idle, so the offer sees a running worker and launches none. The exiting worker must take it.
+        val processed = mutableListOf<Int>()
+        lateinit var worker: OnDemandWorker<Int>
+        var raced = false
+        worker = OnDemandWorker(
+            16,
+            launch = { body -> runBlocking { body() } },
+            batchMillis = { 0 },
+            process = { processed += it },
+            beforeIdle = { if (!raced) { raced = true; worker.offer(2) } },
+        )
+        worker.offer(1)
+        assertEquals(listOf(1, 2), processed)
     }
 }
