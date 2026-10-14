@@ -542,7 +542,7 @@ translate:
   cacheSize: 2000
   timeoutSeconds: 8
   cooldownSeconds: 300
-  google: true
+  google: false
   groqKey: ""
   groqModels: ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
   geminiKey: ""
@@ -580,10 +580,14 @@ Public chat translated into each reader's language. The message itself goes out 
 
 Backends are tried in this order: Google (``google``), each of ``groqModels`` when ``groqKey`` is set, each of ``geminiModels`` when ``geminiKey`` is set. All have free tiers. The Google endpoint is unofficial and needs no key; Groq and Gemini allow roughly 30 and 15 requests a minute on their free plans, so they are fallbacks for an outage, not a replacement at peak. On the free Gemini tier Google may use the text sent to it for training. All servers on one host share the host's address, and so share Google's limit.
 
+Nothing runs while it is off or has no backend: no thread, no request, and chat is handled exactly as without it. To turn it on, set ``enabled``, at least one of ``google``, ``groqKey`` or ``geminiKey``, and add the ``tr`` node to the groups in ``permission.yaml`` that should have ``/tr`` (no group has it by default).
+
+Each player gets a few translated messages in a burst and then one every six seconds, and one server sends at most 5000 backend requests a UTC day; past either limit messages stay untranslated. A translation is shown as a single line no longer than about twice the original, and is checked against ``chat_blacklist.txt`` like the message itself. Each language model request carries a single player's message, so one player's text cannot change the translation of another's.
+
 ### translate.enabled
 
 Default: ``false``<br>
-Turn chat translation on.
+Turn chat translation on. Needs a backend too: ``google`` or a key.
 
 ### translate.format
 
@@ -613,7 +617,7 @@ Whole messages never translated, case-insensitive, punctuation around them ignor
 ### translate.batchMillis
 
 Default: ``500``<br>
-How long to collect messages before sending them together. One batch is one request per language, however many messages it holds.
+How long to collect messages before sending them together. For Google one batch is one request per language, however many messages it holds; Groq and Gemini take one request per message.
 
 ### translate.maxAgeSeconds
 
@@ -637,7 +641,7 @@ How long a backend that failed is skipped. A backend that answers 429 with ``Ret
 
 ### translate.google
 
-Default: ``true``<br>
+Default: ``false``<br>
 Use Google Translate through the endpoint its Chrome extension uses. No key, several messages per request, a detected language per message.
 
 ### translate.groqKey, translate.groqModels

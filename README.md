@@ -48,7 +48,8 @@ is the newest commit on `main`, rebuilt on every push; you can also build the ja
   stored in the database instead of being overwritten by the client's locale on the next join.
 - **Chat translation**: public chat gets a translation line for every player who reads another language,
   through Google's free endpoint with optional Groq and Gemini fallbacks, without ever delaying the message.
-  `/tr` turns it off for yourself. Off by default; see `translate` in [config_chat.yaml](.github/Config.md#translate).
+  `/tr` turns it off for yourself. Off by default, and sends no chat anywhere until it is enabled with a
+  backend chosen; see `translate` in [config_chat.yaml](.github/Config.md#translate).
 - **Cyrillic keyboard layout**: `.кем` and `/кем` both run `/rtv`. Toggle with `command.layoutFix`.
 - **One player lookup everywhere.** A player argument is matched by the `#ID` from `/players`, the same
   number without `#`, a UUID, an exact name, a unique prefix and finally a unique substring. When several

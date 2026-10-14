@@ -55,8 +55,11 @@ data class TranslateConfig(
     var timeoutSeconds: Int = 8,
     @YamlComment("Seconds a backend is skipped after it fails or hits a limit, unless it says when to come back")
     var cooldownSeconds: Int = 300,
-    @YamlComment("Use Google Translate (free, no key, unofficial endpoint). Tried first.")
-    var google: Boolean = true,
+    @YamlComment(
+        "Use Google Translate (free, no key, unofficial endpoint). Tried first.",
+        "Translation sends nothing anywhere until this or one of the keys below is set.",
+    )
+    var google: Boolean = false,
     @YamlComment("Groq API key (console.groq.com, free plan). Empty skips Groq. Tried after Google.")
     var groqKey: String = "",
     @YamlComment("Groq models, tried in order")
@@ -68,7 +71,16 @@ data class TranslateConfig(
     var geminiKey: String = "",
     @YamlComment("Gemini models, tried in order")
     var geminiModels: List<String> = listOf("gemini-3.5-flash-lite", "gemini-3.1-flash-lite"),
-)
+) {
+    // The generated toString would print both keys into any log line that shows the config.
+    override fun toString(): String =
+        "TranslateConfig(enabled=$enabled, format=$format, understood=$understood, maxLanguages=$maxLanguages, " +
+            "minLetters=$minLetters, skip=$skip, batchMillis=$batchMillis, maxAgeSeconds=$maxAgeSeconds, " +
+            "cacheSize=$cacheSize, timeoutSeconds=$timeoutSeconds, cooldownSeconds=$cooldownSeconds, google=$google, " +
+            "groqKey=${mask(groqKey)}, groqModels=$groqModels, geminiKey=${mask(geminiKey)}, geminiModels=$geminiModels)"
+
+    private fun mask(key: String) = if (key.isEmpty()) "" else "***"
+}
 
 @Serializable
 data class StrictConfig(

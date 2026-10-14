@@ -89,12 +89,14 @@ fun isChatBlacklisted(message: String): Boolean {
  * PlayerChatEvent fires first on the same call with the raw text, so a raw text that is not a command
  * marks the formatter call that follows as public. Cleared on the next frame in case a filter drops it.
  */
-private var publicSender: Player? = null
+internal var publicSender: Player? = null
 
 @Event
 fun markPublicChat(event: EventType.PlayerChatEvent) {
-    if (!conf.translate.enabled || event.message.startsWith(Vars.netServer.clientCommands.prefix)) return
-    publicSender = event.player
+    if (!ChatTranslator.active(conf.translate)) return
+    // A command clears the mark rather than leaving it: a public line a filter dropped earlier this frame
+    // would otherwise mark the /t that follows from the same player, and translate team chat for everyone.
+    publicSender = if (event.message.startsWith(Vars.netServer.clientCommands.prefix)) null else event.player
     Core.app.post { publicSender = null }
 }
 
@@ -119,12 +121,7 @@ fun serverLoaded(event: EventType.ServerLoadEvent) {
             if (message != null) {
                 if (player === publicSender) {
                     publicSender = null
-                    // Inside the formatter, so nothing here may throw into the engine's chat path.
-                    try {
-                        ChatTranslator.submit(player, message)
-                    } catch (e: Exception) {
-                        Log.warn("Chat translation could not queue a message: @", e.toString())
-                    }
+                    ChatTranslator.submit(player, message) // never throws: the formatter is the engine's chat path
                 }
                 val defaultFormat = "[coral][[" + player.coloredName() + "[coral]]:[white] " + message
                 if (data != null) {
