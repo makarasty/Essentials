@@ -746,6 +746,29 @@ class ClientCommandTest {
         }
     }
 
+    /** Discord's adminAdd reaches Permission.bindDevice by name: it accepts the device a held-back session is on. */
+    @Test
+    fun bindDeviceAcceptsANewDevice() {
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        setPermission(owner, "owner", false)
+        leavePlayer(owner)
+
+        val newDevice = createPlayer()
+        newDevice.con.uuid = uuid
+        newDevice.con.usid = "newDevice"
+        val data = PluginTest.joinPlayer(newDevice)
+        try {
+            assertFalse(Permission.check(data, "js"), "held back before the rebind")
+            Permission.bindDevice(uuid, "newDevice")
+            assertTrue(newDevice.admin(), "the flag follows the rebind")
+            assertTrue(Permission.check(data, "js"), "and so do the owner's nodes")
+            assertEquals("newDevice", Vars.netServer.admins.getInfo(uuid).adminUsid)
+        } finally {
+            leavePlayer(newDevice)
+        }
+    }
+
     /** An admin record with no device yet takes the connecting one, on join and on reloadplayer. */
     @Test
     fun firstAdminJoinBindsTheConnectingDevice() {

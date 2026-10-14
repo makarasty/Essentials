@@ -325,8 +325,46 @@ object Permission {
      */
     fun heldBack(uuid: String, usid: String? = Groups.player.find { it.uuid() == uuid }?.usid()): Boolean {
         if (usid.isNullOrEmpty()) return false
-        val info = Vars.netServer?.admins?.getInfoOptional(uuid) ?: return false
-        return info.admin && !info.adminUsid.isNullOrEmpty() && info.adminUsid != usid
+        val bound = boundDevice(uuid) ?: return false
+        return bound != usid
+    }
+
+    private fun deviceKey(uuid: String) = "essential-device-$uuid"
+
+    /**
+     * The device (usid) this server bound [uuid]'s privileges to, or null when it has none yet. This
+     * server's own record first; else a vanilla admin binding, which vanilla never rewrites while the
+     * admin flag is set. A non-admin's PlayerInfo.adminUsid is not a binding: vanilla overwrites it on
+     * every join with whoever joined last.
+     */
+    fun boundDevice(uuid: String): String? =
+        Core.settings?.getString(deviceKey(uuid), null)?.takeIf { it.isNotEmpty() }
+            ?: Vars.netServer?.admins?.getInfoOptional(uuid)?.takeIf { it.admin }?.adminUsid?.takeIf { it.isNotEmpty() }
+
+    /**
+     * Bind [uuid] to [usid] on this server, replacing an earlier device. Only for a decision made by a
+     * person - ServerAdminer's adminAdd from Discord reaches it by name - never from a join.
+     */
+    fun bindDevice(uuid: String, usid: String) {
+        Core.settings.put(deviceKey(uuid), usid)
+        Core.settings.forceSave()
+        val data = findPlayerData(uuid)
+        if (isAdminGroup(groupOf(uuid, data?.permission ?: default))) Vars.netServer?.admins?.adminPlayer(uuid, usid)
+        data?.let { it.player.admin(isAdmin(uuid, it.permission)) }
+    }
+
+    /**
+     * Trust on first use: a privileged [uuid] with no device on this server yet is bound to the one
+     * they are connected with right now. Offline, nothing is bound; that happens at their next own join.
+     */
+    private fun bindSession(uuid: String) {
+        val settings = Core.settings ?: return
+        if (settings.getString(deviceKey(uuid), null) != null) return
+        // An existing vanilla admin binding is carried over, so unAdminPlayer cannot lose it later.
+        val usid = boundDevice(uuid) ?: Groups.player.find { it.uuid() == uuid }?.usid() ?: return
+        if (usid.isEmpty()) return
+        settings.put(deviceKey(uuid), usid)
+        settings.forceSave()
     }
 
     /** The group [data] acts with on this server: their resolved group, or the default one while [heldBack]. */
@@ -354,20 +392,24 @@ object Permission {
 
     fun syncVanillaAdmin(uuid: String, group: String) {
         val admins = Vars.netServer?.admins ?: return
+        if (isAdminGroup(group)) {
+            bindSession(uuid)
+        } else {
+            Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }
+        }
         if (!isAdminGroup(group)) {
-            admins.unAdminPlayer(uuid)
+            // Guarded: unAdminPlayer saves every PlayerInfo, and this now runs on every join.
+            if (admins.getInfoOptional(uuid)?.admin == true) admins.unAdminPlayer(uuid)
             return
         }
-        // Bound already: a different device must not rebind it (that is heldBack's whole point). Only a
-        // record with no device yet - first admin join on this server - takes the connecting one.
-        val info = admins.getInfoOptional(uuid)
-        if (info != null && info.admin && !info.adminUsid.isNullOrEmpty()) return
-        val usid = Groups.player.find { it.uuid() == uuid }?.usid() ?: admins.getInfoOptional(uuid)?.adminUsid
-        if (usid.isNullOrEmpty()) {
+        // Only ever the bound device: a stale adminUsid or an offline promote binds nothing here.
+        val bound = boundDevice(uuid)
+        if (bound == null) {
             Log.info(bundle["permission.vanilla.admin.deferred", uuid])
             return
         }
-        admins.adminPlayer(uuid, usid)
+        val info = admins.getInfoOptional(uuid)
+        if (info == null || !info.admin || info.adminUsid != bound) admins.adminPlayer(uuid, bound)
     }
 
     /** The name permission_user.yaml assigns to this player, or null when it assigns none. */
