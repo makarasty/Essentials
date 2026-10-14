@@ -175,6 +175,7 @@ class DeviceBindingTest {
         try {
             assertEquals(Permission.default, Permission[impostorData].group, "chat format follows this group")
             assertEquals(Permission.default, Permission.effectiveGroup(impostorData), "MeetOwner reads this")
+            assertEquals(Permission.default, essential.core.service.chat.ChatFormatResolver.resolve("%player.permission", impostorData, ""))
         } finally {
             leavePlayer(impostor)
         }

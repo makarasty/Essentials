@@ -1,6 +1,7 @@
 package essential.core.service.chat
 
 import essential.common.database.data.PlayerData
+import essential.common.permission.Permission
 
 /**
  * Resolves chat format placeholders like %player.name, %player.level, %chat
@@ -34,7 +35,8 @@ object ChatFormatResolver {
         "%player.uuid" to { data: PlayerData -> data.uuid },
         "%player.level" to { data: PlayerData -> data.level.toString() },
         "%player.exp" to { data: PlayerData -> data.exp.toString() },
-        "%player.permission" to { data: PlayerData -> data.permission },
+        // The session's group: an unrecognised device must not show the stored owner group.
+        "%player.permission" to { data: PlayerData -> Permission.effectiveGroup(data) },
         "%player.playtime" to { data: PlayerData -> data.totalPlayed.toString() },
         "%player.blockPlace" to { data: PlayerData -> data.blockPlaceCount.toString() },
         "%player.blockBreak" to { data: PlayerData -> data.blockBreakCount.toString() },
