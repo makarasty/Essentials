@@ -387,16 +387,16 @@ object Permission {
         player.con()?.takeIf { it.isConnected && !it.hasDisconnected }?.usid
 
     /**
-     * Rank of a group, the only ordering permission.yaml allows: 2 for a group holding `all`, 1 for an
-     * admin group or any other group holding a node the plain player groups lack (a moderator), 0 for
-     * the rest. Inheritance is not an order - the default owner inherits nothing. Every rank above 0 is
+     * Rank of a group, the only ordering permission.yaml allows: 3 for a group holding `all`, 2 for an
+     * admin group, 1 for any other group holding a node the plain player groups lack (a moderator), 0
+     * for the rest. Inheritance is not an order - the default owner inherits nothing. Every rank above 0 is
      * held back on an unrecognised device.
      */
     fun rank(group: String): Int {
         val role = main[group] ?: return 0
         return when {
-            role.permission.contains("all") -> 2
-            role.admin == true -> 1
+            role.permission.contains("all") -> 3
+            role.admin == true -> 2
             group !in plainGroups() && role.permission.any { it !in plainNodes() } -> 1
             else -> 0
         }

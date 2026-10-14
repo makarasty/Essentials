@@ -95,7 +95,7 @@ class DeviceBindingTest {
 
         val stored = runBlocking { getPlayerData(uuid) }!!
         assertEquals("owner", Permission.effectiveGroup(stored), "a placeholder Player's usid is not a device")
-        assertEquals(2, Permission.rank(Permission.effectiveGroup(stored)))
+        assertEquals(3, Permission.rank(Permission.effectiveGroup(stored)))
     }
 
     /** A moderator group (no admin flag, privileged nodes) ranks above players and is bound like an admin. */
@@ -253,7 +253,9 @@ class DeviceBindingTest {
         try {
             mainFile.writeString(good.trimEnd() + "\nwarden:\n  inheritance: user\n  permission:\n    - killall\n", false)
             Permission.load()
-            assertTrue(Permission.rank("warden") > 0, "killall acts on the server")
+            assertEquals(1, Permission.rank("warden"), "killall acts on the server")
+            assertEquals(2, Permission.rank("admin"), "an admin outranks a moderator")
+            assertEquals(3, Permission.rank("owner"))
             assertEquals(0, Permission.rank("user"))
             assertEquals(0, Permission.rank(Permission.default))
         } finally {
