@@ -1438,6 +1438,26 @@ class ClientCommandTest {
         leavePlayer(dummy.first)
     }
 
+    /** A vote kick refuses a target wearing the admin flag, and one whose data has not loaded yet. */
+    @Test
+    fun client_voteKickRefusesAdminsAndLoadingTargets() {
+        setPermission("admin", true)
+        val (flagged, _) = newPlayer()
+        val loading = createPlayer()
+        try {
+            flagged.admin(true)
+            clientCommand.handleMessage("/vote kick ${flagged.uuid()} grief", player)
+            assertEquals(err("command.vote.kick.target.admin", flagged.plainName()), playerData.lastReceivedMessage)
+
+            assertNull(findPlayerData(loading.uuid()), "the target must not have data yet")
+            clientCommand.handleMessage("/vote kick ${loading.uuid()} grief", player)
+            assertEquals(err("command.vote.kick.target.admin", loading.plainName()), playerData.lastReceivedMessage)
+        } finally {
+            leavePlayer(flagged)
+            leavePlayer(loading)
+        }
+    }
+
     @Test
     fun client_fuck() {
         // Ensure sufficient permission to execute correction command

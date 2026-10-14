@@ -2883,7 +2883,10 @@ class Commands {
                         // would be kicked by a vote that team never saw - and a player alone on a team
                         // would decide it unopposed. Vanilla refuses a cross-team votekick outright.
                         playerData.err("command.vote.kick.target.admin", target.plainName())
-                    } else if (targetData != null && Permission.check(targetData, "kick.admin")) {
+                    } else if (targetData == null || target.admin()) {
+                        // Still loading (no data, so no kick.admin check below can run) or an admin.
+                        playerData.err("command.vote.kick.target.admin", target.plainName())
+                    } else if (Permission.check(targetData, "kick.admin")) {
                         // A dedicated key: the reused admin key takes {0} and this call never supplied
                         // one, so the refusal rendered a literal "{0}" placeholder.
                         playerData.err("command.vote.kick.target.kickAdmin")
