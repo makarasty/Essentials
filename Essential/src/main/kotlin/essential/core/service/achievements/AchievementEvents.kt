@@ -765,29 +765,33 @@ internal fun achievementSweep() {
         }
 
         // Check team power metrics
-        var totalPowerProduced = 0f
-        var hasPower = false
-        val checkedGraphs = mutableSetOf<PowerGraph>()
-        for (build in Groups.build) {
-            if (build.team() == Team.sharded && build.power != null) {
-                val graph = build.power.graph
-                if (graph != null) {
-                    if (graph.lastPowerProduced > 0f || graph.lastPowerStored > 0f) {
-                        hasPower = true
-                    }
-                    if (!checkedGraphs.contains(graph)) {
-                        checkedGraphs.add(graph)
-                        totalPowerProduced += graph.lastPowerProduced
+        // Both flags only ever go from false to true until the next game, so once both are set the
+        // walk over every building has nothing left to decide.
+        if (!isNoPowerFailed || !isLowPowerFailed) {
+            var totalPowerProduced = 0f
+            var hasPower = false
+            val checkedGraphs = mutableSetOf<PowerGraph>()
+            for (build in Groups.build) {
+                if (build.team() == Team.sharded && build.power != null) {
+                    val graph = build.power.graph
+                    if (graph != null) {
+                        if (graph.lastPowerProduced > 0f || graph.lastPowerStored > 0f) {
+                            hasPower = true
+                        }
+                        if (!checkedGraphs.contains(graph)) {
+                            checkedGraphs.add(graph)
+                            totalPowerProduced += graph.lastPowerProduced
+                        }
                     }
                 }
             }
-        }
 
-        if (hasPower) {
-            isNoPowerFailed = true
-        }
-        if (totalPowerProduced > 2000f) {
-            isLowPowerFailed = true
+            if (hasPower) {
+                isNoPowerFailed = true
+            }
+            if (totalPowerProduced > 2000f) {
+                isLowPowerFailed = true
+            }
         }
 
         // Check for owner presence
