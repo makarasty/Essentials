@@ -179,4 +179,29 @@ class DeviceBindingTest {
             leavePlayer(impostor)
         }
     }
+
+    /** A revoke in the shared column (made on another server) is not undone by this server's vanilla flag. */
+    @Test
+    fun aRevokeElsewhereIsNotUndoneByJoiningHere() {
+        val admins = Vars.netServer.admins
+        val (admin, _) = newPlayer()
+        val uuid = admin.uuid()
+        val usid = admin.usid()
+        setPermission(admin, "admin", false)
+        assertTrue(admins.getInfo(uuid).admin)
+        leavePlayer(admin)
+
+        val row = runBlocking { getPlayerData(uuid) }!!
+        row.permission = "user"
+        runBlocking { row.update() }
+
+        val (back, backData) = rejoin(uuid, usid)
+        try {
+            assertEquals("user", backData.permission, "the join must not promote a revoked admin back")
+            assertFalse(admins.getInfo(uuid).admin, "the local vanilla flag follows the shared revoke")
+            assertFalse(back.admin())
+        } finally {
+            leavePlayer(back)
+        }
+    }
 }

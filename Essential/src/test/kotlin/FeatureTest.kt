@@ -1137,9 +1137,21 @@ class FeatureTest {
 
     @Test
     fun vanillaAdminJoinsIntoAdminGroup() {
+        // Only a row still at the configured default group is imported (a new row starts at "user", the
+        // group a revoke also writes), so the row is put there first.
+        val first = createPlayer()
+        val uuid = first.uuid()
+        val usid = first.usid()
+        PluginTest.joinPlayer(first)
+        leavePlayer(first)
+        val row = runBlocking { getPlayerData(uuid) }!!
+        row.permission = Permission.default
+        runBlocking { row.update() }
+
         val target = createPlayer()
-        val uuid = target.uuid()
-        Vars.netServer.admins.adminPlayer(uuid, target.usid())
+        target.con.uuid = uuid
+        target.con.usid = usid
+        Vars.netServer.admins.adminPlayer(uuid, usid)
 
         try {
             val data = PluginTest.joinPlayer(target)

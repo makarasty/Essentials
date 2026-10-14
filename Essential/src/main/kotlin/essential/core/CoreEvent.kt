@@ -1577,7 +1577,13 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
 
     // Set nickname and admin permissions based on configured roles
     val group = Permission.groupOf(playerData.uuid, playerData.permission)
-    if (Permission.isVanillaAdmin(playerData.uuid) && !Permission.isAdminGroup(group)) {
+    // Imports a console `admin add` (vanilla's list) into vanillaAdminGroup, but only for a row still
+    // at the default group and only on the device vanilla bound. Any other group was set on purpose in
+    // the shared column - a revoke on another server among them - and wins over this server's vanilla
+    // flag, which the sync below then clears.
+    val consoleAdmin = Permission.isVanillaAdmin(playerData.uuid) && !Permission.isAdminGroup(group) &&
+        group == Permission.default && Permission.boundDevice(playerData.uuid) == Permission.sessionUsid(entity)
+    if (consoleAdmin) {
         val vanillaGroup = conf.feature.permission.vanillaAdminGroup
         playerData.permission = vanillaGroup
         scope.launch { playerData.update() }
