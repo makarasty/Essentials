@@ -102,11 +102,17 @@ internal object VoteStartTuning {
     /** Server-wide wait after a `vote random` starts, in minutes. */
     const val RANDOM_COOLDOWN_MINUTES = 6
 
-    /** A vote needs more eligible (non-AFK) players than this, unless the starter holds vote.admin. */
+    /** A vote needs more players who may vote (see Electorate) than this, unless the starter holds vote.admin. */
     const val SMALL_SERVER_VOTERS = 3
 
     /** Repeats of the vote task's one-second timer, so the most seconds a vote task runs. */
     const val VOTE_TIMER_REPEATS = 60
+}
+
+/** /rtv (Rtv.kt). Its ratio, cooldown and timeout are in config.yaml. */
+internal object RtvTuning {
+    /** How often a running /rtv vote is checked again for players who went afk or left, in seconds. */
+    const val RECHECK_SECONDS = 1f
 }
 
 /** Level effects (the effect service's task, scheduled from ModuleRuntime). */

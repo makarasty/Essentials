@@ -11,6 +11,7 @@ import essential.common.database.data.PlayerData
 import essential.common.event.CustomEvents
 import essential.common.permission.Permission
 import essential.common.util.findPlayerData
+import essential.core.Electorate
 import essential.core.earnEXP
 import essential.core.ModuleRuntime
 import essential.core.VoteData
@@ -156,13 +157,22 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var isCanceled = false
     private var isPvP = Vars.state.rules.pvp
 
+    /** The team that votes on a PvP map; null where the whole server does. */
+    private val team: Team? = voteData.team.takeIf { isPvP }
+
     /**
      * Who may vote: the players on the server (on a PvP map, on the vote's team) when the vote started.
      * Without it a raid could start a kick and then join bots to answer it, each new connection one more
      * yes, and nothing about a vote that is already running would stop them.
      */
-    private val electorate: Set<String> =
-        players.filter { !isPvP || it.player.team() == voteData.team }.mapTo(HashSet()) { it.uuid }
+    private val electorate: Set<String> = players.filter { team == null || it.player.team() == team }.mapTo(HashSet()) { it.uuid }
+
+    /**
+     * May vote in this vote now: on the server when it started, and allowed by [Electorate] - not afk, on its
+     * team, holding `vote`, and let through by BlockIP when it is installed. The cast, the tally and the
+     * threshold all ask this, so a player who may not vote neither carries the vote nor blocks it.
+     */
+    private fun eligible(data: PlayerData) = data.uuid in electorate && Electorate.mayVote(data, team)
 
     private var chatFilter: Administration.ChatFilter
     private var gameoverEvent: Cons<GameOverEvent>
@@ -218,13 +228,13 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                     if (isVoting && isYes(message) && voteData.starter == data && isAdmin && !isAdminVote) {
                         isAdminVote = true
                         data.send("command.vote.voted")
-                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid()) && player.uuid() in electorate) {
-                        if (Vars.state.rules.pvp && voteData.team == player.team()) {
+                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
+                        if (eligible(data)) {
                             voted.add(player.uuid())
-                        } else if (!Vars.state.rules.pvp) {
-                            voted.add(player.uuid())
+                            data.send("command.vote.voted")
+                        } else {
+                            data.err("command.vote.ineligible")
                         }
-                        data.send("command.vote.voted")
                     } else if (isVoting && isNo(message) && isAdmin) {
                         isCanceled = true
                     }
@@ -263,37 +273,25 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     }
 
     /**
-     * The yes votes that still count: from voters who are online and not afk right now. [check] leaves
-     * afk and departed players out of the threshold, so a vote cast by one has to leave the tally too,
-     * or idle bots could carry a vote that the active players on the server never reached.
+     * The yes votes that still count: from voters who are [eligible] right now. [check] leaves everyone
+     * else out of the threshold, so a vote cast by one has to leave the tally too, or idle bots could
+     * carry a vote that the active players on the server never reached.
      */
-    private fun votes() = voted.count { players.byUuid(it)?.afk == false }
+    private fun votes() = voted.count { uuid -> players.byUuid(uuid)?.let(::eligible) == true }
 
     fun check(): Int {
-        // Sized from the electorate only: anyone who joined later cannot vote, so counting them would
-        // let a raid block a running vote just by joining bots, and would fail ordinary votes too.
-        val threshold = if (!isPvP) {
-            when (players.count { it.uuid in electorate && !it.afk }) {
-                1 -> 1
-                in 2..4 -> 2
-                in 5..6 -> 3
-                7 -> 4
-                in 8..9 -> 5
-                in 10..11 -> 6
-                12 -> 7
-                else -> 8
-            }
-        } else {
-            when (players.count { a -> a.uuid in electorate && a.player.team() == voteData.team && !a.afk }) {
-                1 -> 1
-                in 2..4 -> 2
-                in 5..6 -> 3
-                7 -> 4
-                in 8..9 -> 5
-                in 10..11 -> 6
-                12 -> 7
-                else -> 8
-            }
+        // Sized from the eligible only: anyone who joined later cannot vote, so counting them would let a
+        // raid block a running vote just by joining bots, and would fail ordinary votes too; the same goes
+        // for afk players and those BlockIP refuses.
+        val threshold = when (players.count(::eligible)) {
+            1 -> 1
+            in 2..4 -> 2
+            in 5..6 -> 3
+            7 -> 4
+            in 8..9 -> 5
+            in 10..11 -> 6
+            12 -> 7
+            else -> 8
         }
         // Ruled in answers/9-2.md: a bare `1 -> 2` above would also block a case that works today.
         // Not the solo `map` vote (Commands.kt's `solo` hatch there bypasses VoteSystem entirely

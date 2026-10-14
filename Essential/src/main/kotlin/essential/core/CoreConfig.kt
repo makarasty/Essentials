@@ -189,7 +189,7 @@ data class Vote(
 /** Feature - /rtv settings */
 @Serializable
 data class RockTheVote(
-    @YamlComment("Share of the online players that must vote (0.6 = 60%)")
+    @YamlComment("Share of the players who may vote that must vote (0.6 = 60%)")
     val ratio: Double = 0.6,
     @YamlComment("Seconds a player has to wait between /rtv uses")
     val cooldown: Int = 12,

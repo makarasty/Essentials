@@ -18,11 +18,14 @@ object Rtv {
     private val votes: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val cooldown = ConcurrentHashMap<String, TimeMark>()
     private var timeout: Timer.Task? = null
+    private var deadline: TimeMark? = null
     private var changing = false
 
-    val count: Int get() = votes.size
+    /** Votes that count: from players who may still vote (see [Electorate]). Ones gone afk count again once back. */
+    val count: Int get() = votes.count { uuid -> players.byUuid(uuid)?.let { Electorate.mayVote(it) } == true }
 
-    val required: Int get() = requiredFor(players.size)
+    /** Sized from the players who may vote now, late joiners included: anyone who may vote, may vote here. */
+    val required: Int get() = requiredFor(Electorate.count())
 
     fun vote(playerData: PlayerData) {
         val settings = conf.feature.vote.rtv
@@ -30,6 +33,10 @@ object Rtv {
 
         if (changing) {
             playerData.err("command.rtv.changing")
+            return
+        }
+        if (!Electorate.mayVote(playerData)) {
+            playerData.err("command.vote.ineligible")
             return
         }
         val wait = cooldown[uuid]
@@ -59,7 +66,8 @@ object Rtv {
             clearVotes()
             return
         }
-        val needed = requiredFor(players.count { it.uuid != uuid })
+        // The leaver is still in players while PlayerLeave runs
+        val needed = requiredFor(players.count { it.uuid != uuid && Electorate.mayVote(it) })
         if (voted) broadcast("command.rtv.left", name, count, needed)
         if (count >= needed) change()
     }
@@ -81,19 +89,31 @@ object Rtv {
         Events.fire(GameOverEvent(Vars.state.rules.waveTeam))
     }
 
+    /**
+     * Rechecks the vote every [RtvTuning.RECHECK_SECONDS] until [seconds] run out: players who go afk or leave
+     * the electorate lower what it needs, and nobody else may be about to vote again to notice.
+     */
     private fun startTimeout(seconds: Int) {
         timeout?.cancel()
-        timeout = Timer.schedule({
-            if (votes.isNotEmpty()) {
+        deadline = timeSource.markNow().plus(seconds.seconds)
+        timeout = Timer.schedule(::tick, RtvTuning.RECHECK_SECONDS, RtvTuning.RECHECK_SECONDS)
+    }
+
+    internal fun tick() {
+        when {
+            votes.isEmpty() || changing -> clearVotes()
+            count >= required -> change()
+            deadline?.hasPassedNow() != false -> {
                 broadcast("command.rtv.timeout")
                 clearVotes()
             }
-        }, seconds.toFloat())
+        }
     }
 
     private fun clearVotes() {
         timeout?.cancel()
         timeout = null
+        deadline = null
         votes.clear()
     }
 

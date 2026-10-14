@@ -2867,16 +2867,17 @@ class Commands {
         }
 
         val solo = players.size == 1 && arg[0] == "map"
-        // Mirrors VoteSystem.check()'s own electorate: team-scoped non-afk on a PvP map, server-wide
-        // otherwise. The gate and the pass threshold have to count the same electorate, or a team that
-        // is mostly eliminated (marked afk once unable to respawn - Team.derelict, a core wipe) can be
-        // blocked from starting any vote by players elsewhere on the map who were never going to vote
-        // in it anyway.
-        val eligibleVoters = if (Vars.state.rules.pvp) {
-            players.count { it.player.team() == playerData.player.team() && !it.afk }
-        } else {
-            players.count { !it.afk }
+        // Mirrors VoteSystem.check()'s own electorate: Electorate's rule, team-scoped on a PvP map,
+        // server-wide otherwise. The gate and the pass threshold have to count the same electorate, or a
+        // team that is mostly eliminated (marked afk once unable to respawn - Team.derelict, a core wipe)
+        // can be blocked from starting any vote by players elsewhere on the map who were never going to
+        // vote in it anyway. The starter is seeded as the first yes, so they have to be able to vote too.
+        val voteTeam = if (Vars.state.rules.pvp) playerData.player.team() else null
+        if (!Electorate.mayVote(playerData, voteTeam, starts = arg[0] == "kick")) {
+            playerData.err("command.vote.ineligible")
+            return
         }
+        val eligibleVoters = Electorate.count(voteTeam)
         if (!solo && eligibleVoters <= VoteStartTuning.SMALL_SERVER_VOTERS && !Permission.check(playerData, "vote.admin")) {
             playerData.err("command.vote.enough")
             return
