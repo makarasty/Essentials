@@ -148,8 +148,8 @@ object Trigger {
     }
 
     /**
-     * Records that [data] gave input that reached the server: a chat line every filter let through, a vote counted
-     * from a vote word, or one of this plugin's vote commands run. It counts for voting only (see [present]); afk kicking and the afk
+     * Records that [data] gave input that reached the server: a chat line every filter let through, or a vote they
+     * expressed by command or vote word (Electorate.castBy). It counts for voting only (see [present]); afk kicking and the afk
      * statistics follow movement alone, so a chat macro cannot hold off an afk kick.
      */
     fun markInput(data: PlayerData) {

@@ -41,6 +41,15 @@ class Electorate(
             && BlockIpHook.allows(data, starts)
     }
 
+    /**
+     * [data] expresses a vote - a vote command or a vote word, the one path for both: that is input (see
+     * Trigger.markInput), so an idle player who votes is at the keyboard; then whether they may vote ([mayVote]).
+     */
+    fun castBy(data: PlayerData, starts: Boolean = false): Boolean {
+        Trigger.markInput(data)
+        return mayVote(data, starts)
+    }
+
     /** How many players online may vote now, leaving out [except] (a player who is leaving). */
     fun count(except: String? = null): Int = players.count { it.uuid != except && mayVote(it) }
 

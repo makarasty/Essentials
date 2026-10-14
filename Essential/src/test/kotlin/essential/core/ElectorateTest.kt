@@ -143,6 +143,31 @@ class ElectorateTest {
     }
 
     @Test
+    fun anIdlePlayersVoteWordCountsLikeTheirRtvAndARefusedOneIsRefusedLikeIt() {
+        val voters = join(4)
+        val (idle, refused) = voters.take(2)
+        listOf(idle, refused).forEach { it.second.afk = true }
+        refuse(listOf(refused))
+        isVoting = true
+        val vote = VoteSystem(VoteData(type = VoteType.Skip, wave = 1, starter = voters[2].second))
+        try {
+            Vars.netServer.admins.filterMessage(idle.first, "y")
+            assertEquals(log("command.vote.voted"), idle.second.lastReceivedMessage, "an idle player's \"y\" counts")
+            Vars.netServer.admins.filterMessage(refused.first, "y")
+            assertEquals(err("command.vote.ineligible"), refused.second.lastReceivedMessage)
+        } finally {
+            vote.cancel()
+            isVoting = false
+        }
+        listOf(idle, refused).forEach { it.second.lastInput = null }
+        Rtv.vote(idle.second)
+        assertEquals(1, Rtv.count, "so does their /rtv")
+        Rtv.vote(refused.second)
+        assertEquals(err("command.vote.ineligible"), refused.second.lastReceivedMessage)
+        assertEquals(1, Rtv.count)
+    }
+
+    @Test
     fun chatSeenBeforeTheFiltersIsNotInputAndDoesNotEndAfk() {
         val (a) = join(1)
         a.second.afk = true

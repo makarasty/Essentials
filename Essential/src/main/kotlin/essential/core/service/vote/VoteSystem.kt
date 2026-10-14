@@ -15,7 +15,6 @@ import essential.core.Electorate
 import essential.core.earnEXP
 import essential.core.endMap
 import essential.core.ModuleRuntime
-import essential.core.Trigger
 import essential.core.VoteData
 import essential.core.VoteType
 import mindustry.Vars
@@ -221,10 +220,9 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         isAdminVote = true
                         data.send("command.vote.voted")
                     } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        if (electorate.mayVote(data)) {
+                        // This filter swallows the word, so the chat formatter never marks it as input: castBy does
+                        if (electorate.castBy(data)) {
                             voted.add(player.uuid())
-                            // A counted vote is input; this filter swallows the word, so the chat formatter never sees it
-                            Trigger.markInput(data)
                             data.send("command.vote.voted")
                         } else {
                             data.err("command.vote.ineligible")

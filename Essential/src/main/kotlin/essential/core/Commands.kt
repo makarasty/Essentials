@@ -2811,7 +2811,6 @@ class Commands {
             }
         }
 
-        Trigger.markInput(playerData)
         if (arg.isEmpty()) {
             playerData.err("command.vote.arg.empty")
             return
@@ -2844,7 +2843,7 @@ class Commands {
         // vote in it anyway. The starter is seeded as the first yes, so they have to be able to vote too.
         // A lone player's `vote map` is no vote at all (the solo hatch below loads the map directly).
         val electorate = Electorate.forVote(playerData.player.team())
-        if (!solo && !electorate.mayVote(playerData, starts = arg[0] == "kick")) {
+        if (!solo && !electorate.castBy(playerData, starts = arg[0] == "kick")) {
             playerData.err("command.vote.ineligible")
             return
         }

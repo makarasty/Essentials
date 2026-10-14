@@ -41,7 +41,6 @@ object Rtv {
         val settings = conf.feature.vote.rtv
         val uuid = playerData.uuid
 
-        Trigger.markInput(playerData)
         if (changing) {
             playerData.err("command.rtv.changing")
             return
@@ -55,7 +54,7 @@ object Rtv {
             playerData.err("command.vote.map.current", map.plainName())
             return
         }
-        if (!electorate.mayVote(playerData)) {
+        if (!electorate.castBy(playerData)) {
             playerData.err("command.vote.ineligible")
             return
         }
