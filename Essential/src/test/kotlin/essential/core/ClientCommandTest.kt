@@ -1616,6 +1616,36 @@ class ClientCommandTest {
         }
     }
 
+    /** Admin-node commands on another player refuse a target whose group ranks at or above the sender's. */
+    @Test
+    fun adminCommandsRespectRank() {
+        setPermission("admin", true)
+        val (peer, _) = newPlayer()
+        val (owner, _) = newPlayer()
+        try {
+            setPermission(peer, "admin", false)
+            setPermission(owner, "owner", false)
+            val denied = err("command.permission.false")
+
+            clientCommand.handleMessage("/strict ${peer.uuid()}", player)
+            assertEquals(denied, playerData.lastReceivedMessage)
+            assertEquals(false, findPlayerData(peer.uuid())?.strictMode, "an admin must not strict another admin")
+
+            val team = owner.team()
+            clientCommand.handleMessage("/team blue ${owner.uuid()}", player)
+            assertEquals(denied, playerData.lastReceivedMessage)
+            assertEquals(team, owner.team(), "an admin must not move an owner's team")
+
+            playerData.lastReceivedMessage = ""
+            clientCommand.handleMessage("/mute ${owner.uuid()}", player)
+            assertTrue(waitUntil(5000) { playerData.lastReceivedMessage == denied }, "an admin must not mute an owner")
+            assertEquals(false, runBlocking { getPlayerData(owner.uuid())?.chatMuted })
+        } finally {
+            leavePlayer(peer)
+            leavePlayer(owner)
+        }
+    }
+
     @Test
     fun client_setPermRejectsUnknownGroup() {
         setPermission("owner", true)

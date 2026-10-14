@@ -49,6 +49,7 @@ import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.gen.Player
+import mindustry.gen.Playerc
 import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.NetConnection
@@ -1077,7 +1078,7 @@ class Commands {
         } else {
             if (Permission.check(playerData, "kill.other")) {
                 val other = PlayerLookup.online(arg[0], playerData)
-                if (other != null) {
+                if (other != null && (other.uuid() == playerData.uuid || outranks(playerData, other))) {
                     val unit = other.unit()
                     if (unit != null) {
                         unit.kill()
@@ -1496,8 +1497,10 @@ class Commands {
 
     @ClientCommand("mute", "<player>", "Mute player")
     fun mute(playerData: PlayerData, arg: Array<out String>) {
+        val senderRank = rankOf(playerData)
         scope.launch {
             val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+            if (!outranksStored(playerData, senderRank, target)) return@launch
             target.chatMuted = true
             target.update()
             playerData.send("command.mute", target.name)
@@ -1798,8 +1801,12 @@ class Commands {
 
     @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
+        val senderRank = rankOf(playerData)
         scope.launch {
             try {
+                // Only a resolved account is ranked; a bare name match below is history, not a group.
+                val resolved = (PlayerLookup.findExact(arg[0]) as? PlayerLookup.Result.Found)?.value
+                if (resolved != null && resolved.uuid != playerData.uuid && !outranksStored(playerData, senderRank, resolved)) return@launch
                 WorldHistoryBuffer.flush()
                 val history = getAllWorldHistory()
 
@@ -1812,7 +1819,7 @@ class Commands {
                 //
                 // findExact also resolves a raw uuid and a #entityId ahead of any name comparison,
                 // so an admin who already knows the uuid can type it and skip names entirely.
-                val targetUuid = (PlayerLookup.findExact(arg[0]) as? PlayerLookup.Result.Found)?.value?.uuid
+                val targetUuid = resolved?.uuid
 
                 // Everything below that only reads the history - grouping every row by tile, keeping the
                 // tiles this player touched, sorting them - happens here, off the game thread. What reaches
@@ -2112,6 +2119,27 @@ class Commands {
         return false
     }
 
+    /** [outranks] for an online player; one whose data is still loading is refused, their rank is not known yet. */
+    private fun outranks(sender: PlayerData, target: Playerc): Boolean {
+        val data = findPlayerData(target.uuid())
+        if (data != null) return outranks(sender, data)
+        sender.err("command.permission.false")
+        return false
+    }
+
+    /**
+     * [outranks] for a row read off the game thread (mute, unmute, rollback): by the stored group, as
+     * those commands act on the account fleet-wide rather than on this session. [senderRank] is taken on
+     * the game thread before the lookup.
+     */
+    private fun outranksStored(sender: PlayerData, senderRank: Int, target: PlayerData): Boolean {
+        if (senderRank > Permission.rank(Permission.groupOf(target.uuid, target.permission))) return true
+        sender.err("command.permission.false")
+        return false
+    }
+
+    private fun rankOf(sender: PlayerData): Int = Permission.rank(Permission.effectiveGroup(sender))
+
     private fun validPermissionGroup(group: String, sender: PlayerData?): Boolean {
         if (Permission.hasGroup(group)) return true
         val list = Permission.groups.joinToString(", ")
@@ -2398,6 +2426,7 @@ class Commands {
     @ClientCommand("strict", "<player>", "Set whether the target player can build or not.")
     fun strict(playerData: PlayerData, arg: Array<out String>) {
         val target = PlayerLookup.onlineData(arg[0], playerData) ?: return
+        if (!outranks(playerData, target)) return
         target.strictMode = !target.strictMode
         scope.launch { target.update() }
         val undo = if (target.strictMode) ".undo" else ""
@@ -2451,7 +2480,7 @@ class Commands {
             movePlayerToTeam(playerData.player, team)
         } else if (Permission.check(playerData, "team.other")) {
             val other = PlayerLookup.online(arg[1], playerData)
-            if (other != null) {
+            if (other != null && (other.uuid() == playerData.uuid || outranks(playerData, other))) {
                 val previous = other.team()
                 movePlayerToTeam(other, team)
                 Undo.record(playerData, "team", other.uuid(), Undo.label(other.uuid())) { Undo.team(it, previous) }
@@ -2719,8 +2748,10 @@ class Commands {
 
     @ClientCommand("unmute", "<player>", "Unmute player")
     fun unmute(playerData: PlayerData, arg: Array<out String>) {
+        val senderRank = rankOf(playerData)
         scope.launch {
             val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
+            if (!outranksStored(playerData, senderRank, target)) return@launch
             target.chatMuted = false
             target.update()
             playerData.send("command.unmute", target.name)
