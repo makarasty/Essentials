@@ -212,6 +212,10 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 val data = findPlayerData(player.uuid())
                 if (data != null) {
                     val isAdmin = Permission.check(data, "vote.pass")
+                    // Every vote word is input, whichever branch below takes it - a re-affirming "y" from a voter
+                    // back at the keyboard too. This filter swallows the word, so the chat formatter never marks it:
+                    // castBy is the one place that does, and its answer is the cast's eligibility.
+                    val mayVote = isVoting && (isYes(message) || isNo(message)) && electorate.castBy(data)
                     // The starter is pre-seeded into `voted` at construction (so their own vote
                     // counts without them having to speak), which also means the ordinary yes-branch
                     // below - guarded on `!voted.contains` - can never see them. A starter holding
@@ -220,8 +224,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         isAdminVote = true
                         data.send("command.vote.voted")
                     } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        // This filter swallows the word, so the chat formatter never marks it as input: castBy does
-                        if (electorate.castBy(data)) {
+                        if (mayVote) {
                             voted.add(player.uuid())
                             data.send("command.vote.voted")
                         } else {

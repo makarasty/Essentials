@@ -237,6 +237,32 @@ class VoteElectorateTest {
     }
 
     @Test
+    fun aVoterWhoSaysYesAgainAfterBeingAwayCountsAgain() {
+        val wasPvp = Vars.state.rules.pvp
+        val starter = newPlayer()
+        val voter = newPlayer()
+        try {
+            Vars.state.rules.pvp = false
+            isVoting = true
+            val vote = VoteSystem(VoteData(type = VoteType.Skip, wave = 1, starter = starter.second))
+
+            Vars.netServer.admins.filterMessage(voter.first, "y")
+            voter.second.afk = true
+            voter.second.lastInput = null // away long enough that the first "y" no longer makes them present
+            // "yes", not "y" again: vanilla's anti-spam filter drops the same line twice in a row before this one
+            Vars.netServer.admins.filterMessage(voter.first, "yes")
+            vote.run()
+
+            assertTrue(!isVoting, "the second \"y\" is input: the voter is present and their vote counts again")
+        } finally {
+            isVoting = false
+            Vars.state.rules.pvp = wasPvp
+            voter.second.afk = false
+            listOf(starter, voter).forEach { leavePlayer(it.first) }
+        }
+    }
+
+    @Test
     fun aKickTargetWhoLeftMidVoteIsKickedForThreeHoursNotBanned() {
         val wasPvp = Vars.state.rules.pvp
         val starter = newPlayer()
