@@ -335,6 +335,23 @@ object Permission {
         return if (isAdminGroup(group) && heldBack(data.uuid, data.player.usid())) default else group
     }
 
+    /**
+     * Rank of a group, the only ordering permission.yaml expresses: 2 for a group holding `all`, 1 for
+     * another admin group, 0 for the rest. Inheritance is not an order - the default owner inherits nothing.
+     */
+    fun rank(group: String): Int {
+        val role = main[group] ?: return 0
+        return when {
+            role.permission.contains("all") -> 2
+            role.admin == true -> 1
+            else -> 0
+        }
+    }
+
+    /** Whether [sender] ranks strictly above [target], each by the group they act with right now. */
+    fun outranks(sender: PlayerData, target: PlayerData): Boolean =
+        rank(effectiveGroup(sender)) > rank(effectiveGroup(target))
+
     fun syncVanillaAdmin(uuid: String, group: String) {
         val admins = Vars.netServer?.admins ?: return
         if (!isAdminGroup(group)) {

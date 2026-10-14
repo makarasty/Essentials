@@ -2105,6 +2105,13 @@ class Commands {
         }
     }
 
+    /** Whether [sender] may act on [target], whose group must rank below the sender's; tells the sender when not. */
+    private fun outranks(sender: PlayerData, target: PlayerData): Boolean {
+        if (Permission.outranks(sender, target)) return true
+        sender.err("command.permission.false")
+        return false
+    }
+
     private fun validPermissionGroup(group: String, sender: PlayerData?): Boolean {
         if (Permission.hasGroup(group)) return true
         val list = Permission.groups.joinToString(", ")
@@ -2193,7 +2200,14 @@ class Commands {
     @ClientCommand("setperm", "<player> <group>", "Set the player's permission group.")
     fun setPerm(playerData: PlayerData, arg: Array<out String>) {
         if (!validPermissionGroup(arg[1], playerData)) return
-        withPermissionTarget(arg[0], playerData) { data -> applyPermissionGroup(data, arg[1], playerData) }
+        // Only the console hands out a group at or above the sender's own, or moves someone who holds one.
+        if (Permission.rank(arg[1]) >= Permission.rank(Permission.effectiveGroup(playerData))) {
+            playerData.err("command.permission.false")
+            return
+        }
+        withPermissionTarget(arg[0], playerData) { data ->
+            if (outranks(playerData, data)) applyPermissionGroup(data, arg[1], playerData)
+        }
     }
 
     @ServerCommand("setperm", "<player> <group>", "Set the player's permission group.")

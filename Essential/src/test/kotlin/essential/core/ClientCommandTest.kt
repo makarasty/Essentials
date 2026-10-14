@@ -1592,6 +1592,30 @@ class ClientCommandTest {
         leavePlayer(dummy.first)
     }
 
+    /** /setperm cannot hand out a group at or above the sender's, nor move someone who holds one. */
+    @Test
+    fun client_setPermRespectsRank() {
+        setPermission("owner", true)
+        val (dummy, dummyData) = newPlayer()
+        try {
+            val before = dummyData.permission
+            clientCommand.handleMessage("/setperm ${dummy.uuid()} owner", player)
+            assertEquals(err("command.permission.false"), playerData.lastReceivedMessage)
+            assertEquals(before, findPlayerData(dummy.uuid())?.permission, "an owner must not mint another owner")
+
+            setPermission(dummy, "owner", false)
+            clientCommand.handleMessage("/setperm ${dummy.uuid()} user", player)
+            assertEquals(err("command.permission.false"), playerData.lastReceivedMessage)
+            assertEquals("owner", findPlayerData(dummy.uuid())?.permission, "an owner must not move another owner")
+
+            setPermission(dummy, "admin", false)
+            clientCommand.handleMessage("/setperm ${dummy.uuid()} user", player)
+            assertEquals("user", findPlayerData(dummy.uuid())?.permission, "an owner still moves an admin")
+        } finally {
+            leavePlayer(dummy)
+        }
+    }
+
     @Test
     fun client_setPermRejectsUnknownGroup() {
         setPermission("owner", true)
