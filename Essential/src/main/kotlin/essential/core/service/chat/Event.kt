@@ -1,5 +1,6 @@
 package essential.core.service.chat
 
+import arc.Core
 import arc.files.Fi
 import arc.util.Log
 import essential.common.bundle.Bundle
@@ -80,6 +81,23 @@ fun isChatBlacklisted(message: String): Boolean {
     return compiledBlacklist(file).any { it(message) }
 }
 
+/**
+ * The player whose chat packet is being handled right now, when it is public chat.
+ *
+ * The formatter is the one place a message reaches only after every filter let it through, but /t, /a and
+ * Player.sendUnformatted call it too, and translating those would show team chat to the other team.
+ * PlayerChatEvent fires first on the same call with the raw text, so a raw text that is not a command
+ * marks the formatter call that follows as public. Cleared on the next frame in case a filter drops it.
+ */
+private var publicSender: Player? = null
+
+@Event
+fun markPublicChat(event: EventType.PlayerChatEvent) {
+    if (!conf.translate.enabled || event.message.startsWith(Vars.netServer.clientCommands.prefix)) return
+    publicSender = event.player
+    Core.app.post { publicSender = null }
+}
+
 @Event
 fun serverLoaded(event: EventType.ServerLoadEvent) {
     Vars.netServer.admins.addChatFilter(object : Administration.ChatFilter {
@@ -99,6 +117,15 @@ fun serverLoaded(event: EventType.ServerLoadEvent) {
         if (player != null) {
             val data: PlayerData? = findPlayerData(player.uuid())
             if (message != null) {
+                if (player === publicSender) {
+                    publicSender = null
+                    // Inside the formatter, so nothing here may throw into the engine's chat path.
+                    try {
+                        ChatTranslator.submit(player, message)
+                    } catch (e: Exception) {
+                        Log.warn("Chat translation could not queue a message: @", e.toString())
+                    }
+                }
                 val defaultFormat = "[coral][[" + player.coloredName() + "[coral]]:[white] " + message
                 if (data != null) {
                     val chatFormat: String = Permission[data].chatFormat

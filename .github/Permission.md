@@ -154,6 +154,7 @@ holds, vanilla ones included, so granting `a` or `sync` only makes those vanilla
 | `/team`              | `team.other`          | `/team <team> <player>`: change another player's team.                                       | admin          |
 | `/time`              | `time`                | Show the server time.                                                                        | user           |
 | `/tp`                | `tp`                  | Teleport to a player.                                                                        | user           |
+| `/tr`                | `tr`                  | Turn chat translation on or off for yourself.                                                | visitor, user  |
 | `/track`             | `track`               | Show other players' cursor positions.                                                        | user           |
 | `/unban`             | `unban`               | Unban a player.                                                                              | *(none)*       |
 | `/undo`              | `undo`                | Undo the last admin action (ban, kick, mute, build restriction, group or team change).       | admin          |

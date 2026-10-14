@@ -24,6 +24,17 @@ class Commands {
         // with "." and run it as a command instead. That filter is the one to fix, not this command.
         val message = Vars.netServer.admins.filterMessage(playerData.player.self(), arg[0]) ?: return
         Call.sendMessage("[orange]*[]" + Vars.netServer.chatFormatter.format(playerData.player.`as`(), message))
+        ChatTranslator.submit(playerData.player.self(), message)
+    }
+
+    @ClientCommand(name = "tr", description = "Turn chat translation on or off for yourself")
+    fun tr(playerData: PlayerData) {
+        if (playerData.status.remove(ChatTranslator.OFF_KEY) != null) {
+            playerData.send("command.tr.on")
+        } else {
+            playerData.status[ChatTranslator.OFF_KEY] = "1"
+            playerData.send("command.tr.off")
+        }
     }
 
     @ClientCommand(name = "pm", parameter = "<player> <message...>", description = "Send a private message")

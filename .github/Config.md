@@ -439,7 +439,7 @@ Link between servers for ``/broadcast``. Settings in ``config_bridge.yaml``.
 ### module.chat
 
 Default: ``true``<br>
-Chat word blacklist and the per-group chat formats from ``permission.yaml``. Settings in ``config_chat.yaml``.
+Chat word blacklist, chat translation (``/tr``) and the per-group chat formats from ``permission.yaml``. Settings in ``config_chat.yaml``.
 
 ### module.contribution
 
@@ -530,6 +530,23 @@ strict:
 blacklist:
   enabled: false
   regex: false
+translate:
+  enabled: false
+  format: "[lightgray]  ↳ {player}: {text}"
+  understood: ["uk", "ru"]
+  maxLanguages: 3
+  minLetters: 1
+  skip: ["gg", "ggwp", "wp", "gl", "hf", "glhf", "ok", "okay", "k", "lol", "xd", "ty", "thx", "np", "brb", "afk", "rtv", "y", "n", "yes", "no", "hi", "bye"]
+  batchMillis: 500
+  maxAgeSeconds: 20
+  cacheSize: 2000
+  timeoutSeconds: 8
+  cooldownSeconds: 300
+  google: true
+  groqKey: ""
+  groqModels: ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+  geminiKey: ""
+  geminiModels: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 ```
 
 ### chatFormat
@@ -556,6 +573,82 @@ Block chat messages that contain a word from ``chat_blacklist.txt`` (in ``config
 
 Default: ``false``<br>
 Treat each line of ``chat_blacklist.txt`` as a regular expression searched anywhere in the message. An invalid expression is logged and skipped. ``false`` matches plain text.
+
+### translate
+
+Public chat translated into each reader's language. The message itself goes out at once; a moment later every online player who reads another language gets a separate line with the translation, in the language they picked with ``/lang`` or else their client's. The sender, players who turned it off with ``/tr``, and readers who already understand the message get nothing. Team chat (``/t``), admin chat (``/a``) and private messages are never translated; ``/me`` is. Translation runs off the game thread and never delays chat: a full queue drops its oldest job, a failed backend is skipped for ``cooldownSeconds``, and with every backend down messages simply stay untranslated. Backend failures are logged as warnings.
+
+Backends are tried in this order: Google (``google``), each of ``groqModels`` when ``groqKey`` is set, each of ``geminiModels`` when ``geminiKey`` is set. All have free tiers. The Google endpoint is unofficial and needs no key; Groq and Gemini allow roughly 30 and 15 requests a minute on their free plans, so they are fallbacks for an outage, not a replacement at peak. On the free Gemini tier Google may use the text sent to it for training. All servers on one host share the host's address, and so share Google's limit.
+
+### translate.enabled
+
+Default: ``false``<br>
+Turn chat translation on.
+
+### translate.format
+
+Default: ``[lightgray]  ↳ {player}: {text}``<br>
+The line a reader sees. ``{player}`` is the sender's name without colours, ``{text}`` the translation.
+
+### translate.understood
+
+Default: ``["uk", "ru"]``<br>
+Languages whose readers read each other: a message in one of them is not translated for a reader of another. Text written only in Cyrillic is taken as one of these without asking a backend, so with the default a Cyrillic message costs nothing unless someone reading another language is online.
+
+### translate.maxLanguages
+
+Default: ``3``<br>
+Most languages one message is translated into, picked by how many online players read each. Readers of the rest get no line. Readers who already understand the message do not count against it. Each language is one more request per batch.
+
+### translate.minLetters
+
+Default: ``1``<br>
+Messages with fewer letters are not translated. One Chinese character counts as one letter; digits, punctuation, emoji and block icons count as none, so a message of only those is never translated.
+
+### translate.skip
+
+Default: common game slang (``gg``, ``ok``, ``lol``, ...)<br>
+Whole messages never translated, case-insensitive, punctuation around them ignored. A translator garbles these (``gg`` comes back as ``рр``).
+
+### translate.batchMillis
+
+Default: ``500``<br>
+How long to collect messages before sending them together. One batch is one request per language, however many messages it holds.
+
+### translate.maxAgeSeconds
+
+Default: ``20``<br>
+A translation not ready within this many seconds of the message is dropped rather than shown late.
+
+### translate.cacheSize
+
+Default: ``2000``<br>
+Translations kept in memory, so a repeated phrase costs no request. Per server.
+
+### translate.timeoutSeconds
+
+Default: ``8``<br>
+Longest wait for one backend answer.
+
+### translate.cooldownSeconds
+
+Default: ``300``<br>
+How long a backend that failed is skipped. A backend that answers 429 with ``Retry-After`` is skipped for that long instead.
+
+### translate.google
+
+Default: ``true``<br>
+Use Google Translate through the endpoint its Chrome extension uses. No key, several messages per request, a detected language per message.
+
+### translate.groqKey, translate.groqModels
+
+Default: empty, ``["openai/gpt-oss-20b", "openai/gpt-oss-120b"]``<br>
+A key from console.groq.com (free plan, no card) turns Groq on. The models are tried in order.
+
+### translate.geminiKey, translate.geminiModels
+
+Default: empty, ``["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]``<br>
+A key from aistudio.google.com turns Gemini on. The models are tried in order. Free-tier limits are shown only in AI Studio.
 
 # config_protect.yaml
 
