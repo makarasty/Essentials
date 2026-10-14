@@ -1479,6 +1479,26 @@ class ClientCommandTest {
         }
     }
 
+    /** In PvP, /tp reaches only the sender's own team unless they hold the admin node. */
+    @Test
+    fun client_tpStaysOnTheOwnTeamInPvp() {
+        setPermission("user", false)
+        val (enemy, _) = newPlayer()
+        val wasPvp = Vars.state.rules.pvp
+        try {
+            Vars.state.rules.pvp = true
+            player.team(Team.sharded)
+            enemy.team(Team.crux)
+            clientCommand.handleMessage("/tp ${enemy.uuid()}", player)
+            assertEquals(err("command.permission.false"), playerData.lastReceivedMessage)
+            // Outside PvP is client_tp's; a real teleport here moves the shared player off the tile client_dps builds on.
+        } finally {
+            Vars.state.rules.pvp = wasPvp
+            player.team(Team.sharded)
+            leavePlayer(enemy)
+        }
+    }
+
     @Test
     fun client_fuck() {
         // Ensure sufficient permission to execute correction command

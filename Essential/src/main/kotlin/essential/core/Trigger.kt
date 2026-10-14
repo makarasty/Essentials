@@ -730,7 +730,9 @@ object Trigger {
                 // globalTime is a float that never resets, so after a few days of uptime it coarsens and
                 // the gate would fire in bursts with seconds of silence between them.
                 if (data.mouseTracking && trackTick % 15 == 0) {
+                    val allTeams = seesAcrossTeams(data)
                     Groups.player.forEach { player ->
+                        if (!allTeams && player.team() != data.player.team()) return@forEach
                         Call.label(
                             data.player.con(),
                             player.name,

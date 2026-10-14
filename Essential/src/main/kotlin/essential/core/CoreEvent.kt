@@ -500,7 +500,7 @@ fun tap(event: TapEvent) {
         }
 
         players.forEach { two ->
-            if (two.mouseTracking) {
+            if (two.mouseTracking && (event.player.team() == two.player.team() || seesAcrossTeams(two))) {
                 Call.effect(two.player.con(), Fx.bigShockwave, event.tile.getX(), event.tile.getY(), 0f, Color.cyan)
             }
         }
@@ -1129,6 +1129,9 @@ fun playerJoin(event: PlayerJoin) {
         Bundle()["log.joined", event.player.plainName(), event.player.uuid(), event.player.con.address]
     )
 }
+
+/** In PvP, /tp and /track reach only the player's own team unless they hold the `admin` node; outside PvP, everyone. */
+internal fun seesAcrossTeams(data: PlayerData): Boolean = !Vars.state.rules.pvp || Permission.check(data, "admin")
 
 /** A Player that answers what the offline readers ask (uuid, name, team, locale, address) and holds no socket. */
 internal fun detachedPlayer(left: Playerc): Player {

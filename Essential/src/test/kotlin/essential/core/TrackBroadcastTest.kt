@@ -7,6 +7,7 @@ import essential.common.database.data.PlayerData
 import essential.common.players
 import mindustry.Vars
 import mindustry.game.EventType
+import mindustry.game.Team
 import mindustry.gen.Groups
 import mindustry.gen.LabelCallPacket
 import mindustry.gen.Player
@@ -14,6 +15,7 @@ import mindustry.net.Net
 import mindustry.net.NetConnection
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -100,6 +102,52 @@ class TrackBroadcastTest {
             testPlayer.con = originalCon
             serverField.setBoolean(Vars.net, wasServer)
             activeField.setBoolean(Vars.net, wasActive)
+        }
+    }
+
+    /** In PvP a non-admin's /track shows their own team only. */
+    @Test
+    fun pvpTrackShowsOnlyTheOwnTeam() {
+        val originalCon = testPlayer.con
+        val serverField = Net::class.java.getDeclaredField("server").apply { isAccessible = true }
+        val activeField = Net::class.java.getDeclaredField("active").apply { isAccessible = true }
+        val wasServer = serverField.getBoolean(Vars.net)
+        val wasActive = activeField.getBoolean(Vars.net)
+        val wasPvp = Vars.state.rules.pvp
+        val enemy = newPlayer().first
+
+        val labels = mutableListOf<String>()
+        val counting = object : NetConnection(originalCon.address) {
+            override fun send(`object`: Any?, reliable: Boolean) {
+                if (`object` is LabelCallPacket) labels += `object`.message
+            }
+
+            override fun close() = Unit
+        }
+        counting.uuid = originalCon.uuid
+        counting.usid = originalCon.usid
+
+        try {
+            Events.fire(EventType.Trigger.update)
+            testPlayer.team(Team.sharded)
+            enemy.team(Team.crux)
+            testPlayer.con = counting
+            testData.mouseTracking = true
+            serverField.setBoolean(Vars.net, true)
+            activeField.setBoolean(Vars.net, true)
+            Vars.state.rules.pvp = true
+
+            repeat(TICKS) { Events.fire(EventType.Trigger.update) }
+
+            assertTrue(labels.contains(testPlayer.name), "the own team should still be tracked, saw $labels")
+            assertFalse(labels.contains(enemy.name), "an enemy's cursor must not reach a non-admin in PvP")
+        } finally {
+            Vars.state.rules.pvp = wasPvp
+            testData.mouseTracking = false
+            testPlayer.con = originalCon
+            serverField.setBoolean(Vars.net, wasServer)
+            activeField.setBoolean(Vars.net, wasActive)
+            PluginTest.leavePlayer(enemy)
         }
     }
 }

@@ -2563,6 +2563,10 @@ class Commands {
     @ClientCommand("tp", "<player>", "Teleport to other players")
     fun tp(playerData: PlayerData, arg: Array<out String>) {
         val other = PlayerLookup.online(arg[0], playerData) ?: return
+        if (!seesAcrossTeams(playerData) && other.team() != playerData.player.team()) {
+            playerData.err("command.permission.false")
+            return
+        }
 
         playerData.player.unit()?.x(other.x)
         playerData.player.unit()?.y(other.y)
