@@ -201,6 +201,7 @@ object Permission {
                     offline[uuid] = permissionData
                 } else {
                     player.permission = permissionData.group
+                    if (rank(permissionData.group) > 0 || permissionData.admin) bindSession(uuid)
                     player.player.admin(isAdmin(uuid, permissionData.group))
                     if (permissionData.name.isNotEmpty()) {
                         player.name = permissionData.name
@@ -304,7 +305,9 @@ object Permission {
      */
     fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
         val entry = user?.get(uuid)
-        return (entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)) &&
+        // A file entry's admin: true names a uuid only, so it also needs this server's device binding.
+        val entryAdmin = entry?.admin == true && boundDevice(uuid) != null
+        return (entryAdmin || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)) &&
             !heldBack(uuid)
     }
 
@@ -413,7 +416,7 @@ object Permission {
 
     fun syncVanillaAdmin(uuid: String, group: String) {
         val admins = Vars.netServer?.admins ?: return
-        if (rank(group) > 0) {
+        if (rank(group) > 0 || user?.get(uuid)?.admin == true) {
             bindSession(uuid)
         } else {
             Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }

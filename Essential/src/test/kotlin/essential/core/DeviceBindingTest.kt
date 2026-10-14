@@ -133,4 +133,34 @@ class DeviceBindingTest {
             leavePlayer(pleb)
         }
     }
+
+    /** permission_user.yaml's admin: true names a uuid; it reaches only the device this server bound. */
+    @Test
+    fun aFileAdminFlagFollowsTheDevice() {
+        val userFile = rootPath.child("permission_user.yaml")
+        val good = userFile.readString()
+        val (target, _) = newPlayer()
+        val uuid = target.uuid()
+        val usid = target.usid()
+        try {
+            setPermission(target, "user", false)
+            userFile.writeString(good.trimEnd() + "\n$uuid:\n  group: user\n  admin: true\n", false)
+            Permission.load()
+            PluginTest.pumpApp()
+            assertEquals(usid, Permission.boundDevice(uuid), "the online session is bound on reload")
+            assertTrue(target.admin(), "the bound device gets the file's admin flag")
+            leavePlayer(target)
+
+            val (impostor, _) = rejoin(uuid, "anotherDevice")
+            try {
+                assertFalse(impostor.admin(), "the file's admin flag must not reach another device")
+                assertFalse(Permission.isAdmin(uuid, "user"))
+            } finally {
+                leavePlayer(impostor)
+            }
+        } finally {
+            userFile.writeString(good, false)
+            Permission.load()
+        }
+    }
 }
