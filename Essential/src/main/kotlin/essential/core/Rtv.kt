@@ -22,11 +22,14 @@ object Rtv {
         private set
     private var changing = false
 
-    /** Votes that count: from players who may still vote (see [Electorate]). Ones gone afk count again once back. */
-    val count: Int get() = votes.count { uuid -> players.byUuid(uuid)?.let { Electorate.mayVote(it) } == true }
+    /** Every player online who may use /rtv: late joiners vote and count like anyone else. */
+    private val electorate = Electorate(Electorate.RTV)
 
-    /** Sized from the players who may vote now, late joiners included: anyone who may vote, may vote here. */
-    val required: Int get() = requiredFor(Electorate.count())
+    /** Votes that count: from players who may still vote. */
+    val count: Int get() = electorate.tally(votes)
+
+    /** [ratio][RockTheVote.ratio] of the players who may vote now, one at least. */
+    val required: Int get() = requiredFor(electorate.count())
 
     /**
      * A vote to move on: to the next map, or with [id] (an ID /maps shows) to that map. The first vote sets the
@@ -45,7 +48,7 @@ object Rtv {
             playerData.err("command.rtv.map.invalid", id)
             return
         }
-        if (!Electorate.mayVote(playerData)) {
+        if (!electorate.mayVote(playerData)) {
             playerData.err("command.vote.ineligible")
             return
         }
@@ -89,7 +92,7 @@ object Rtv {
             return
         }
         // The leaver is still in players while PlayerLeave runs
-        val needed = requiredFor(players.count { it.uuid != uuid && Electorate.mayVote(it) })
+        val needed = requiredFor(electorate.count(except = uuid))
         val to = target?.plainName()
         if (voted) {
             if (to == null) broadcast("command.rtv.left", name, count, needed) else broadcast("command.rtv.left.map", name, count, needed, to)

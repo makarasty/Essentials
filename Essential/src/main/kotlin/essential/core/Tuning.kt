@@ -109,6 +109,15 @@ internal object VoteStartTuning {
     const val VOTE_TIMER_REPEATS = 60
 }
 
+/** Who may vote (Electorate.kt). */
+internal object ElectorateTuning {
+    /** While BlockIP's vote rule is not found, how often it is looked for again, in minutes. */
+    const val HOOK_RETRY_MINUTES = 1
+
+    /** Least time between two logs of BlockIP's vote rule failing, in minutes. */
+    const val HOOK_FAILURE_LOG_MINUTES = 1
+}
+
 /** /rtv (Rtv.kt). Its ratio, cooldown and timeout are in config.yaml. */
 internal object RtvTuning {
     /** How often a running /rtv vote is checked again for players who went afk or left, in seconds. */

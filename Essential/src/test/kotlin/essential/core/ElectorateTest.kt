@@ -1,6 +1,7 @@
 package essential.core
 
 import PluginTest.Companion.err
+import PluginTest.Companion.expectingErrors
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.log
 import PluginTest.Companion.loadGame
@@ -14,6 +15,7 @@ import essential.common.players
 import essential.core.service.vote.VoteSystem
 import mindustry.Vars
 import mindustry.game.EventType.GameOverEvent
+import mindustry.game.EventType.PlayerChatEvent
 import mindustry.gen.Player
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -44,6 +46,9 @@ class ElectorateTest {
 
     private val joined = ArrayList<Pair<Player, PlayerData>>()
 
+    /** The electorate of a server-wide /vote. */
+    private val electorate = Electorate(Electorate.VOTE)
+
     @BeforeTest
     fun setup() {
         if (!done) {
@@ -66,7 +71,7 @@ class ElectorateTest {
 
     @AfterTest
     fun cleanup() {
-        Electorate.external = null
+        BlockIpHook.external = null
         isVoting = false
         Rtv.reset()
         joined.forEach { leavePlayer(it.first) }
@@ -76,7 +81,7 @@ class ElectorateTest {
     private fun join(n: Int) = (1..n).map { newPlayer().also(joined::add) }
 
     private fun useFakeBlockIp() {
-        Electorate.external = assertNotNull(Electorate.lookup(FakeBlockIp::class.java.name))
+        BlockIpHook.external = assertNotNull(BlockIpHook.lookup(FakeBlockIp::class.java.name))
     }
 
     private fun gameOverDuring(action: () -> Unit): Boolean {
@@ -93,12 +98,12 @@ class ElectorateTest {
 
     @Test
     fun withoutBlockIpOnlyEssentialsRulesApply() {
-        assertNull(Electorate.lookup("BlockIp.BlockPlugin"), "BlockIP is not on the test classpath")
-        Electorate.external = null
+        assertNull(BlockIpHook.lookup("BlockIp.BlockPlugin"), "BlockIP is not on the test classpath")
+        BlockIpHook.external = null
         val (a, b) = join(2)
-        assertTrue(Electorate.mayVote(a.second))
+        assertTrue(electorate.mayVote(a.second))
         b.second.afk = true
-        assertFalse(Electorate.mayVote(b.second), "an afk player may not vote")
+        assertFalse(electorate.mayVote(b.second), "an afk player may not vote")
         assertTrue(FakeBlockIp.calls.isEmpty())
     }
 
@@ -155,7 +160,7 @@ class ElectorateTest {
         // Raid mode: BlockIP lets only trusted players vote
         refuse(raiders)
         val target = raiders[0]
-        assertEquals(3, Electorate.count())
+        assertEquals(3, electorate.count())
 
         isVoting = true
         val vote = VoteSystem(VoteData(target = target.first, targetUUID = target.first.uuid(), reason = "raid",
@@ -186,7 +191,7 @@ class ElectorateTest {
             vote.cancel()
             isVoting = false
         }
-        assertTrue(trusted.all { Electorate.mayVote(it.second) })
+        assertTrue(trusted.all { electorate.mayVote(it.second) })
     }
 
     @Test
@@ -195,9 +200,9 @@ class ElectorateTest {
         val uuid = held.first.uuid()
         try {
             Permission.bindDevice(uuid, "another-device")
-            assertFalse(Electorate.mayVote(held.second), "the hook refuses the untrusted session")
+            assertFalse(electorate.mayVote(held.second), "the hook refuses the untrusted session")
             assertEquals(Triple(uuid, false, true), FakeBlockIp.calls.last())
-            assertTrue(Electorate.mayVote(normal.second, starts = true))
+            assertTrue(electorate.mayVote(normal.second, starts = true))
             assertEquals(Triple(normal.first.uuid(), true, false), FakeBlockIp.calls.last())
         } finally {
             Core.settings.remove("essential-device-$uuid")
@@ -245,5 +250,27 @@ class ElectorateTest {
         Rtv.vote(b.second, "0")
         assertEquals(err("command.rtv.other.next"), b.second.lastReceivedMessage)
         assertEquals(1, Rtv.count)
+    }
+
+    @Test
+    fun eachVoteAsksForItsOwnNode() {
+        val (a) = join(1)
+        assertTrue(Electorate(Electorate.RTV).mayVote(a.second))
+        assertFalse(Electorate("no.such.node").mayVote(a.second), "the node is the vote's own, not a fixed one")
+    }
+
+    @Test
+    fun aChatLineOrCommandEndsAfkAtOnce() {
+        val (a) = join(1)
+        a.second.afk = true
+        Events.fire(PlayerChatEvent(a.first, "/rtv"))
+        assertTrue(electorate.mayVote(a.second), "a player who typed something is back and may vote")
+    }
+
+    @Test
+    fun aFailingHookFallsBackToEssentialsRules() {
+        val (a) = join(1)
+        BlockIpHook.external = { _, _, _ -> throw IllegalStateException("broken") }
+        assertTrue(expectingErrors("BlockIP's vote rule failed") { electorate.mayVote(a.second) })
     }
 }

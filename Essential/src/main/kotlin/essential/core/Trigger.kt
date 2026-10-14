@@ -125,6 +125,16 @@ object Trigger {
     }
 
     /**
+     * Ends [data]'s afk spell: they moved, or said or typed something (CoreEvent's chat handler). The flag is set
+     * after `afk.time` idle seconds whether or not afk kicking is on, and an afk player may not vote (Electorate),
+     * so a player back at the keyboard has to be able to vote at once, not after the next second's check.
+     */
+    fun markActive(data: PlayerData) {
+        data.afkTime = 0u
+        data.afk = false
+    }
+
+    /**
      * A player with no unit is dead on a team with no core to respawn from - every pvp loser
      * this file moves to Team.derelict is in that state permanently - and can never move or
      * mine again, so reading a null unit as activity exempted the idlest players on the
@@ -877,8 +887,7 @@ object Trigger {
                         }
                     }
                 } else {
-                    it.afkTime = 0u
-                    it.afk = false
+                    markActive(it)
                     it.mousePosition = activityMark(it)
                 }
 

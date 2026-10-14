@@ -162,18 +162,11 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private val team: Team? = voteData.team.takeIf { isPvP }
 
     /**
-     * Who may vote: the players on the server (on a PvP map, on the vote's team) when the vote started.
-     * Without it a raid could start a kick and then join bots to answer it, each new connection one more
-     * yes, and nothing about a vote that is already running would stop them.
+     * Who may vote: [Electorate]'s rule, among the players on the server (on a PvP map, on the vote's team) when
+     * the vote started. Without the members fixed, a raid could start a kick and then join bots to answer it,
+     * each new connection one more yes, and nothing about a vote that is already running would stop them.
      */
-    private val electorate: Set<String> = players.filter { team == null || it.player.team() == team }.mapTo(HashSet()) { it.uuid }
-
-    /**
-     * May vote in this vote now: on the server when it started, and allowed by [Electorate] - not afk, on its
-     * team, holding `vote`, and let through by BlockIP when it is installed. The cast, the tally and the
-     * threshold all ask this, so a player who may not vote neither carries the vote nor blocks it.
-     */
-    private fun eligible(data: PlayerData) = data.uuid in electorate && Electorate.mayVote(data, team)
+    private val electorate = Electorate(Electorate.VOTE, team, Electorate.online(team))
 
     private var chatFilter: Administration.ChatFilter
     private var gameoverEvent: Cons<GameOverEvent>
@@ -230,7 +223,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         isAdminVote = true
                         data.send("command.vote.voted")
                     } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        if (eligible(data)) {
+                        if (electorate.mayVote(data)) {
                             voted.add(player.uuid())
                             data.send("command.vote.voted")
                         } else {
@@ -274,17 +267,17 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     }
 
     /**
-     * The yes votes that still count: from voters who are [eligible] right now. [check] leaves everyone
-     * else out of the threshold, so a vote cast by one has to leave the tally too, or idle bots could
-     * carry a vote that the active players on the server never reached.
+     * The yes votes that still count: from voters who may vote right now. [check] leaves everyone else out
+     * of the threshold, so a vote cast by one has to leave the tally too, or idle bots could carry a vote
+     * that the active players on the server never reached.
      */
-    private fun votes() = voted.count { uuid -> players.byUuid(uuid)?.let(::eligible) == true }
+    private fun votes() = electorate.tally(voted)
 
     fun check(): Int {
-        // Sized from the eligible only: anyone who joined later cannot vote, so counting them would let a
+        // Sized from the electorate only: anyone who joined later cannot vote, so counting them would let a
         // raid block a running vote just by joining bots, and would fail ordinary votes too; the same goes
         // for afk players and those BlockIP refuses.
-        val threshold = when (players.count(::eligible)) {
+        val threshold = when (electorate.count()) {
             1 -> 1
             in 2..4 -> 2
             in 5..6 -> 3

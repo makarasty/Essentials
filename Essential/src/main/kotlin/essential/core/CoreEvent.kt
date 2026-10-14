@@ -1221,6 +1221,8 @@ fun playerLeave(event: PlayerLeave) {
 
 @Event
 fun playerChat(event: PlayerChatEvent) {
+    // Fires for every chat line and command, before either is handled: a vote word or /rtv counts at once
+    findPlayerData(event.player.uuid())?.let(Trigger::markActive)
     if (conf.command.layoutFix) KeyboardLayout.remember(event.player, event.message)
 }
 
