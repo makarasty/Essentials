@@ -14,14 +14,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import mindustry.gen.Player
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Flow
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.ceil
 import kotlin.math.min
@@ -104,6 +112,9 @@ object ChatTranslator {
     internal fun active(c: TranslateConfig): Boolean =
         c.enabled && (c.google || c.groqKey.isNotBlank() || c.geminiKey.isNotBlank())
 
+    /** Game thread: a player who left needs no rate state. */
+    internal fun forget(uuid: String) = senders.forget(uuid)
+
     /** Called on the game thread with a public message that already passed every chat filter. */
     fun submit(sender: Player, message: String) {
         val c = conf
@@ -165,7 +176,7 @@ object ChatTranslator {
             if (!worthShowing(job.text, t, lang, understood)) continue
             // The original passed the blacklist; a backend's words have not, so they meet the same list.
             if (isChatBlacklisted(t.text)) continue
-            val line = c.format.replace("{player}", job.sender).replace("{text}", t.text.replace("[", "[["))
+            val line = line(c.format, job.sender, t.text.replace("[", "[["))
             uuids.forEach { lines += Triple(it, line, t.source) }
         }
         if (learned.isEmpty() && lines.isEmpty()) return
@@ -285,12 +296,8 @@ object ChatTranslator {
             .apply { headers.forEach { (name, value) -> header(name, value) } }
             .POST(HttpRequest.BodyPublishers.ofString(body))
             .build()
-        val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
-        val text = response.body().use { input ->
-            val bytes = input.readNBytes(ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES + 1)
-            if (bytes.size > ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES) throw IOException("answer over ${ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES} bytes")
-            String(bytes, Charsets.UTF_8)
-        }
+        val response = send(http, request, conf.timeoutSeconds.coerceIn(1, ChatTuning.TRANSLATE_MAX_TIMEOUT_SECONDS) * 1000L)
+        val text = String(response.body(), Charsets.UTF_8)
         val code = response.statusCode()
         if (code == 429 || code == 503) {
             val retry = response.headers().firstValue("retry-after").orElse(null)?.toDoubleOrNull()
@@ -298,6 +305,60 @@ object ChatTranslator {
         }
         if (code !in 200..299) throw IOException("HTTP $code ${text.take(200)}")
         return text
+    }
+
+    /**
+     * The whole exchange, body included, within [timeoutMs] and [ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES].
+     * The request timeout covers only the wait for headers; a backend that sends them and then stalls would
+     * otherwise hold the one worker for good.
+     */
+    internal fun send(client: HttpClient, request: HttpRequest, timeoutMs: Long): HttpResponse<ByteArray> {
+        val future = client.sendAsync(request) { CappedBody(ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES) }
+        try {
+            return future.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            throw IOException("no full answer within $timeoutMs ms")
+        } catch (e: ExecutionException) {
+            throw e.cause as? IOException ?: IOException(e.cause)
+        } finally {
+            future.cancel(true) // aborts the exchange if it is still running; a no-op once it completed
+        }
+    }
+
+    /** Collects a body up to [max] bytes and fails, cancelling the stream, past it. */
+    private class CappedBody(private val max: Int) : HttpResponse.BodySubscriber<ByteArray> {
+        private val out = ByteArrayOutputStream()
+        private val result = CompletableFuture<ByteArray>()
+        private lateinit var subscription: Flow.Subscription
+
+        override fun getBody(): CompletionStage<ByteArray> = result
+
+        override fun onSubscribe(subscription: Flow.Subscription) {
+            this.subscription = subscription
+            subscription.request(Long.MAX_VALUE)
+        }
+
+        override fun onNext(item: List<ByteBuffer>) {
+            if (result.isDone) return
+            for (buffer in item) {
+                if (out.size() + buffer.remaining() > max) {
+                    subscription.cancel()
+                    result.completeExceptionally(IOException("answer over $max bytes"))
+                    return
+                }
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                out.write(bytes)
+            }
+        }
+
+        override fun onError(throwable: Throwable) {
+            result.completeExceptionally(throwable)
+        }
+
+        override fun onComplete() {
+            result.complete(out.toByteArray())
+        }
     }
 
     private const val PROMPT = """You translate the in-game chat of Mindustry, a factory-building and tower-defence game.
@@ -326,6 +387,15 @@ Answer only with JSON: {"items":[{"id":0,"src":"<ISO 639-1 code of the source la
     private val url = Regex("""https?://\S+""")
     private val spaces = Regex("""\s+""")
 
+    /** The game's icon glyphs (private use area) and lone surrogates; [clean] drops the former from input too. */
+    private val glyphs = Regex("""[\p{Co}\p{Cs}]""")
+
+    private val placeholders = Regex("""\{player\}|\{text\}""")
+
+    /** One pass, so a name containing `{text}` or a translation containing `{player}` stays as written. */
+    internal fun line(format: String, sender: String, text: String): String =
+        placeholders.replace(format) { if (it.value == "{player}") sender else text }
+
     /** Line breaks, tabs, every other control or format character and every kind of space. */
     private val unsafe = Regex("""[\p{Cc}\p{Cf}\p{Z}\s]+""")
 
@@ -339,7 +409,7 @@ Answer only with JSON: {"items":[{"id":0,"src":"<ISO 639-1 code of the source la
      * [ChatTuning.TRANSLATE_EXTRA_CHARS]. `[` is escaped later, where the line is built.
      */
     internal fun flatten(original: String, translated: String): String {
-        val flat = translated.replace(unsafe, " ").trim()
+        val flat = translated.replace(glyphs, "").replace(unsafe, " ").trim()
         var max = original.length * 2 + ChatTuning.TRANSLATE_EXTRA_CHARS
         if (flat.length <= max) return flat
         if (Character.isHighSurrogate(flat[max - 1])) max--
@@ -474,6 +544,21 @@ internal class OnDemandWorker<T>(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun drain() {
+        var finished = false
+        try {
+            loop()
+            finished = true
+        } finally {
+            // An Error or a cancellation escaped: without this `running` stays true and no worker starts again.
+            if (!finished) {
+                running.set(false)
+                if (!queue.isEmpty && running.compareAndSet(false, true)) launch { drain() }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun loop() {
         while (true) {
             val first = queue.tryReceive().getOrNull()
             if (first == null) {
@@ -502,14 +587,16 @@ internal class OnDemandWorker<T>(
 internal class SenderBuckets(private val burst: Int, private val refillMs: Long, private val tracked: Int) {
     private class Bucket(var tokens: Double, var at: Long)
 
-    private val buckets = HashMap<String, Bucket>()
+    // Least recently used first, so a flood of new names evicts the idlest sender, not everyone's state.
+    private val buckets = object : LinkedHashMap<String, Bucket>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bucket>) = size > tracked
+    }
+
+    fun forget(key: String) {
+        buckets.remove(key)
+    }
 
     fun take(key: String, now: Long): Boolean {
-        if (buckets.size >= tracked && key !in buckets) {
-            buckets.values.removeIf { it.tokens + (now - it.at).toDouble() / refillMs >= burst }
-            // shortcut: every tracked sender busy at once forgets them all; fine while tracked >> players online.
-            if (buckets.size >= tracked) buckets.clear()
-        }
         val b = buckets.getOrPut(key) { Bucket(burst.toDouble(), now) }
         b.tokens = min(burst.toDouble(), b.tokens + (now - b.at).coerceAtLeast(0).toDouble() / refillMs)
         b.at = now

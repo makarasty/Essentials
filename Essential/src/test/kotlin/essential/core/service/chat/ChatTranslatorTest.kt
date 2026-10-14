@@ -1,7 +1,14 @@
 package essential.core.service.chat
 
 import essential.core.service.chat.ChatTranslator.Translation
+import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.time.Duration
 import kotlinx.serialization.json.Json
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -243,5 +250,81 @@ class ChatTranslatorTest {
         )
         worker.offer(1)
         assertEquals(listOf(1, 2), processed)
+    }
+
+    @Test
+    fun placeholdersAreFilledInOnePass() {
+        assertEquals("{text}: hi", ChatTranslator.line("{player}: {text}", "{text}", "hi"), "a name cannot pull the translation in")
+        assertEquals("bob: {player}", ChatTranslator.line("{player}: {text}", "bob", "{player}"))
+    }
+
+    @Test
+    fun aTranslationLosesIconGlyphsAndLoneSurrogates() {
+        assertEquals("core here", ChatTranslator.flatten("x", "core \uE80F\uD800here"))
+        assertEquals("ok \uD83D\uDE00", ChatTranslator.flatten("x", "ok \uD83D\uDE00"), "a paired emoji stays")
+    }
+
+    @Test
+    fun aFloodOfNewSendersEvictsTheIdlestNotEveryone() {
+        val b = SenderBuckets(burst = 1, refillMs = 1_000_000, tracked = 2)
+        assertTrue(b.take("a", 0))
+        assertTrue(b.take("b", 0))
+        assertFalse(b.take("a", 1), "a is spent, and now the most recently used")
+        assertTrue(b.take("raider", 2), "evicts b, the least recently used")
+        assertFalse(b.take("a", 3), "a kept its spent state through the flood")
+        b.forget("a")
+        assertTrue(b.take("a", 4), "a player who left starts over")
+    }
+
+    @Test
+    fun anErrorEscapingTheWorkerDoesNotStopTranslationForGood() {
+        val processed = mutableListOf<Int>()
+        val worker = OnDemandWorker<Int>(
+            16,
+            launch = { body -> try { runBlocking { body() } } catch (_: Throwable) {} },
+            batchMillis = { 0 },
+            process = { batch -> if (1 in batch) throw StackOverflowError() else processed += batch },
+        )
+        worker.offer(1)
+        worker.offer(2)
+        assertEquals(listOf(2), processed, "the next offer still finds a worker")
+    }
+
+    private fun server(handler: (com.sun.net.httpserver.HttpExchange) -> Unit, block: (URI) -> Unit) {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { ex -> try { handler(ex) } catch (_: Exception) {} finally { ex.close() } }
+        server.executor = java.util.concurrent.Executors.newCachedThreadPool()
+        server.start()
+        try {
+            block(URI("http://127.0.0.1:${server.address.port}/"))
+        } finally {
+            server.stop(0)
+            (server.executor as java.util.concurrent.ExecutorService).shutdownNow()
+        }
+    }
+
+    @Test
+    fun aBackendThatStallsMidBodyTimesOut() = server({ ex ->
+        ex.sendResponseHeaders(200, 0)
+        ex.responseBody.write("[".toByteArray())
+        ex.responseBody.flush()
+        Thread.sleep(10_000)
+    }) { uri ->
+        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build().use { client ->
+            val started = System.nanoTime()
+            assertFailsWith<IOException> { ChatTranslator.send(client, HttpRequest.newBuilder(uri).build(), 500) }
+            assertTrue(System.nanoTime() - started < 5_000_000_000L, "headers came, the body stalled: still bounded")
+        }
+    }
+
+    @Test
+    fun anOversizedAnswerIsRefused() = server({ ex ->
+        ex.sendResponseHeaders(200, 0)
+        ex.responseBody.write(ByteArray(ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES + 10))
+    }) { uri ->
+        HttpClient.newHttpClient().use { client ->
+            val e = assertFailsWith<IOException> { ChatTranslator.send(client, HttpRequest.newBuilder(uri).build(), 5_000) }
+            assertTrue("answer over" in e.message.orEmpty(), e.message)
+        }
     }
 }
