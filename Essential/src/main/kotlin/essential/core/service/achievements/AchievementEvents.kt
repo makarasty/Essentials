@@ -3,6 +3,7 @@ package essential.core.service.achievements
 import arc.Core
 import arc.util.Log
 import arc.util.Timer
+import essential.common.permission.Permission
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.database.data.getPlayerAchievements
@@ -448,7 +449,7 @@ fun playerChat(event: PlayerChatEvent) {
             }
 
             // If the chat sender has "owner" permission, award MeetOwner to everyone
-            if (data.permission == "owner") {
+            if (Permission.effectiveGroup(data) == "owner") {
                 players.forEach { otherPlayer ->
                     otherPlayer.status["record.time.meetowner"] = "60"
                     if (Achievement.MeetOwner.success(otherPlayer)) {
@@ -797,7 +798,7 @@ internal fun achievementSweep() {
         // Check for owner presence
         var isOwnerMeet = false
         for (data in players) {
-            if (data.permission == "owner") {
+            if (Permission.effectiveGroup(data) == "owner") {
                 isOwnerMeet = true
                 break
             }

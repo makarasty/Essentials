@@ -163,4 +163,20 @@ class DeviceBindingTest {
             Permission.load()
         }
     }
+    /** What chat and achievements read from Permission[data] is the session's group, not the stored one. */
+    @Test
+    fun anImpostorChatsAsTheDefaultGroup() {
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        setPermission(owner, "owner", false)
+        leavePlayer(owner)
+
+        val (impostor, impostorData) = rejoin(uuid, "anotherDevice")
+        try {
+            assertEquals(Permission.default, Permission[impostorData].group, "chat format follows this group")
+            assertEquals(Permission.default, Permission.effectiveGroup(impostorData), "MeetOwner reads this")
+        } finally {
+            leavePlayer(impostor)
+        }
+    }
 }

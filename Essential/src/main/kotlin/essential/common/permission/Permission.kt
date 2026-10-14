@@ -271,7 +271,9 @@ object Permission {
     operator fun get(data: PlayerData): PermissionData {
         val result = PermissionData()
 
-        val u = user?.get(data.uuid)
+        // An unrecognised device acts as the default group: its chat prefix, no join alert, no file entry.
+        val held = heldBack(data.uuid, sessionUsid(data.player))
+        val u = user?.get(data.uuid)?.takeUnless { held }
         if (u != null) {
             result.name = u.name.ifEmpty { data.player.name() }
             result.group = u.group
@@ -281,7 +283,7 @@ object Permission {
             result.chatFormat = u.chatFormat
         } else {
             result.name = data.player.name()
-            result.group = data.permission
+            result.group = effectiveGroup(data)
             result.admin = isAdmin(data.uuid, data.permission)
             result.isAlert = false
             result.alertMessage = ""
