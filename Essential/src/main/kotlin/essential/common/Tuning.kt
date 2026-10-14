@@ -154,3 +154,9 @@ internal object FileWatchTuning {
     /** Pause between two settle checks, in milliseconds. */
     const val SETTLE_POLL_MS = 100L
 }
+
+/** Per-player cooldowns on commands that query the shared database. */
+internal object CommandCooldownTuning {
+    /** Least time between two /report or two /ranking from one non-admin player, in seconds. */
+    const val DATABASE_COMMAND_SECONDS = 10
+}

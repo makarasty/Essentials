@@ -207,6 +207,15 @@ class PlayerLookupTest {
         }
     }
 
+    /** The whole-table pass is for admins only; a non-admin's miss stops at the indexed query. */
+    @Test
+    fun lookup_withoutScanSkipsTheWholeTablePass() {
+        withRows("Q[red]lxnoscan[]" to "qlx-noscan-offline") {
+            assertTrue(PlayerLookup.findOffline("qlxnoscan", scan = false) is PlayerLookup.Result.NotFound)
+            assertEquals("qlx-noscan-offline", found(PlayerLookup.findOffline("qlxnoscan")).uuid)
+        }
+    }
+
     @Test
     fun lookup_ambiguousOfflineShowsIdAndKeepsFullNames() {
         val long = "qlxambiguous_first_candidate_with_a_very_long_name"

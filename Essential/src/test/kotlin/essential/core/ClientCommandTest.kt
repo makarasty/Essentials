@@ -1021,6 +1021,9 @@ class ClientCommandTest {
 
     @Test
     fun client_ranking() {
+        // As an admin: a non-admin's second /ranking within the cooldown is refused (databaseCommandsCoolDownForNonAdmins).
+        setPermission("admin", true)
+
         // Test ranking command with exp parameter
         clientCommand.handleMessage("/ranking exp", player)
 
@@ -1455,6 +1458,24 @@ class ClientCommandTest {
         } finally {
             leavePlayer(flagged)
             leavePlayer(loading)
+        }
+    }
+
+    /** /ranking and /report from one non-admin are spaced by a cooldown; the second inside it is refused. */
+    @Test
+    fun databaseCommandsCoolDownForNonAdmins() {
+        val (user, userData) = newPlayer()
+        try {
+            setPermission(user, "user", false)
+            clientCommand.handleMessage("/ranking time", user)
+            clientCommand.handleMessage("/ranking time", user)
+            assertEquals(err("command.cooldown"), userData.lastReceivedMessage)
+
+            clientCommand.handleMessage("/report ${player.uuid()} grief", user)
+            clientCommand.handleMessage("/report ${player.uuid()} grief", user)
+            assertEquals(err("command.cooldown"), userData.lastReceivedMessage)
+        } finally {
+            leavePlayer(user)
         }
     }
 

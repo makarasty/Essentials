@@ -13,6 +13,7 @@ import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.util.PlayerLookup
 import essential.common.util.currentTime
+import essential.common.util.passesCooldown
 import essential.core.Main.Companion.scope
 import essential.core.service.protect.ProtectService.Companion.conf
 import kotlinx.coroutines.launch
@@ -165,6 +166,7 @@ class Commands {
 
     @ClientCommand(name = "report", parameter = "<player> <reason...>", description = "Report a player")
     fun report(playerData: PlayerData, arg: Array<out String>) {
+        if (!playerData.passesCooldown("report")) return
         val online = PlayerLookup.findOnline(arg[0])
         if (online is PlayerLookup.Result.Found) {
             submitReport(playerData, online.value.uuid(), arg[1])

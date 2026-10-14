@@ -118,11 +118,12 @@ object PlayerLookup {
     /** `@<digits>` only, and only a row that exists wins: anything else is still matched as a name, `@Bob` included. */
     private fun rowId(text: String): UInt? = if (text.startsWith("@")) text.drop(1).toUIntOrNull() else null
 
-    suspend fun findOffline(query: String): Result<PlayerData> = lookup(query, false)
+    /** [scan] allows the capped whole-table pass a plain query misses; non-admin callers do not get it. */
+    suspend fun findOffline(query: String, scan: Boolean = true): Result<PlayerData> = lookup(query, false, scan)
 
     suspend fun findExact(query: String): Result<PlayerData> = lookup(query, true)
 
-    private suspend fun lookup(query: String, exactOnly: Boolean): Result<PlayerData> {
+    private suspend fun lookup(query: String, exactOnly: Boolean, scan: Boolean = true): Result<PlayerData> {
         val text = normalize(query)
         if (text.isEmpty()) return Result.NotFound()
 
@@ -135,7 +136,7 @@ object PlayerLookup {
         text.toIntOrNull()?.let { id -> players.find { it.entityId == id }?.let { return Result.Found(it) } }
         findPlayerData(text)?.let { return Result.Found(it) }
 
-        val (rows, truncated, capped) = offlineRows(text)
+        val (rows, truncated, capped) = offlineRows(text, scan)
         rows.find { it.uuid == text }?.let { return Result.Found(it) }
 
         val online = players.toList()
@@ -168,7 +169,7 @@ object PlayerLookup {
      */
     private data class Rows(val rows: List<PlayerData>, val truncated: Boolean, val capped: Boolean)
 
-    private suspend fun offlineRows(text: String): Rows {
+    private suspend fun offlineRows(text: String, scan: Boolean): Rows {
         val pattern = text.lowercase().escapeLike()
         val matched = suspendTransaction {
             PlayerTable.selectAll().where {
@@ -181,6 +182,8 @@ object PlayerLookup {
             val capped = matched.size >= PlayerLookupTuning.SCAN_LIMIT
             return Rows(matched, capped, capped)
         }
+        // A full read of SCAN_LIMIT rows per miss is an admin tool; a player could repeat it at will.
+        if (!scan) return Rows(emptyList(), false, false)
 
         val scanned = suspendTransaction {
             PlayerTable.selectAll().limit(PlayerLookupTuning.SCAN_LIMIT).mapToPlayerDataList()
@@ -224,7 +227,7 @@ object PlayerLookup {
     }
 
     private suspend fun offlineOf(query: String, sender: PlayerData?): PlayerData? {
-        val result = findOffline(query)
+        val result = findOffline(query, sender == null || sender.player.admin())
         if (result is Result.Found && result.value.temporary) {
             return report(Result.NotFound(), query, sender, NOT_REGISTERED)
         }

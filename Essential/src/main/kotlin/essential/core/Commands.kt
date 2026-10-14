@@ -25,6 +25,7 @@ import essential.common.permission.Permission
 import essential.common.util.PlayerLookup
 import essential.common.util.currentTime
 import essential.common.util.findPlayerData
+import essential.common.util.passesCooldown
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.delay
@@ -1582,6 +1583,7 @@ class Commands {
 
     @ClientCommand("ranking", "<time/exp/attack/place/break/pvp> [page]", "Show player ranking")
     fun ranking(playerData: PlayerData, arg: Array<out String>) {
+        if (!playerData.passesCooldown("ranking")) return
         val bundle = playerData.bundle
         val player = playerData.player
 
