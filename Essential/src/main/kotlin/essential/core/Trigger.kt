@@ -71,13 +71,13 @@ private val RAINBOW = arrayOf(
 
 object Trigger {
     fun pingHostImpl(address: String, port: Int, listener: Consumer<Host>) {
-        val packetSupplier: Prov<DatagramPacket> = Prov<DatagramPacket> { DatagramPacket(ByteArray(512), 512) }
+        val packetSupplier: Prov<DatagramPacket> = Prov<DatagramPacket> { DatagramPacket(ByteArray(TriggerTuning.PING_BUFFER_BYTES), TriggerTuning.PING_BUFFER_BYTES) }
 
         try {
             DatagramSocket().use { socket ->
                 val s: Long = Time.millis()
                 socket.send(DatagramPacket(byteArrayOf(-2, 1), 2, InetAddress.getByName(address), port))
-                socket.soTimeout = 1000
+                socket.soTimeout = TriggerTuning.PING_TIMEOUT_MS
                 val packet: DatagramPacket = packetSupplier.get()
                 socket.receive(packet)
                 val buffer = ByteBuffer.wrap(packet.data)
@@ -108,15 +108,8 @@ object Trigger {
         return targets
     }
 
-    /**
-     * Most marks the world-edit outline draws along one edge. Uncapped it was one packet per
-     * perimeter tile four times a second per selecting player, so a selection dragged across
-     * a 500x500 map cost that one client roughly 8000 packets a second until they cleared it.
-     */
-    const val OUTLINE_MARKS = 32
-
-    /** Coordinates the outline marks along one edge, thinned to at most [OUTLINE_MARKS] of them. */
-    fun outlineMarks(min: Int, max: Int): IntProgression = min..max step (max - min) / OUTLINE_MARKS + 1
+    /** Coordinates the outline marks along one edge, thinned to at most [TriggerTuning.OUTLINE_MARKS] of them. */
+    fun outlineMarks(min: Int, max: Int): IntProgression = min..max step (max - min) / TriggerTuning.OUTLINE_MARKS + 1
 
     /**
      * What counts as this player having moved. `NetClient.sync` sends `0f, 0f` for the aim of a
@@ -887,7 +880,7 @@ object Trigger {
                     it.mousePosition = activityMark(it)
                 }
 
-                val randomResult = (Random.nextInt(7) * it.expMultiplier)
+                val randomResult = (Random.nextInt(ExpTuning.PLAY_SECOND_XP_BOUND) * it.expMultiplier)
                 it.exp += randomResult.toInt()
                 it.currentExp += randomResult.toInt()
                 Commands.Exp[it]

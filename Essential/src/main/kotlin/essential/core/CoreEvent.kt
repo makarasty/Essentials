@@ -208,14 +208,13 @@ fun config(event: ConfigEvent) {
 // and the tap log before anything else in this function looks at who is tapping. Cap the logging
 // side per uuid rather than building real interaction throttling; upgrade if another action needs it.
 private val lastLoggedTap = HashMap<String, Long>()
-private const val TAP_LOG_INTERVAL_MS = 100L
 
 @Event
 fun tap(event: TapEvent) {
     val uuid = event.player.uuid()
     val now = System.currentTimeMillis()
     val lastLogged = lastLoggedTap[uuid]
-    val shouldLog = lastLogged == null || now - lastLogged >= TAP_LOG_INTERVAL_MS
+    val shouldLog = lastLogged == null || now - lastLogged >= CoreEventTuning.TAP_LOG_INTERVAL_MS
     val data = findPlayerData(uuid)
     if (shouldLog) {
         lastLoggedTap[uuid] = now
@@ -376,7 +375,7 @@ fun tap(event: TapEvent) {
 
                 str.append(bundle["event.log.position", event.tile.x, event.tile.y]).append("\n")
 
-                val shown = buf.sortedByDescending { it.time }.take(8)
+                val shown = buf.sortedByDescending { it.time }.take(CoreEventTuning.TAP_HISTORY_ROWS)
                 // The row id, not the uuid: anyone can open this view, and `@<id>` is what the player
                 // commands take, /ban included.
                 val ids = runCatching { playerIdsByUuid(shown.mapNotNull { it.uuid }.toSet()) }
@@ -530,7 +529,7 @@ fun tap(event: TapEvent) {
 fun wave(event: WaveEvent) {
     ServerDescription.changed()
     for (data in players) {
-        data.exp += 500
+        data.exp += ExpTuning.WAVE_CLEAR_XP
         data.waveClear++
     }
 
@@ -725,7 +724,7 @@ fun retryPlayerDataLoad(player: Playerc, name: String, temporary: PlayerData, pu
     val job = scope.launch {
         var remaining = conf.feature.playerData.retryAttempts
         while (remaining > 0 && isPlayerOnline(player)) {
-            delay(10.seconds)
+            delay(CoreEventTuning.PLAYER_DATA_RETRY_DELAY_SECONDS.seconds)
             if (!isPlayerOnline(player)) return@launch
             remaining--
 
@@ -875,7 +874,7 @@ fun gameOver(event: GameOverEvent) {
         mapVotes.clear()
     }
 
-    val fiveMinutesPassed = (timeSource.markNow() - mapStartTime).inWholeMinutes >= 5
+    val fiveMinutesPassed = (timeSource.markNow() - mapStartTime).inWholeMinutes >= CoreEventTuning.MAP_VOTE_MIN_MINUTES
     if (fiveMinutesPassed && conf.feature.mapVote) {
         val currentMap = Vars.state.map
         val mapName = currentMap.plainName()
@@ -1117,7 +1116,7 @@ fun unitCreate(event: UnitCreateEvent) {
                     "[scarlet]${Groups.unit.size()}[white]/[sky]${conf.feature.unit.limit}"
                 )
             }
-            unitLimitMessageCooldown = 60
+            unitLimitMessageCooldown = CoreEventTuning.UNIT_LIMIT_MESSAGE_COOLDOWN_SECONDS
         }
     }
 }
@@ -1464,7 +1463,7 @@ fun playerConnect(event: PlayerConnect) {
         // that without touching the accepted window; a warn only fires when both attempts fail, so
         // this stays silent on a healthy server.
         if (!checkBanState(player)) {
-            delay(5.seconds)
+            delay(CoreEventTuning.BAN_CHECK_RETRY_DELAY_SECONDS.seconds)
             if (isPlayerOnline(player) && !checkBanState(player)) {
                 Log.warn("Could not verify the ban state of ${player.plainName()} (${player.uuid()}) after two attempts; the join was admitted unverified.")
             }
@@ -1606,7 +1605,7 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         // If the MOTD exceeds 10 lines, display it as a full-screen message
         if (motd != null) {
             val count = motd.lines().size
-            if (count > 10) Call.infoMessage(player.con(), motd) else message.appendLine(motd)
+            if (count > CoreEventTuning.MOTD_INFO_MESSAGE_LINES) Call.infoMessage(player.con(), motd) else message.appendLine(motd)
         }
 
         // If configured to display a specific message on player join
@@ -1774,15 +1773,15 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
     var result: Int = target.currentExp
     val time = target.currentPlayTime
 
-    if (mapStartTime.plus(5.minutes).hasPassedNow()) {
+    if (mapStartTime.plus(ExpTuning.MIN_MATCH_MINUTES.minutes).hasPassedNow()) {
         val erekirAttack = if (Vars.state.planet == Planets.erekir) target.currentUnitDestroyedCount else 0
-        val erekirPvP = if (Vars.state.planet == Planets.erekir) 5000 else 0
+        val erekirPvP = if (Vars.state.planet == Planets.erekir) ExpTuning.EREKIR_PVP_BONUS else 0
 
         val score = if (winner == p.team()) {
             if (Vars.state.rules.attackMode) {
                 time + (target.currentBuildAttackCount + erekirAttack)
             } else if (Vars.state.rules.pvp) {
-                time + erekirPvP + 5000
+                time + erekirPvP + ExpTuning.PVP_BONUS
             } else {
                 0
             }
@@ -1790,7 +1789,7 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
             if (Vars.state.rules.attackMode) {
                 time - target.currentBuildDestroyedCount
             } else if (Vars.state.rules.pvp) {
-                time + 5000
+                time + ExpTuning.PVP_BONUS
             } else {
                 0
             }

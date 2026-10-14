@@ -30,8 +30,6 @@ object ServerDescription {
         "peace" to { "" },
     )
 
-    private const val DESC_LIMIT = 300
-
     private var timer: Timer.Task? = null
     private var pending = false
     private var tooLongWarned: String? = null
@@ -114,10 +112,10 @@ object ServerDescription {
         val template = template()
         if (template.isBlank()) return
         val text = render(template, placeholders)
-        if (text.length > DESC_LIMIT && text != tooLongWarned) {
+        if (text.length > ServerDescriptionTuning.LIMIT_CHARS && text != tooLongWarned) {
             tooLongWarned = text
             Log.warn(
-                "[Description] ${text.length} characters, the server list cuts it at $DESC_LIMIT " +
+                "[Description] ${text.length} characters, the server list cuts it at $ServerDescriptionTuning.LIMIT_CHARS " +
                     "(100 on an unpatched client). Colour tags count too."
             )
         }

@@ -1262,13 +1262,13 @@ class Commands {
         val list = Vars.maps.all().sortedBy { a -> a.name() }
         val bundle = playerData.bundle
         val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
-        val buffer = Mathf.ceil(list.size.toFloat() / 6)
+        val buffer = Mathf.ceil(list.size.toFloat() / CommandsTuning.LIST_PAGE_SIZE)
         val pages = if (buffer > 1.0) buffer - 1 else 0
         val title = bundle["command.page.server"]
 
         for (page in 0..pages) {
             val build = StringBuilder()
-            for (a in 6 * page until (6 * (page + 1)).coerceAtMost(list.size)) {
+            for (a in CommandsTuning.LIST_PAGE_SIZE * page until (CommandsTuning.LIST_PAGE_SIZE * (page + 1)).coerceAtMost(list.size)) {
                 build.append("${list[a].name()}\n[orange]${bundle["command.maps.author"]} ${list[a].author()}[white]\n[gray]ID: $a[green]   ${list[a].width}x${list[a].height}[white]\n\n")
             }
 
@@ -1429,7 +1429,7 @@ class Commands {
                         suspend fun change(name: String): Boolean {
                             if (!playerData.status.containsKey("router")) return false
                             playerData.player.name(name)
-                            delay(500.milliseconds)
+                            delay(CommandsTuning.ROUTER_FRAME_DELAY_MS.milliseconds)
                             return playerData.status.containsKey("router")
                         }
 
@@ -1445,7 +1445,7 @@ class Commands {
                                 }
                                 if (!active) break
 
-                                delay(5000.milliseconds)
+                                delay(CommandsTuning.ROUTER_PAUSE_MS.milliseconds)
                                 if (!playerData.status.containsKey("router")) break
 
                                 for (name in loop.reversed()) {
@@ -1488,7 +1488,7 @@ class Commands {
         val motd = readMotd(player.locale()).orEmpty()
         if (motd.isNotEmpty()) {
             val count = motd.lines().size
-            if (count > 10) Call.infoMessage(player.con(), motd) else player.sendMessage(motd)
+            if (count > CoreEventTuning.MOTD_INFO_MESSAGE_LINES) Call.infoMessage(player.con(), motd) else player.sendMessage(motd)
         } else {
             playerData.send("command.motd.not-found")
         }
@@ -1532,14 +1532,14 @@ class Commands {
     fun players(playerData: PlayerData) {
         val bundle = playerData.bundle
         val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
-        val buffer = Mathf.ceil(players.size.toFloat() / 6)
+        val buffer = Mathf.ceil(players.size.toFloat() / CommandsTuning.LIST_PAGE_SIZE)
         val pages = if (buffer > 1.0) buffer - 1 else 0
         val title = bundle["command.page.server"]
         val showUuid = Permission.check(playerData, "info.other")
 
         for (page in 0..pages) {
             val build = StringBuilder()
-            for (a in 6 * page until (6 * (page + 1)).coerceAtMost(players.size)) {
+            for (a in CommandsTuning.LIST_PAGE_SIZE * page until (CommandsTuning.LIST_PAGE_SIZE * (page + 1)).coerceAtMost(players.size)) {
                 val data = players[a]
                 val uuid = if (showUuid) " [gray]${data.uuid.take(8)}[]" else ""
                 build.append("[gray]${data.entityId}[] ${PlayerLookup.shortName(data.player.plainName())}$uuid\n")
@@ -2818,7 +2818,7 @@ class Commands {
         } else {
             players.count { !it.afk }
         }
-        if (!solo && eligibleVoters <= 3 && !Permission.check(playerData, "vote.admin")) {
+        if (!solo && eligibleVoters <= VoteStartTuning.SMALL_SERVER_VOTERS && !Permission.check(playerData, "vote.admin")) {
             playerData.err("command.vote.enough")
             return
         }
@@ -2857,7 +2857,7 @@ class Commands {
                         if (Vars.state.rules.pvp) {
                             voteData.team = playerData.player.team()
                         }
-                        nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                        nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
                         start(voteData)
                     }
                 }
@@ -2909,7 +2909,7 @@ class Commands {
                                     reason = arg[2],
                                     starter = playerData
                                 )
-                                nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                                nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
                                 start(voteData)
                             }
                         } else {
@@ -2942,7 +2942,7 @@ class Commands {
                     if (Vars.state.rules.pvp) {
                         voteData.team = playerData.player.team()
                     }
-                    nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                    nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
                     start(voteData)
                 } else {
                     playerData.err(coolTime)
@@ -2967,7 +2967,7 @@ class Commands {
                                 wave = count,
                                 starter = playerData
                             )
-                            nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                            nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
                             start(voteData)
                         } else {
                             playerData.send(coolTime)
@@ -2998,7 +2998,7 @@ class Commands {
                     reason = arg[1],
                     starter = playerData
                 )
-                nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
                 start(voteData)
             }
 
@@ -3010,7 +3010,7 @@ class Commands {
                         type = VoteType.Random,
                         starter = playerData
                     )
-                    nextVoteAvailable = timeSource.markNow().plus(6.minutes)
+                    nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.RANDOM_COOLDOWN_MINUTES.minutes)
                     start(voteData)
                 } else {
                     playerData.err(coolTime)
@@ -3025,7 +3025,7 @@ class Commands {
                         type = VoteType.Draw,
                         starter = playerData
                     )
-                    nextVoteAvailable = timeSource.markNow().plus(2.minutes)
+                    nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
                     start(voteData)
                 } else {
                     playerData.err(coolTime)
@@ -3605,14 +3605,9 @@ class Commands {
     }
 
     object Exp {
-        private const val BASE_XP = 750
-        private const val EXPONENT = 1.06
         private fun calcXpForLevel(level: Int): Double {
-            return BASE_XP + BASE_XP * level.toDouble().pow(EXPONENT)
+            return ExpTuning.BASE_XP + ExpTuning.BASE_XP * level.toDouble().pow(ExpTuning.EXPONENT)
         }
-
-        /** How far the precomputed table below reaches. Past it the old summation still works. */
-        private const val TABLE_LEVELS = 1000
 
         /**
          * Total XP needed to reach each level, summed once.
@@ -3621,9 +3616,9 @@ class Commands {
          * replay the whole `pow()` series from level zero on every call - so a level 500 player cost
          * a few hundred `Math.pow` calls a second, for ever, and [calculateLevel] squared that.
          */
-        private val cumulativeXp = DoubleArray(TABLE_LEVELS + 1).also { table ->
+        private val cumulativeXp = DoubleArray(ExpTuning.TABLE_LEVELS + 1).also { table ->
             var sum = 0.0
-            for (i in 0..TABLE_LEVELS) {
+            for (i in 0..ExpTuning.TABLE_LEVELS) {
                 sum += calcXpForLevel(i)
                 table[i] = sum
             }
@@ -3632,9 +3627,9 @@ class Commands {
         fun calculateFullTargetXp(level: Int): Double {
             // The summation this replaces walked 0..level, so a negative level summed nothing.
             if (level < 0) return 0.0
-            if (level <= TABLE_LEVELS) return cumulativeXp[level]
-            var requiredXP = cumulativeXp[TABLE_LEVELS]
-            for (i in TABLE_LEVELS + 1..level) requiredXP += calcXpForLevel(i)
+            if (level <= ExpTuning.TABLE_LEVELS) return cumulativeXp[level]
+            var requiredXP = cumulativeXp[ExpTuning.TABLE_LEVELS]
+            for (i in ExpTuning.TABLE_LEVELS + 1..level) requiredXP += calcXpForLevel(i)
             return requiredXP
         }
 

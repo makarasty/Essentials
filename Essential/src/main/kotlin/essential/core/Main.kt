@@ -44,9 +44,6 @@ import kotlin.time.Clock
 class Main : Plugin() {
     companion object {
         const val CONFIG_PATH = "config/config.yaml"
-        private const val DATABASE_INIT_TIMEOUT_MS = 30_000L
-        private const val SHUTDOWN_SAVE_TIMEOUT_MS = 30_000L
-        private const val SHUTDOWN_DRAIN_TIMEOUT_MS = 5_000L
         @Volatile
         var conf: CoreConfig = reloadConf()
 
@@ -70,7 +67,7 @@ class Main : Plugin() {
                 Log.err("Unhandled exception in a background coroutine ($context)", throwable)
             }
         )
-        val threadPool: ExecutorService = Executors.newFixedThreadPool(2)
+        val threadPool: ExecutorService = Executors.newFixedThreadPool(MainTuning.THREAD_POOL_SIZE)
 
         /**
          * Applies the client command set for the current [conf] to [handler]: every generated
@@ -192,7 +189,7 @@ class Main : Plugin() {
         // still trying to open the socket - so an unreachable or silently-dropping host used to
         // hang the whole server with no explanation. A timeout here turns that hang into a
         // log line the operator can act on.
-        initDatabaseWithTimeout(DATABASE_INIT_TIMEOUT_MS, conf.plugin.database.url) {
+        initDatabaseWithTimeout(MainTuning.DATABASE_INIT_TIMEOUT_MS, conf.plugin.database.url) {
             databaseInit(
                 conf.plugin.database.url,
                 conf.plugin.database.username,
@@ -287,7 +284,7 @@ class Main : Plugin() {
                     // scope.cancel() below would cut off mid-transaction. The history flush loop is
                     // stopped above and the web loops run in Ktor's scope, so what is left here ends on
                     // its own; bounded anyway, for a write stuck waiting on the pool.
-                    withTimeoutOrNull(SHUTDOWN_DRAIN_TIMEOUT_MS) {
+                    withTimeoutOrNull(MainTuning.SHUTDOWN_DRAIN_TIMEOUT_MS) {
                         scope.coroutineContext.job.children.toList().joinAll()
                     }
                     stopLogWriter()
@@ -296,7 +293,7 @@ class Main : Plugin() {
                     // deadline kills the process regardless; this just makes sure the operator
                     // sees that some sessions were not saved instead of the process dying
                     // silently mid-loop.
-                    saveOnShutdownWithTimeout(SHUTDOWN_SAVE_TIMEOUT_MS) {
+                    saveOnShutdownWithTimeout(MainTuning.SHUTDOWN_SAVE_TIMEOUT_MS) {
                         players.forEach { data ->
                             try {
                                 data.isConnected = false
@@ -352,7 +349,7 @@ class Main : Plugin() {
 
     private fun checkUpdate() {
         if (conf.plugin.autoUpdate) {
-            Http.get("https://api.github.com/repos/makarasty/Essentials/releases/latest").timeout(1000)
+            Http.get("https://api.github.com/repos/makarasty/Essentials/releases/latest").timeout(MainTuning.UPDATE_CHECK_TIMEOUT_MS)
                 .error { _ -> Log.warn(bundle["event.plugin.update.check.failed"]) }
                 .block {
                     if (it.status == Http.HttpStatus.OK) {

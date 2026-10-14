@@ -50,11 +50,8 @@ class UndoEntry(
 }
 
 object Undo {
-    val LIFETIME = 10.minutes
+    val LIFETIME = UndoTuning.LIFETIME_MINUTES.minutes
     const val CONSOLE = "console"
-    private const val LIMIT = 5
-    private const val MENU_SECONDS = 60f
-    private const val SWEEP_SECONDS = 60f
 
     private val stacks = ConcurrentHashMap<String, ArrayDeque<UndoEntry>>()
     private val pending = ConcurrentHashMap<String, UndoEntry>()
@@ -63,7 +60,7 @@ object Undo {
     val menuId: Int by lazy { Menus.registerMenu { _, _ -> } }
 
     fun start() {
-        Timer.schedule({ sweep() }, SWEEP_SECONDS, SWEEP_SECONDS)
+        Timer.schedule({ sweep() }, UndoTuning.SWEEP_SECONDS, UndoTuning.SWEEP_SECONDS)
     }
 
     fun label(uuid: String): String {
@@ -97,7 +94,7 @@ object Undo {
         val stack = stacks.getOrPut(admin?.uuid ?: CONSOLE) { ArrayDeque() }
         synchronized(stack) {
             stack.addFirst(entry)
-            while (stack.size > LIMIT) stack.removeLast()
+            while (stack.size > UndoTuning.STACK_LIMIT) stack.removeLast()
         }
         if (admin != null) show(admin, entry)
     }
@@ -266,7 +263,7 @@ object Undo {
 
         pending[adminUuid] = entry
         Call.followUpMenu(connection, menuId, bundle["command.undo.menu.title"], entry.description, options)
-        Timer.schedule({ clearPending(adminUuid, entry) }, MENU_SECONDS)
+        Timer.schedule({ clearPending(adminUuid, entry) }, UndoTuning.MENU_SECONDS)
     }
 
     private fun update(uuid: String, edit: (PlayerData) -> Unit) {

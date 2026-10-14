@@ -28,8 +28,6 @@ import kotlin.time.ExperimentalTime
 
 @OptIn(ExperimentalTime::class)
 object TempBan {
-    private const val INTERVAL = 30f
-
     /**
      * Bans the scheduler still intends to lift. Withdrawing a uuid cancels the posted unban, which is
      * how a permaban landing between the sweep and its post survives; the unban that does go through
@@ -50,7 +48,7 @@ object TempBan {
 
     fun start() {
         // The ban list is game state, so it is read on the main thread and handed to the sweep.
-        Timer.schedule({ Core.app.post { scheduleTick() } }, INTERVAL, INTERVAL)
+        Timer.schedule({ Core.app.post { scheduleTick() } }, TempBanTuning.SWEEP_INTERVAL_SECONDS, TempBanTuning.SWEEP_INTERVAL_SECONDS)
     }
 
     /**

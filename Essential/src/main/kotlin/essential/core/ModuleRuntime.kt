@@ -75,7 +75,7 @@ object ModuleRuntime {
         if (levelEffects?.isScheduled == true) return
         val task = instantiate("essential.core.service.effect.EffectSystem") as? Timer.Task ?: return
         levelEffects = task
-        Timer.schedule(task, 0f, 0.05f)
+        Timer.schedule(task, 0f, LevelEffectTuning.INTERVAL_SECONDS)
     }
 
     fun startVote(voteData: VoteData): Boolean {
@@ -91,7 +91,7 @@ object ModuleRuntime {
         }
 
         if (task == null) return false
-        Timer.schedule(task, 0f, 1f, 60)
+        Timer.schedule(task, 0f, 1f, VoteStartTuning.VOTE_TIMER_REPEATS)
         return true
     }
 

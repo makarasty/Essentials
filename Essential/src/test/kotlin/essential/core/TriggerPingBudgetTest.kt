@@ -61,8 +61,8 @@ class TriggerPingBudgetTest {
         val worst = (0..2000).maxOf { Trigger.outlineMarks(0, it).count() }
 
         assertTrue(
-            worst <= Trigger.OUTLINE_MARKS,
-            "one edge drew $worst marks, the cap is ${Trigger.OUTLINE_MARKS}"
+            worst <= TriggerTuning.OUTLINE_MARKS,
+            "one edge drew $worst marks, the cap is ${TriggerTuning.OUTLINE_MARKS}"
         )
         assertTrue(Trigger.outlineMarks(0, 499).count() > 1, "the outline still has to show the shape")
     }
