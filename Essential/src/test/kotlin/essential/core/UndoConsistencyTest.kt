@@ -50,7 +50,7 @@ class UndoConsistencyTest {
             Permission.load()
             assertNotNull(Permission.userFileProblem(), "the file must be seen as unparseable, or this test proves nothing")
 
-            Undo.permission(uuid, "owner", false)
+            Undo.permission(uuid, "owner", false, before)
 
             assertFalse(
                 waitUntil(3000) { target.second.permission == "owner" },

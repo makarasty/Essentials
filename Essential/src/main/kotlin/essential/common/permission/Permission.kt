@@ -42,6 +42,7 @@ import mindustry.gen.Playerc
 import mindustry.net.Administration
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.r2dbc.select
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.r2dbc.update
@@ -436,7 +437,8 @@ object Permission {
      * Discord's adminAdd for a player online here; ServerAdminer reaches it by name. A uuid is only what
      * a client claims, so while the shared row says it is also online on another server nobody can tell
      * which session the person meant: refused. Otherwise [group] for the player unless their stored group
-     * is already admin level - a plain group change, no confirm - and then the one [grant], by Discord.
+     * is already admin level - a plain group change, no confirm, saved to the row before anything else;
+     * one that does not save is put back and grants nothing - and then the one [grant], by Discord.
      *
      * Completes with null once the row took the trust, or with why nothing was granted; exceptionally
      * when a write failed. Called on the game thread, which never waits: the row is read on IO and the
@@ -448,18 +450,27 @@ object Permission {
                 .firstOrNull()?.takeIf { it[PlayerTable.isConnected] }?.get(PlayerTable.connectedServer)
                 ?.takeIf { it != thisServerId }
         } ?: alsoOnline[uuid]
-        if (other != null) return@future "this uuid is also online on server $other, so which session to trust is not known"
-        var promoted: PlayerData? = null
-        val trusted = onGameThread {
-            val data = findPlayerData(uuid)?.takeUnless { it.temporary || sessionUsid(it.player) != usid }
-                ?: return@onGameThread null
-            if (!isAdminGroup(groupOf(uuid, data.permission))) {
+        if (other != null) {
+            return@future "this uuid is also online on server $other, so which session to trust is not known. If the " +
+                "player is not on $other (it may have crashed), have them reconnect here and add again"
+        }
+        fun session(): PlayerData? = findPlayerData(uuid)?.takeUnless { it.temporary || sessionUsid(it.player) != usid }
+        val left = "the player left or reconnected before the confirm"
+
+        // The group goes to the row before anything is granted on it; a group that did not save grants nothing.
+        val (data, previous) = onGameThread {
+            val data = session() ?: return@onGameThread null
+            val previous = data.permission
+            if (!isAdminGroup(groupOf(uuid, previous))) {
                 check(setGroup(uuid, group, data)) { "permission_user.yaml does not parse: ${userFileProblem()}" }
-                promoted = data
             }
-            grant(uuid, usid, ip, "discord", data)
-        } ?: return@future "the player left or reconnected before the confirm"
-        if (promoted?.update() == false) return@future "the group change was not saved"
+            data to previous
+        } ?: return@future left
+        if (data.permission != previous && !data.update()) {
+            onGameThread { setGroup(uuid, previous, data) }
+            return@future "the group change was not saved, so nothing was granted"
+        }
+        val trusted = onGameThread { session()?.let { grant(uuid, usid, ip, "discord", it) } } ?: return@future left
         if (trusted.await()) null else "the player's row was not found"
     }
 
@@ -566,9 +577,11 @@ object Permission {
 
     /**
      * uuid to the server the shared row said was also hosting it while it is online here. The row names
-     * one server only - whoever joined last - so each side learns of the other its own way: the later
-     * join sees the earlier one's claim when it loads the row, and the earlier one sees the later claim
-     * at its next [refresh]. Read by [confirmFromDiscord].
+     * one server only - whoever claimed last - so each side learns of the other its own way: a join sees
+     * the claim already there when it loads the row, and every [refresh] sees a claim made since and
+     * claims the row back, so the other side sees this one at its own next refresh. A crashed server's
+     * claim is claimed over the same way, and a reconnect here starts from a row this server released.
+     * Read by [confirmFromDiscord].
      */
     private val alsoOnline = ConcurrentHashMap<String, String>()
 
@@ -699,9 +712,9 @@ object Permission {
         return true
     }
 
-    fun removeUserEntry(uuid: String, fallbackGroup: String, confirmedBy: String? = null): Boolean {
+    fun removeUserEntry(uuid: String, fallbackGroup: String, data: PlayerData? = findPlayerData(uuid), confirmedBy: String? = null): Boolean {
         if (!writeUser { it.remove(uuid) }) return false
-        applyGroup(uuid, fallbackGroup, confirmedBy = confirmedBy)
+        applyGroup(uuid, fallbackGroup, data, confirmedBy)
         return true
     }
 
@@ -754,6 +767,32 @@ object Permission {
                 here?.dbSnapshot?.permission = group
             }
             true
+        }
+    }
+
+    /**
+     * Every player in an admin-level group, fleet-wide: the shared rows, and permission_user.yaml's
+     * entries, which win over them. For ServerAdminer's admins action, reached by name - the vanilla
+     * admin list holds only the flags this server set, which since trust went fleet-wide is not who is
+     * an admin. Each as a map of uuid, name and group. Game thread; the read runs on IO.
+     */
+    fun adminLevelPlayers(): CompletableFuture<List<Map<String, String>>> {
+        val groups = main.filterValues { it.admin == true }.keys
+        val entries = user.orEmpty()
+        return scope.future {
+            val rows = suspendTransaction {
+                PlayerTable.select(PlayerTable.uuid, PlayerTable.name, PlayerTable.permission)
+                    .where { (PlayerTable.permission inList groups) or (PlayerTable.uuid inList entries.keys) }
+                    .map { it[PlayerTable.uuid] to (it[PlayerTable.name] to it[PlayerTable.permission]) }
+                    .toList().toMap()
+            }
+            (rows.keys + entries.keys).mapNotNull { uuid ->
+                val entry = entries[uuid]
+                val group = entry?.group ?: rows[uuid]?.second ?: return@mapNotNull null
+                if (group !in groups) return@mapNotNull null
+                val name = entry?.name?.ifEmpty { null } ?: rows[uuid]?.first ?: uuid
+                mapOf("uuid" to uuid, "name" to name, "group" to group)
+            }
         }
     }
 
@@ -818,7 +857,12 @@ object Permission {
             Core.app.post {
                 online.forEachIndexed { i, data ->
                     val row = rows[data.uuid] ?: return@forEachIndexed
-                    noteOtherSession(data.uuid, row[PlayerTable.isConnected], row[PlayerTable.connectedServer])
+                    val connected = row[PlayerTable.isConnected]
+                    val server = row[PlayerTable.connectedServer]
+                    noteOtherSession(data.uuid, connected, server)
+                    // Claimed back while it is online here: a later join elsewhere then sees this session, and a
+                    // crashed server's stale claim stops standing in the way.
+                    if (!connected || server != thisServerId) data.claimConnection()
                     val (group, trust) = seen[i] ?: return@forEachIndexed
                     adopt(data, row[PlayerTable.permission].takeIf { data.dbSnapshot?.permission == group },
                         row[PlayerTable.adminTrust], data.dbSnapshot?.adminTrust == trust)

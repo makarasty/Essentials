@@ -26,6 +26,7 @@ import mindustry.gen.Player
 import mindustry.net.NetConnection
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.r2dbc.deleteWhere
 import org.jetbrains.exposed.v1.r2dbc.update
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -334,36 +335,132 @@ class AdminTrustTest {
         }
     }
 
-    /** A uuid another server claimed after this one: nobody can tell which session Discord meant. */
+    private fun claimedBy(uuid: String): String? =
+        runBlocking { getPlayerData(uuid) }?.takeIf { it.isConnected }?.connectedServer
+
+    /** Another server's join after this one: refused at once, and still refused after this side's refresh. */
     @Test
-    fun aConfirmIsRefusedWhileTheUuidIsOnlineOnAnotherServer() {
+    fun aJoinElsewhereAfterThisOneRefusesTheConfirm() {
         val (player, data) = join(freshUuid(), "device", "198.51.100.30")
+        val uuid = player.uuid()
         try {
-            claimRow(player.uuid(), "other-server")
+            assertTrue(waitUntil(10000) { claimedBy(uuid) == thisServerId }, "every join claims the row")
+            claimRow(uuid, "other-server")
             val refused = assertNotNull(PluginTest.confirmFromDiscord(player))
             assertTrue("other-server" in refused, refused)
             assertFalse(player.admin())
             assertEquals("user", data.permission, "the refusal changes no group")
-            assertNull(Permission.boundDevice(player.uuid()))
+            assertNull(Permission.boundDevice(uuid))
+
+            Permission.refresh()
+            assertTrue(waitUntil(10000) { pumpApp(); claimedBy(uuid) == thisServerId }, "the refresh claims the row back")
+            assertTrue("other-server" in assertNotNull(PluginTest.confirmFromDiscord(player)), "and remembers the other session")
         } finally {
             leavePlayer(player)
         }
     }
 
-    /** A uuid another server claimed before this join: the join notes it from the row it loaded. */
+    /** Another server's session before this join: the join sees its claim, and claims over it. */
     @Test
-    fun aJoinNotesASessionAlreadyOnAnotherServer() {
+    fun aSessionElsewhereBeforeThisJoinRefusesTheConfirm() {
         val (first, _) = join(freshUuid(), "device", "198.51.100.31")
         val uuid = first.uuid()
         leavePlayer(first)
         claimRow(uuid, "other-server")
         val (back, _) = join(uuid, "device", "198.51.100.31")
         try {
-            // This server's own save of the join claims the row back; the note is what still knows.
-            claimRow(uuid, thisServerId)
-            assertTrue("other-server" in assertNotNull(PluginTest.confirmFromDiscord(back)))
+            assertTrue(waitUntil(10000) { claimedBy(uuid) == thisServerId }, "the later join claims the row")
+            val refused = assertNotNull(PluginTest.confirmFromDiscord(back))
+            assertTrue("other-server" in refused && "reconnect" in refused, refused)
         } finally {
             leavePlayer(back)
+        }
+    }
+
+    /** A crashed server's claim: claimed over at the join, and a reconnect starts clean. */
+    @Test
+    fun aStaleClaimGoesWithAReconnect() {
+        val (first, _) = join(freshUuid(), "device", "198.51.100.37")
+        val uuid = first.uuid()
+        leavePlayer(first)
+        claimRow(uuid, "crashed-server")
+        val (stuck, _) = join(uuid, "device", "198.51.100.37")
+        assertNotNull(PluginTest.confirmFromDiscord(stuck), "the stale claim is indistinguishable from a live one")
+        leavePlayer(stuck)
+        assertNull(claimedBy(uuid), "the leave released this server's own claim")
+
+        val (back, _) = join(uuid, "device", "198.51.100.37")
+        try {
+            assertNull(PluginTest.confirmFromDiscord(back), "after a reconnect the confirm goes through")
+            assertTrue(back.admin())
+        } finally {
+            leavePlayer(back)
+        }
+    }
+
+    /** A leave here does not clear a claim another server made since. */
+    @Test
+    fun aLeaveReleasesOnlyThisServersClaim() {
+        val (player, _) = join(freshUuid(), "device", "198.51.100.38")
+        val uuid = player.uuid()
+        assertTrue(waitUntil(10000) { claimedBy(uuid) == thisServerId })
+        claimRow(uuid, "other-server")
+        leavePlayer(player)
+        assertEquals("other-server", claimedBy(uuid))
+    }
+
+    /** The group goes to the row before anything is granted; when it does not save, nothing is. */
+    @Test
+    fun aGroupThatDoesNotSaveGrantsNothing() {
+        val (player, data) = join(freshUuid(), "device", "198.51.100.39")
+        val uuid = player.uuid()
+        try {
+            assertTrue(waitUntil(10000) { claimedBy(uuid) == thisServerId })
+            runBlocking { suspendTransaction { PlayerTable.deleteWhere { PlayerTable.uuid eq uuid } } }
+            val refused = assertNotNull(PluginTest.confirmFromDiscord(player))
+            assertTrue("not saved" in refused, refused)
+            assertEquals("user", data.permission, "the group is put back")
+            assertNull(Permission.boundDevice(uuid))
+            assertFalse(player.admin())
+        } finally {
+            leavePlayer(player)
+        }
+    }
+
+    /** An undo only restores while the group is still the one it set, and confirms only the same device. */
+    @Test
+    fun anUndoChecksTheGroupAndTheDevice() {
+        val (player, data) = join(freshUuid(), "device", "198.51.100.40")
+        val uuid = player.uuid()
+        try {
+            setPermission(player, "owner", false)
+            assertFalse(Undo.permission(uuid, "user", false, "admin"), "the group was changed again since")
+            assertEquals("owner", data.permission)
+
+            setPermission(player, "user", false)
+            assertTrue(Undo.permission(uuid, "admin", false, "user", "anotherDevice"))
+            assertEquals("admin", data.permission)
+            assertNull(Permission.boundDevice(uuid), "a different device is not confirmed by the undo")
+            assertFalse(player.admin())
+        } finally {
+            leavePlayer(player)
+        }
+    }
+
+    /** ServerAdminer's admins action lists the admin-level groups from the shared rows. */
+    @Test
+    fun theAdminListComesFromTheGroups() {
+        val (owner, _) = join(freshUuid(), "device", "198.51.100.41")
+        val (plain, _) = join(freshUuid(), "device", "198.51.100.42")
+        try {
+            setPermission(owner, "owner", false)
+            assertTrue(waitUntil(10000) { runBlocking { getPlayerData(owner.uuid())?.permission } == "owner" })
+            val listed = Permission.adminLevelPlayers().get(10, TimeUnit.SECONDS)
+            assertEquals("owner", listed.find { it["uuid"] == owner.uuid() }?.get("group"))
+            assertNull(listed.find { it["uuid"] == plain.uuid() })
+        } finally {
+            leavePlayer(owner)
+            leavePlayer(plain)
         }
     }
 

@@ -1,6 +1,8 @@
 package essential.core
 
+import arc.Core
 import arc.Events
+import arc.util.Log
 import arc.util.Timer
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
@@ -216,23 +218,56 @@ object Undo {
     fun strict(uuid: String, strict: Boolean) = update(uuid) { it.strictMode = strict }
 
     /**
-     * Put [group] back, in permission_user.yaml first and only then in the row.
+     * Put [restore] back on [uuid], in permission_user.yaml first and only then in the row.
+     *
+     * Only while the group stored for them is still [setTo], the one the undone setperm set: a change
+     * made since is somebody else's decision. The undoing admin ([adminUuid], null for the console)
+     * must be online and still outrank both the player and the group restored. Their session is
+     * confirmed again - undoing a demotion otherwise leaves it held back, since the demotion dropped
+     * the binding and trust - only when it is the device the setperm saw ([usid]), and the undoer is
+     * shown who that is. An offline player is restored once their row is read.
      *
      * Both file writes refuse outright while permission_user.yaml does not parse, and the file wins
      * over the row wherever a permission is decided, so writing the row first left the two stores
-     * disagreeing until somebody fixed the YAML - with the un-undone group the one still in effect.
-     * Returns whether the undo happened.
+     * disagreeing until somebody fixed the YAML. Returns false when the undo was refused.
      */
-    fun permission(uuid: String, group: String, hadUserEntry: Boolean, confirmedBy: String? = null): Boolean {
-        // [confirmedBy] vouches for the target's session if it is online now: undoing a demotion otherwise
-        // leaves them held back, because the demotion dropped their binding and trust.
-        val restored = if (hadUserEntry) {
-            Permission.setGroup(uuid, group, confirmedBy = confirmedBy)
-        } else {
-            Permission.removeUserEntry(uuid, group, confirmedBy)
+    fun permission(uuid: String, restore: String, hadUserEntry: Boolean, setTo: String, usid: String? = null, adminUuid: String? = null): Boolean {
+        val online = findPlayerData(uuid)?.takeUnless { it.temporary }
+        if (online != null) return restorePermission(online, restore, hadUserEntry, setTo, usid, adminUuid)
+        scope.launch {
+            val row = getPlayerData(uuid) ?: return@launch
+            Core.app.post { restorePermission(row, restore, hadUserEntry, setTo, usid, adminUuid) }
         }
-        if (restored) update(uuid) { it.permission = group }
-        return restored
+        return true
+    }
+
+    private fun restorePermission(
+        data: PlayerData, restore: String, hadUserEntry: Boolean, setTo: String, usid: String?, adminUuid: String?
+    ): Boolean {
+        val admin = adminUuid?.let(::findPlayerData)
+        fun tell(key: String, vararg args: Any) = if (admin != null) admin.send(key, *args) else Log.info(Bundle().get(key, *args))
+        if (Permission.groupOf(data.uuid, data.permission) != setTo) {
+            tell("command.undo.setperm.changed", data.name)
+            return false
+        }
+        if (adminUuid != null && (admin == null || !Permission.outranks(admin, data) ||
+                Permission.rank(restore) >= Permission.rank(Permission.effectiveGroup(admin)))
+        ) {
+            admin?.err("command.permission.false")
+            return false
+        }
+        val sameSession = usid != null && Permission.sessionUsid(data.player) == usid
+        val confirmedBy = if (sameSession) admin?.player?.plainName() ?: CONSOLE else null
+        val who = if (sameSession && Permission.privileged(data.uuid, restore)) Permission.describeSession(data.uuid) else null
+        val restored = if (hadUserEntry) {
+            Permission.setGroup(data.uuid, restore, data, confirmedBy)
+        } else {
+            Permission.removeUserEntry(data.uuid, restore, data, confirmedBy)
+        }
+        if (!restored) return false
+        scope.launch { data.update() }
+        who?.let { tell("command.setPerm.confirmed", it) }
+        return true
     }
 
     fun team(uuid: String, team: Team) {

@@ -2204,9 +2204,11 @@ class Commands {
             if (sender != null) sender.send("command.setPerm.confirmed", confirming) else Log.info(Bundle()["command.setPerm.confirmed", confirming])
         }
 
-        // Undone by the same admin, who confirms the session again if it is online then.
+        // Undone by the same admin, and only while nothing has changed the group since; the session seen
+        // now is confirmed again only if it is the same device.
+        val usid = Permission.sessionUsid(data.player)
         Undo.record(sender, "setperm", data.uuid, Undo.label(data.uuid)) {
-            Undo.permission(it, previous, hadUserEntry, by)
+            Undo.permission(it, previous, hadUserEntry, group, usid, sender?.uuid)
         }
     }
 

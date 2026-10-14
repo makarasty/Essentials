@@ -12,6 +12,7 @@ import essential.common.playerNumber
 import essential.common.systemTimezone
 import essential.core.Main
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
 import kotlinx.serialization.SerializationException
@@ -22,6 +23,7 @@ import ksp.table.GenerateCode
 import mindustry.gen.Player
 import mindustry.gen.Playerc
 import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.lowerCase
@@ -190,13 +192,57 @@ data class PlayerData(
             return false
         }
         statusData = statusJson.encodeToString(status.filterKeys { it.startsWith(RECORD_PREFIX) })
-        // Only the write that changes the flag says whose connection it is. A server saving a row for
-        // an unrelated reason - a permission apply, an exp award - must not claim a player who is
-        // online on one of the other five, because its next boot clears every row it claimed.
-        if (dbSnapshot?.isConnected != isConnected) {
+        val base = dbSnapshot
+        if (base?.isConnected == true && !isConnected) {
+            // A leave releases the claim only if it is still this server's: another server's join may
+            // have claimed the row since, and clearing that would hide its session from the fleet.
+            suspendTransaction {
+                PlayerTable.update({ (PlayerTable.uuid eq uuid) and (PlayerTable.connectedServer eq thisServerId) }) {
+                    it[PlayerTable.isConnected] = false
+                    it[PlayerTable.connectedServer] = null
+                }
+            }
+            connectedServer = null
+            base.isConnected = false
+            base.connectedServer = null
+        } else if (base?.isConnected != isConnected) {
+            // Only the write that changes the flag says whose connection it is. A server saving a row
+            // for an unrelated reason - a permission apply, an exp award - must not claim a player who
+            // is online on one of the other servers, because its next boot clears every row it claimed.
             connectedServer = if (isConnected) thisServerId else null
         }
         return updateRow()
+    }
+
+    /**
+     * This server holds the player's session: is_connected and connected_server written now, by
+     * themselves, and mirrored into [dbSnapshot] so the ordinary save neither repeats nor reverts them.
+     * Every join claims, over another server's claim too - the later join is the newer fact, and a
+     * crashed server's claim would otherwise stand until it boots again. [update] releases only this
+     * server's own claim. Game thread; the write runs on IO. Temporary data claims nothing.
+     */
+    fun claimConnection() {
+        isConnected = true
+        connectedServer = thisServerId
+        dbSnapshot?.let {
+            it.isConnected = true
+            it.connectedServer = thisServerId
+        }
+        if (temporary) return
+        Main.scope.launch {
+            try {
+                suspendTransaction {
+                    PlayerTable.update({ PlayerTable.uuid eq uuid }) {
+                        it[PlayerTable.isConnected] = true
+                        it[PlayerTable.connectedServer] = thisServerId
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.warn("[Database] could not record $uuid as connected here: ${e.message}")
+            }
+        }
     }
 
     /**
