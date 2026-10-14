@@ -1586,7 +1586,8 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
         // syncVanillaAdmin is a no-op on this branch except in the one case that matters, an operator
         // who pointed vanillaAdminGroup at a group that is not an admin group.
         Permission.syncVanillaAdmin(playerData.uuid, vanillaGroup)
-    } else if (Permission.isAdminGroup(group)) {
+    } else {
+        // Every join: a privileged group of any kind is bound to the device on its first join here.
         Permission.syncVanillaAdmin(playerData.uuid, group)
     }
     // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.

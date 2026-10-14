@@ -371,7 +371,7 @@ object Permission {
     /** The group [data] acts with on this server: their resolved group, or the default one while [heldBack]. */
     fun effectiveGroup(data: PlayerData): String {
         val group = groupOf(data.uuid, data.permission)
-        return if (isAdminGroup(group) && heldBack(data.uuid, sessionUsid(data.player))) default else group
+        return if (rank(group) > 0 && heldBack(data.uuid, sessionUsid(data.player))) default else group
     }
 
     /**
@@ -382,14 +382,27 @@ object Permission {
         player.con()?.takeIf { it.isConnected && !it.hasDisconnected }?.usid
 
     /**
-     * Rank of a group, the only ordering permission.yaml expresses: 2 for a group holding `all`, 1 for
-     * another admin group, 0 for the rest. Inheritance is not an order - the default owner inherits nothing.
+     * Nodes that act on other players or on the server. A group holding one is privileged: it ranks
+     * above plain players, and like an admin group it is bound to a device.
+     */
+    private val PRIVILEGED_NODES = setOf(
+        "admin", "afk.admin", "chat.admin", "changename", "exp", "god", "info.other", "js", "kick.admin",
+        "kickall", "kill.other", "mute", "nextmap.admin", "pm.other", "rollback", "setperm", "strict",
+        "team.other", "undo", "unban", "unmute", "vote.admin", "vote.pass", "vote.reset", "ws",
+    )
+
+    /**
+     * Rank of a group, the only ordering permission.yaml allows: 2 for a group holding `all`, 1 for an
+     * admin group or any non-default group holding a [PRIVILEGED_NODES] node (a moderator), 0 for the
+     * rest. Inheritance is not an order - the default owner inherits nothing. Every rank above 0 is
+     * held back on an unrecognised device.
      */
     fun rank(group: String): Int {
         val role = main[group] ?: return 0
         return when {
             role.permission.contains("all") -> 2
             role.admin == true -> 1
+            group != default && role.permission.any { it in PRIVILEGED_NODES } -> 1
             else -> 0
         }
     }
@@ -400,7 +413,7 @@ object Permission {
 
     fun syncVanillaAdmin(uuid: String, group: String) {
         val admins = Vars.netServer?.admins ?: return
-        if (isAdminGroup(group)) {
+        if (rank(group) > 0) {
             bindSession(uuid)
         } else {
             Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }

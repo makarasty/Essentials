@@ -777,6 +777,8 @@ class ClientCommandTest {
         val uuid = target.uuid()
         try {
             setPermission(target, "admin", false)
+            // reloadplayer reads the row back; before the setperm write lands it would still say "user".
+            assertTrue(waitUntil(10000) { runBlocking { getPlayerData(uuid)?.permission } == "admin" })
             admins.getInfo(uuid).adminUsid = ""
             PluginTest.serverCommand.handleMessage("reloadplayer $uuid")
             assertTrue(

@@ -6,11 +6,14 @@ import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.serverCommand
+import PluginTest.Companion.clientCommand
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import essential.common.database.data.PlayerData
 import essential.common.database.data.getPlayerData
 import essential.common.permission.Permission
+import essential.common.rootPath
+import essential.common.util.findPlayerData
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
 import mindustry.gen.Player
@@ -93,5 +96,41 @@ class DeviceBindingTest {
         val stored = runBlocking { getPlayerData(uuid) }!!
         assertEquals("owner", Permission.effectiveGroup(stored), "a placeholder Player's usid is not a device")
         assertEquals(2, Permission.rank(Permission.effectiveGroup(stored)))
+    }
+
+    /** A moderator group (no admin flag, privileged nodes) ranks above players and is bound like an admin. */
+    @Test
+    fun aModeratorIsRankedAndBound() {
+        val mainFile = rootPath.child("permission.yaml")
+        val good = mainFile.readString()
+        val (mod, _) = newPlayer()
+        val (pleb, _) = newPlayer()
+        val uuid = mod.uuid()
+        val usid = mod.usid()
+        try {
+            mainFile.writeString(good.trimEnd() + "\nmoderator:\n  inheritance: user\n  permission:\n    - strict\n", false)
+            Permission.load()
+            assertEquals(1, Permission.rank("moderator"))
+            setPermission(mod, "moderator", false)
+            setPermission(pleb, "user", false)
+            assertEquals(usid, Permission.boundDevice(uuid), "a moderator is bound like an admin")
+            assertFalse(Vars.netServer.admins.getInfo(uuid).admin, "but is not made a vanilla admin")
+
+            clientCommand.handleMessage("/strict ${pleb.uuid()}", mod)
+            assertEquals(true, findPlayerData(pleb.uuid())?.strictMode, "a moderator still acts on a plain player")
+            leavePlayer(mod)
+
+            val (impostor, impostorData) = rejoin(uuid, "anotherDevice")
+            try {
+                assertEquals("moderator", impostorData.permission)
+                assertFalse(Permission.check(impostorData, "strict"), "a moderator's uuid on another device is held back")
+            } finally {
+                leavePlayer(impostor)
+            }
+        } finally {
+            mainFile.writeString(good, false)
+            Permission.load()
+            leavePlayer(pleb)
+        }
     }
 }
