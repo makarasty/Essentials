@@ -26,6 +26,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.future.future
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -272,7 +273,7 @@ object Permission {
                             val changed = suspendTransaction {
                                 PlayerTable.update({ PlayerTable.uuid eq uuid }) {
                                     it[PlayerTable.permission] = permissionData.group
-                                    // An offline revoke: the row half of what [revoke] does in memory.
+                                    // An offline revoke, in the same write as the group: [revoke] needs the game thread.
                                     if (!privileged(uuid, permissionData.group)) it[PlayerTable.adminTrust] = null
                                     if (permissionData.name.isNotEmpty()) {
                                         it[PlayerTable.name] = permissionData.name
@@ -415,26 +416,32 @@ object Permission {
 
     /**
      * Discord's adminAdd for a player online here; ServerAdminer reaches it by name. [grant]s the
-     * session, so the player is admin on every server they join from [ip], and saves the row.
+     * session, so the player is admin on every server they join from [ip]. Completes with whether the
+     * row took the trust - ServerAdminer replies once it has - and never blocks the game thread.
      */
-    fun bindDevice(uuid: String, usid: String, ip: String) {
-        val data = findPlayerData(uuid)
-        grant(uuid, usid, ip, "discord", data)
-        data?.takeUnless { it.temporary }?.let { scope.launch { it.update() } }
-    }
+    fun bindDevice(uuid: String, usid: String, ip: String): CompletableFuture<Boolean> =
+        grant(uuid, usid, ip, "discord", findPlayerData(uuid))
 
     /**
      * The one grant. A person vouched for this live session (setperm on an online player, Discord's
      * adminAdd), or the row already trusts the IP it comes from ([recognise]): bind [usid] on this
-     * server, stamp [ip] into [data]'s fleet-wide trust, and bring the vanilla flag, the admin flag
-     * and the file's display name in line. The row is changed in memory only; the caller saves it.
-     * [data] null or temporary binds this server only. A plain group gets nothing: the flag sync
-     * [revoke]s it again.
+     * server, stamp [ip] into [data]'s fleet-wide trust, and bring the vanilla flag, the admin flag and
+     * the file's display name in line. Completes with whether the row took the trust: false for [data]
+     * null or temporary, which binds this server only, and for a plain group, which gets nothing.
      */
-    fun grant(uuid: String, usid: String, ip: String, by: String, data: PlayerData?) {
+    fun grant(uuid: String, usid: String, ip: String, by: String, data: PlayerData?): CompletableFuture<Boolean> {
+        val group = groupOf(uuid, data?.permission ?: default)
+        if (!privileged(uuid, group)) {
+            syncVanillaAdmin(uuid, group, data = data)
+            return CompletableFuture.completedFuture(false)
+        }
         bindLocal(uuid, usid)
-        if (data != null && !data.temporary) data.adminTrust = AdminTrust.with(data.adminTrust, ip, by, System.currentTimeMillis())
-        syncVanillaAdmin(uuid, groupOf(uuid, data?.permission ?: default), data = data)
+        val stored = if (data != null && !data.temporary) {
+            storeTrust(uuid, data, AdminTrust.with(data.adminTrust, ip, by, System.currentTimeMillis()))
+        } else {
+            CompletableFuture.completedFuture(false)
+        }
+        syncVanillaAdmin(uuid, group, data = data)
         data?.let { d ->
             d.player.admin(isAdmin(uuid, d.permission))
             // The file's display name was withheld from this session while it was held back.
@@ -442,18 +449,38 @@ object Permission {
         }
         // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.
         Log.info("[Permission] $uuid bound here from $ip (trusted by $by); privileged on every server they join from that IP")
+        return stored
     }
 
     /**
-     * The one revoke: [uuid] loses this server's binding and vanilla admin flag, and [data] its
-     * fleet-wide trust, in memory - the caller saves the row. A write for an offline player clears the
-     * column itself ([applyOffline], [storeGroup]).
+     * The one revoke: [uuid] loses this server's binding and vanilla admin flag, and their fleet-wide
+     * trust - on [data] when it is in memory here, and on the row either way.
      */
     fun revoke(uuid: String, data: PlayerData?) {
         unbindLocal(uuid)
         val admins = Vars.netServer?.admins
         if (admins?.getInfoOptional(uuid)?.admin == true) admins.unAdminPlayer(uuid)
-        data?.adminTrust = null
+        storeTrust(uuid, data, null)
+    }
+
+    /**
+     * The only writer of admin_trust: [trust] on [data] and on the snapshot of the row this server last
+     * saw, and that one column of [uuid]'s row. The ordinary row save diffs against the snapshot, so it
+     * never carries trust - and a save from a copy loaded before another server's demotion cannot write
+     * the cleared trust back. Completes with whether a row took it; temporary [data] writes nothing.
+     */
+    private fun storeTrust(uuid: String, data: PlayerData?, trust: String?): CompletableFuture<Boolean> {
+        if (data != null) {
+            // Every plain setperm revokes; a row already holding no trust needs no write for it.
+            val stored = data.adminTrust == trust && data.dbSnapshot?.adminTrust == trust
+            data.adminTrust = trust
+            data.dbSnapshot?.adminTrust = trust
+            if (data.temporary) return CompletableFuture.completedFuture(false)
+            if (stored) return CompletableFuture.completedFuture(true)
+        }
+        return scope.future {
+            suspendTransaction { PlayerTable.update({ PlayerTable.uuid eq uuid }) { it[PlayerTable.adminTrust] = trust } } > 0
+        }
     }
 
     /**
@@ -470,7 +497,7 @@ object Permission {
         val now = System.currentTimeMillis()
         val trusted = AdminTrust.read(data.adminTrust, now).find { it.ip == ip }
         when {
-            boundDevice(uuid) == usid -> if (trusted != null) data.adminTrust = AdminTrust.with(data.adminTrust, ip, trusted.by, now)
+            boundDevice(uuid) == usid -> if (trusted != null) storeTrust(uuid, data, AdminTrust.with(data.adminTrust, ip, trusted.by, now))
             trusted != null -> grant(uuid, usid, ip, trusted.by, data)
             else -> Log.warn("${data.player.plainName()} $uuid joined from an unrecognised device and IP ($ip); plays as an ordinary player until confirmed with Discord admin add or setperm while online")
         }
@@ -635,37 +662,23 @@ object Permission {
      * the file does not parse or the write failed. It runs on Dispatchers.IO, never on the game thread.
      */
     fun storeGroup(uuid: String, group: String, keepAdminLevel: Boolean): CompletableFuture<Boolean> {
-        val result = CompletableFuture<Boolean>()
-        if (!hasGroup(group)) return result.apply { completeExceptionally(IllegalArgumentException("permission.yaml has no group $group")) }
+        if (!hasGroup(group)) return CompletableFuture.failedFuture(IllegalArgumentException("permission.yaml has no group $group"))
         val here = findPlayerData(uuid)?.takeUnless { it.temporary }
-        if (!(keepAdminLevel && isAdminGroup(groupOf(uuid, here?.permission ?: "")))) {
-            if (!setGroup(uuid, group)) {
-                return result.apply { completeExceptionally(IllegalStateException("permission_user.yaml does not parse: ${userFileProblem()}")) }
-            }
-        }
-        val plain = !privileged(uuid, group)
-        scope.launch {
-            try {
-                result.complete(suspendTransaction {
-                    val stored = PlayerTable.select(PlayerTable.permission).where { PlayerTable.uuid eq uuid }
-                        .firstOrNull()?.get(PlayerTable.permission) ?: return@suspendTransaction false
-                    if (!(keepAdminLevel && isAdminGroup(stored))) {
-                        PlayerTable.update({ PlayerTable.uuid eq uuid }) {
-                            it[PlayerTable.permission] = group
-                            if (plain) it[PlayerTable.adminTrust] = null
-                        }
-                    }
-                    true
-                })
-            } catch (e: CancellationException) {
-                result.cancel(false)
-                throw e
-            } catch (e: Exception) {
-                result.completeExceptionally(e)
-            }
+        // setGroup lands the change here, and a plain group's revoke clears the trust on the row too.
+        if (!(keepAdminLevel && isAdminGroup(groupOf(uuid, here?.permission ?: ""))) && !setGroup(uuid, group)) {
+            return CompletableFuture.failedFuture(IllegalStateException("permission_user.yaml does not parse: ${userFileProblem()}"))
         }
         Log.info("[Permission] $uuid set to $group on the shared row (Discord)")
-        return result
+        return scope.future {
+            suspendTransaction {
+                val stored = PlayerTable.select(PlayerTable.permission).where { PlayerTable.uuid eq uuid }
+                    .firstOrNull()?.get(PlayerTable.permission) ?: return@suspendTransaction false
+                if (!(keepAdminLevel && isAdminGroup(stored))) {
+                    PlayerTable.update({ PlayerTable.uuid eq uuid }) { it[PlayerTable.permission] = group }
+                }
+                true
+            }
+        }
     }
 
     /** Runs [refresh] every [PermissionTuning.REFRESH_SECONDS]; once, at server load. */

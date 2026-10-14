@@ -137,10 +137,11 @@ class AdminTrustTest {
             assertFalse(back.admin())
             assertEquals(Permission.default, Permission.effectiveGroup(data))
 
-            Permission.bindDevice(uuid, usid, back.ip())
+            val stored = Permission.bindDevice(uuid, usid, back.ip())
             assertTrue(back.admin(), "the Discord confirm binds this session")
             assertEquals("admin", Permission.effectiveGroup(data))
-            assertTrue(waitUntil(10000) { storedTrust(uuid)?.contains("198.51.100.23") == true }, "and trusts its IP fleet-wide")
+            assertTrue(stored.get(10, TimeUnit.SECONDS), "it completes once the row took the trust")
+            assertTrue(storedTrust(uuid)?.contains("198.51.100.23") == true, "and trusts its IP fleet-wide")
         } finally {
             leavePlayer(back)
         }
@@ -169,6 +170,39 @@ class AdminTrustTest {
         val (back, _) = join(uuid, "adminDevice2", ip)
         try {
             assertFalse(back.admin(), "the old IP is no longer trusted after the demotion")
+        } finally {
+            leavePlayer(back)
+        }
+    }
+
+    /**
+     * A save of the row from this server's copy never writes trust back: the join's re-stamp went to
+     * the row on its own, so a demotion made elsewhere afterwards stays a demotion.
+     */
+    @Test
+    fun aRowSaveDoesNotWriteBackTrustClearedElsewhere() {
+        val ip = "198.51.100.28"
+        val (first, _) = join(freshUuid(), "deviceA", ip)
+        val uuid = first.uuid()
+        setPermission(first, "admin", false)
+        assertTrue(waitUntil(10000) { storedTrust(uuid) != null })
+        leavePlayer(first)
+
+        val (back, data) = join(uuid, "deviceA", ip)
+        try {
+            assertTrue(back.admin())
+            assertTrue(waitUntil(10000) { storedTrust(uuid) == data.adminTrust }, "the join's re-stamp is written by itself")
+
+            val elsewhere = runBlocking { getPlayerData(uuid) }!!
+            elsewhere.permission = "user"
+            elsewhere.adminTrust = null
+            runBlocking { elsewhere.update() }
+
+            data.exp += 1
+            assertTrue(runBlocking { data.update() })
+            val row = runBlocking { getPlayerData(uuid) }!!
+            assertNull(row.adminTrust, "the save from the stale copy left the cleared trust alone")
+            assertEquals("user", row.permission)
         } finally {
             leavePlayer(back)
         }

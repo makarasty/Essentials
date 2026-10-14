@@ -226,11 +226,7 @@ object Undo {
     fun permission(uuid: String, group: String, hadUserEntry: Boolean): Boolean {
         val restored =
             if (hadUserEntry) Permission.setGroup(uuid, group) else Permission.removeUserEntry(uuid, group)
-        if (restored) update(uuid) {
-            it.permission = group
-            // The row half of a revoke: setGroup cleared it in memory for a player online here.
-            if (!Permission.privileged(uuid, group)) it.adminTrust = null
-        }
+        if (restored) update(uuid) { it.permission = group }
         return restored
     }
 
