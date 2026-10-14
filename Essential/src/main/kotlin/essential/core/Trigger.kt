@@ -588,7 +588,10 @@ object Trigger {
             }
 
             if (conf.feature.count) {
-                Core.settings.put("totalPlayers", cycle.total + Groups.player.size())
+                // Settings.put marks the whole settings file dirty even for the same value, and the
+                // next autosave then rewrites settings.bin: every three seconds for an unchanged count.
+                val total = cycle.total + Groups.player.size()
+                if (Core.settings.getInt("totalPlayers", -1) != total) Core.settings.put("totalPlayers", total)
             }
         }
 
