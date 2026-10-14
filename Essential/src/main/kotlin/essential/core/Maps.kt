@@ -21,13 +21,15 @@ fun mapsById(): List<Map> = Vars.maps.all().sortedBy { it.name() }
 
 /**
  * The map [query] names, for every command that takes one (/rtv, /changemap, /vote map, /nextmap). A whole number is
- * an ID and nothing else: the map at that index in [mapsById], or none. Any other query is a name: the first map in
- * that same order whose plain name (no colour tags) contains it, ignoring case.
+ * an ID and nothing else: the map at that index in [mapsById], or none. Any other query is a name, matched against
+ * plain names (no colour tags) ignoring case: the map named exactly that, else the first in that same order whose
+ * name contains it - so "fortress" is Fortress even when Desert Fortress comes first.
  */
 fun findMap(query: String): Map? {
     val maps = mapsById()
-    val id = query.toIntOrNull()
-    return if (id != null) maps.getOrNull(id) else maps.find { it.plainName().contains(query, ignoreCase = true) }
+    query.toIntOrNull()?.let { return maps.getOrNull(it) }
+    return maps.find { it.plainName().equals(query, ignoreCase = true) }
+        ?: maps.find { it.plainName().contains(query, ignoreCase = true) }
 }
 
 /** The map in [mapsById] stored in [file], or null once it is gone. A map is held by file: a map list reload makes new objects. */

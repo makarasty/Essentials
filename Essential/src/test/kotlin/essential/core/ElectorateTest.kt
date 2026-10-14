@@ -10,6 +10,8 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import arc.Core
 import arc.Events
+import arc.files.Fi
+import arc.struct.StringMap
 import arc.util.Log
 import essential.common.database.data.PlayerData
 import essential.common.isVoting
@@ -29,9 +31,12 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TestTimeSource
 import mindustry.Vars
+import mindustry.core.NetServer
 import mindustry.game.EventType.GameOverEvent
 import mindustry.game.EventType.PlayerChatEvent
 import mindustry.gen.Player
+import mindustry.maps.Map
+import mindustry.net.Administration
 
 /** Stands in for BlockIp.BlockPlugin's static voteRefusal, so the reflective lookup has something to find. */
 object FakeBlockIp {
@@ -324,6 +329,22 @@ class ElectorateTest {
     }
 
     @Test
+    fun findMapPrefersTheExactNameOverOneThatContainsIt() {
+        val maps = Vars.maps.all()
+        val fortress = Map(Fi("Fortress-test.msav"), 1, 1, StringMap.of("name", "Testfortress"), true)
+        val desert = Map(Fi("Desert-Fortress-test.msav"), 1, 1, StringMap.of("name", "Desert Testfortress"), true)
+        maps.addAll(desert, fortress)
+        try {
+            assertTrue(mapsById().indexOf(desert) < mapsById().indexOf(fortress), "Desert Fortress comes first by ID")
+            assertEquals(fortress, findMap("testfortress"))
+            assertEquals(desert, findMap("desert test"))
+        } finally {
+            maps.remove(desert)
+            maps.remove(fortress)
+        }
+    }
+
+    @Test
     fun findMapReadsANumberAsAnIdOnlyAndAnythingElseAsANameIgnoringCase() {
         val maps = mapsById()
         assertEquals(maps[0], findMap("0"))
@@ -332,15 +353,42 @@ class ElectorateTest {
             findMap(maps[1].plainName().uppercase()))
     }
 
+    /** What the engine does with a chat line: every filter, then the formatter for one that passed them all. */
+    private fun chat(player: Player, line: String) {
+        Vars.netServer.admins.filterMessage(player, line)?.let { Vars.netServer.chatFormatter.format(player, it) }
+    }
+
     @Test
-    fun aChatLinePastEveryFilterIsInputWithoutTheChatModule() {
+    fun aChatLinePastEveryFilterIsInputAndADroppedOneIsNot() {
         val (a) = join(1)
         a.second.afk = true
-        // The chat module's formatter takes no part: it is the core's own filter, at the end of the chain
-        Vars.netServer.chatFormatter.format(a.first, "hello")
-        assertFalse(electorate.mayVote(a.second), "the formatter is the chat module's and marks nothing")
-        Vars.netServer.admins.filterMessage(a.first, "hello")
-        assertTrue(electorate.mayVote(a.second), "a line the filters let through is input")
+        val drop = Administration.ChatFilter { _, line -> line.takeUnless { it == "dropped" } }
+        Vars.netServer.admins.addChatFilter(drop)
+        try {
+            chat(a.first, "dropped")
+            assertFalse(electorate.mayVote(a.second), "a line a filter dropped is no input")
+            chat(a.first, "hello")
+            assertTrue(electorate.mayVote(a.second), "a line every filter let through is")
+        } finally {
+            Vars.netServer.admins.chatFilters.remove(drop)
+        }
+    }
+
+    @Test
+    fun chatIsInputWithTheChatModuleOff() {
+        val (a) = join(1)
+        a.second.afk = true
+        val previous = Vars.netServer.chatFormatter
+        // Vanilla's formatter, as with the chat module off, wrapped the way the core wraps any
+        Vars.netServer.chatFormatter = NetServer.ChatFormatter { _, line -> line }
+        try {
+            Trigger.wrapChatFormatter()
+            Trigger.wrapChatFormatter()
+            chat(a.first, "hello")
+            assertTrue(electorate.mayVote(a.second))
+        } finally {
+            Vars.netServer.chatFormatter = previous
+        }
     }
 
     @Test

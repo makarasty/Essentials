@@ -317,6 +317,7 @@ class Commands {
                     Vars.state.rules.mode()
                 }
                 loadMapNow(map, mode)
+                playerData.send("command.changeMap.done", map.plainName())
             } catch (_: IllegalArgumentException) {
                 playerData.err("command.changeMap.mode.not.found", arg[1])
             }

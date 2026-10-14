@@ -36,14 +36,15 @@ import kotlinx.datetime.toLocalDateTime
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.content.Fx
+import mindustry.core.NetServer
 import mindustry.game.EventType
 import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
+import mindustry.gen.Player
 import mindustry.gen.Playerc
 import mindustry.io.SaveIO
 import mindustry.io.SaveOptions
-import mindustry.net.Administration
 import mindustry.net.Host
 import mindustry.net.NetworkIO
 import mindustry.world.Tile
@@ -129,18 +130,26 @@ object Trigger {
     }
 
     /**
-     * Marks input (see [markInput]) for a chat line that every filter before it let through - installed last, so a
-     * line another plugin drops (BlockIP's, a blacklist's) never counts. A running vote's own filter, added later,
-     * marks the vote words it takes itself. Core's, so it works with the chat module off.
+     * The chat formatter with [markInput] in front: the engine formats a player's line only once every chat filter
+     * let it through, whichever plugin added which filter when, so a line BlockIP or a blacklist drops never counts.
+     * Wraps whatever formatter is set - the chat module's, or vanilla's with the module off.
      */
-    private val inputFilter = Administration.ChatFilter { player, message ->
-        findPlayerData(player.uuid())?.let(::markInput)
-        message
+    private class InputFormatter(val inner: NetServer.ChatFormatter) : NetServer.ChatFormatter {
+        override fun format(player: Player?, message: String?): String? {
+            if (player != null && message != null) findPlayerData(player.uuid())?.let(::markInput)
+            return inner.format(player, message)
+        }
+    }
+
+    /** Puts [InputFormatter] around the formatter in place; once only, so a second load does not wrap it twice. */
+    internal fun wrapChatFormatter() {
+        val current = Vars.netServer.chatFormatter
+        if (current !is InputFormatter) Vars.netServer.chatFormatter = InputFormatter(current)
     }
 
     /**
-     * Records that [data] gave input that reached the server: a chat line every filter let through, or one of
-     * this plugin's vote commands run. It counts for voting only (see [present]); afk kicking and the afk
+     * Records that [data] gave input that reached the server: a chat line every filter let through, a vote counted
+     * from a vote word, or one of this plugin's vote commands run. It counts for voting only (see [present]); afk kicking and the afk
      * statistics follow movement alone, so a chat macro cannot hold off an afk kick.
      */
     fun markInput(data: PlayerData) {
@@ -976,10 +985,8 @@ object Trigger {
         }, 0f, 60f)
 
         Events.on(EventType.ServerLoadEvent::class.java) {
-            // A frame later, after every plugin and module added its chat filters at load, so this one runs last
-            Core.app.post {
-                if (!Vars.netServer.admins.chatFilters.contains(inputFilter)) Vars.netServer.admins.addChatFilter(inputFilter)
-            }
+            // A frame later, after every module set its formatter at load
+            Core.app.post(::wrapChatFormatter)
             if (conf.feature.level.effect.enabled) {
                 ModuleRuntime.scheduleLevelEffects()
             }

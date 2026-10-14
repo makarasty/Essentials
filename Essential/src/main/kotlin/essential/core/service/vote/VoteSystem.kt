@@ -221,10 +221,10 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         isAdminVote = true
                         data.send("command.vote.voted")
                     } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        // Every filter before this one let the line through: it is input, and may make an idle player present
-                        Trigger.markInput(data)
                         if (electorate.mayVote(data)) {
                             voted.add(player.uuid())
+                            // A counted vote is input; this filter swallows the word, so the chat formatter never sees it
+                            Trigger.markInput(data)
                             data.send("command.vote.voted")
                         } else {
                             data.err("command.vote.ineligible")
