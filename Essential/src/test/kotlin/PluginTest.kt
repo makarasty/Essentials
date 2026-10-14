@@ -999,6 +999,33 @@ class PluginTest {
         }
 
         /**
+         * Runs [action] - a command, a tap - and waits up to [timeoutMs] for the reply it sends [data], which it
+         * returns ("" when none came). [data]'s last message is cleared first, so what comes back is this action's
+         * reply and not one still showing from before; and as each step waits for its own reply, a reply that is
+         * sent late (from scope.launch, Core.app.post) cannot land on the next step's assertion.
+         */
+        fun replyTo(data: PlayerData, timeoutMs: Long = 5000, action: () -> Unit): String {
+            data.lastReceivedMessage = ""
+            action()
+            waitUntil(timeoutMs) { data.lastReceivedMessage.isNotEmpty() }
+            return data.lastReceivedMessage
+        }
+
+        /** [replyTo] for a client [command] sent by [data]'s player. */
+        fun replyTo(data: PlayerData, command: String, timeoutMs: Long = 5000): String =
+            replyTo(data, timeoutMs) { clientCommand.handleMessage(command, data.player) }
+
+        /**
+         * Asserts that [actual] comes to equal [expected] within [timeoutMs], pumping the app thread meanwhile. For
+         * what a command delivers later (scope.launch, Core.app.post): a fixed sleep before an assertEquals failed
+         * whenever the machine was busy, and waited the whole time when it was not.
+         */
+        fun <T> awaitEquals(expected: T, timeoutMs: Long = 5000, actual: () -> T) {
+            waitUntil(timeoutMs) { actual() == expected }
+            assertEquals(expected, actual())
+        }
+
+        /**
          * Wait for a player's lastReceivedMessage to satisfy the predicate.
          * Returns the final message that satisfied the predicate (or the latest one when timed out).
          */

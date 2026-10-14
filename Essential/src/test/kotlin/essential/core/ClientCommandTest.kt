@@ -10,8 +10,10 @@ import PluginTest.Companion.log
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.observeMessages
 import PluginTest.Companion.player
+import PluginTest.Companion.replyTo
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.updateTick
+import PluginTest.Companion.awaitEquals
 import PluginTest.Companion.waitUntil
 import arc.Events
 import essential.common.bundle.Bundle
@@ -318,21 +320,17 @@ class ClientCommandTest {
         setPermission("owner", true)
 
         // Set EXP value
-        clientCommand.handleMessage("/exp set 1000", player)
-        sleep(100)
-        assertEquals(1000, playerData.exp)
+        replyTo(playerData, "/exp set 1000")
+        awaitEquals(1000) { playerData.exp }
 
         // Set another player EXP value
         val dummy = newPlayer()
-        clientCommand.handleMessage("/exp set 500 ${dummy.first.name}", player)
-        sleep(100)
-        assertTrue(findPlayerData(dummy.first.uuid())?.exp == 500,
+        replyTo(playerData, "/exp set 500 ${dummy.first.name}")
+        assertTrue(waitUntil(5000) { findPlayerData(dummy.first.uuid())?.exp == 500 },
             "/exp set 500 <other> left exp at ${findPlayerData(dummy.first.uuid())?.exp}")
 
         // If player enter wrong value
-        clientCommand.handleMessage("/exp set number", player)
-        sleep(100)
-        assertEquals(err("command.exp.invalid"), playerData.lastReceivedMessage)
+        assertEquals(err("command.exp.invalid"), replyTo(playerData, "/exp set number"))
 
         // The row, not the in-memory flag: /ranking filters on PlayerTable.hideRanking. The self
         // branch of /exp hide awaits update() before it confirms, so reading the row after the
@@ -358,38 +356,34 @@ class ClientCommandTest {
 
         // Hide other players' rankings in the ranking list. This branch writes with a detached
         // scope.launch { other.update() } and confirms before the write lands, so the row is polled.
-        clientCommand.handleMessage("/exp hide ${dummy.first.name}", player)
-        sleep(100)
-        assertEquals(Bundle()["command.exp.ranking.hide"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.exp.ranking.hide"], replyTo(playerData, "/exp hide ${dummy.first.name}"))
         assertTrue(
             waitUntil(5000, 100) { storedHideRanking(dummy.first.uuid()) == true },
             "/exp hide <other> did not hide ${dummy.first.name} in the row /ranking reads"
         )
 
         // Un-hide other players' rankings in the ranking list
-        clientCommand.handleMessage("/exp hide ${findPlayerData(dummy.first.uuid())?.name}", player)
-        sleep(100)
+        replyTo(playerData, "/exp hide ${findPlayerData(dummy.first.uuid())?.name}")
         assertTrue(
             waitUntil(5000, 100) { storedHideRanking(dummy.first.uuid()) == false },
             "/exp hide <other> did not un-hide ${dummy.first.name} in the row /ranking reads"
         )
 
         // Add exp value
-        clientCommand.handleMessage("/exp add 500", player)
+        replyTo(playerData, "/exp add 500")
         assertTrue(waitUntil { playerData.exp >= 1500 }, "/exp add 500 left exp at ${playerData.exp}")
 
         // Add other player exp value
-        clientCommand.handleMessage("/exp add 500 ${dummy.first.name}", player)
-        sleep(100)
-        assertTrue((findPlayerData(dummy.first.uuid())?.exp ?: -1) >= 1000,
+        replyTo(playerData, "/exp add 500 ${dummy.first.name}")
+        assertTrue(waitUntil(5000) { (findPlayerData(dummy.first.uuid())?.exp ?: -1) >= 1000 },
             "/exp add 500 <other> left exp at ${findPlayerData(dummy.first.uuid())?.exp}")
 
         // Subtract value from current experience
-        clientCommand.handleMessage("/exp remove 300", player)
+        replyTo(playerData, "/exp remove 300")
         assertTrue(waitUntil { playerData.exp in 1200..1499 }, "/exp remove 300 left exp at ${playerData.exp}")
 
         // Subtract the value from another player's current experience
-        clientCommand.handleMessage("/exp remove 300 ${dummy.first.name}", player)
+        replyTo(playerData, "/exp remove 300 ${dummy.first.name}")
         assertTrue(
             waitUntil { findPlayerData(dummy.first.uuid())?.exp in 700..999 },
             "/exp remove 300 <other> left exp at ${findPlayerData(dummy.first.uuid())?.exp}"
@@ -397,40 +391,29 @@ class ClientCommandTest {
 
         // Set EXP for players who are not currently logged in
         leavePlayer(dummy.first)
-        clientCommand.handleMessage("/exp set 10 ${dummy.first.name}", player)
-        sleep(100)
+        replyTo(playerData, "/exp set 10 ${dummy.first.name}")
         assertExp(dummy.first.uuid(), 10)
 
         // Add EXP for players who are not currently logged in
-        clientCommand.handleMessage("/exp add 10 ${dummy.first.name}", player)
-        sleep(100)
+        replyTo(playerData, "/exp add 10 ${dummy.first.name}")
         assertExp(dummy.first.uuid(), 20)
 
         // Subtract EXP for players who are not currently logged in
-        clientCommand.handleMessage("/exp remove 5 ${dummy.first.name}", player)
-        sleep(100)
+        replyTo(playerData, "/exp remove 5 ${dummy.first.name}")
         assertExp(dummy.first.uuid(), 15)
 
         // If target player not found
-        clientCommand.handleMessage("/exp set 10 dummy", player)
-        sleep(100)
-        assertEquals(err("player.not.found"), playerData.lastReceivedMessage)
+        assertEquals(err("player.not.found"), replyTo(playerData, "/exp set 10 dummy"))
 
         // If target player exist but not registered
         val bot = createPlayer()
-        clientCommand.handleMessage("/exp set 10 ${bot.name}", player)
-        sleep(100)
-        assertEquals(err("player.not.registered"), playerData.lastReceivedMessage)
+        assertEquals(err("player.not.registered"), replyTo(playerData, "/exp set 10 ${bot.name}"))
 
         // If the target player is not logged in and looking for a player that isn't in the database
-        clientCommand.handleMessage("/exp hide 냠냠", player)
-        sleep(100)
-        assertEquals(err("player.not.found"), playerData.lastReceivedMessage)
+        assertEquals(err("player.not.found"), replyTo(playerData, "/exp hide 냠냠"))
 
         // If player enter wrong command
-        clientCommand.handleMessage("/exp wrongCommand", player)
-        sleep(100)
-        assertEquals(err("command.exp.invalid.command"), playerData.lastReceivedMessage)
+        assertEquals(err("command.exp.invalid.command"), replyTo(playerData, "/exp wrongCommand"))
     }
 
     @Test
@@ -545,60 +528,52 @@ class ClientCommandTest {
 
         // Initialize hub state to known value and test toggling
         pluginData.hubMapName = null
-        clientCommand.handleMessage("/hub set", player)
-        sleep(100)
-        assertEquals(Vars.state.map.name(), pluginData.hubMapName)
+        replyTo(playerData, "/hub set")
+        awaitEquals(Vars.state.map.name()) { pluginData.hubMapName }
 
         // Test toggling hub off when already set
-        clientCommand.handleMessage("/hub set", player)
-        sleep(100)
-        assertEquals(null, pluginData.hubMapName)
+        replyTo(playerData, "/hub set")
+        awaitEquals(null) { pluginData.hubMapName }
 
         // Test zone command
-        clientCommand.handleMessage("/hub zone 127.0.0.1", player)
-        sleep(100)
-        assertEquals(Bundle()["command.hub.zone.first"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.hub.zone.first"], replyTo(playerData, "/hub zone 127.0.0.1"))
 
         // Test zone command when already in process
-        clientCommand.handleMessage("/hub zone 127.0.0.1", player)
-        sleep(100)
-        assertEquals(Bundle()["command.hub.zone.process"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.hub.zone.process"], replyTo(playerData, "/hub zone 127.0.0.1"))
         playerData.status.remove("hub_first")
         playerData.status.remove("hub_second")
         playerData.status.remove("hub_ip")
         playerData.status.remove("hub_port")
 
         // Test block command with missing parameters
-        clientCommand.handleMessage("/hub block 127.0.0.1", player)
-        sleep(100)
-        assertEquals(err("command.hub.block.parameter"), playerData.lastReceivedMessage)
+        assertEquals(err("command.hub.block.parameter"), replyTo(playerData, "/hub block 127.0.0.1"))
 
         // Test block command with valid parameters (triggers block selection mode)
-        clientCommand.handleMessage("/hub block 127.0.0.1 description", player)
-        sleep(100)
-        assertEquals(Bundle()["command.hub.block.select"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.hub.block.select"], replyTo(playerData, "/hub block 127.0.0.1 description"))
         assertEquals("true", playerData.status["hub_block_selecting"])
 
         // Test tap on ground (build is null) -> warns player, keeps selection active
         val groundTile = world.tile(11, 11)
         groundTile.setBlock(Blocks.air)
-        Events.fire(EventType.TapEvent(player.self(), groundTile))
-        sleep(100)
-        assertEquals(err("command.hub.block.invalid"), playerData.lastReceivedMessage)
+        assertEquals(err("command.hub.block.invalid"), replyTo(playerData) { Events.fire(EventType.TapEvent(player.self(), groundTile)) })
         assertEquals("true", playerData.status["hub_block_selecting"])
 
         // Test tap on a valid block -> succeeds, clears selection, adds WarpBlock
         val blockTile = world.tile(10, 10)
         blockTile.setBlock(Blocks.thoriumWall, player.team(), 0)
         assertNotNull(blockTile.build)
-        Events.fire(EventType.TapEvent(player.self(), blockTile))
-        sleep(100)
+        replyTo(playerData) { Events.fire(EventType.TapEvent(player.self(), blockTile)) }
         assertTrue(
-            playerData.lastReceivedMessage == playerData.bundle["command.hub.block.added", "10:10", "127.0.0.1"] ||
-                playerData.lastReceivedMessage == playerData.bundle["command.hub.block.added", "10,10", "127.0.0.1"] ||
-                playerData.lastReceivedMessage == Bundle()["command.hub.block.added", "10:10", "127.0.0.1"] ||
-                playerData.lastReceivedMessage == Bundle()["command.hub.block.added", "10,10", "127.0.0.1"] ||
-                playerData.lastReceivedMessage.contains("127.0.0.1")
+            // The tap is handled later: wait for the block itself, not only for a line naming the address
+            waitUntil(5000) {
+                pluginData.data.warpBlock.any { it.x == 10 && it.y == 10 } && (
+                    playerData.lastReceivedMessage == playerData.bundle["command.hub.block.added", "10:10", "127.0.0.1"] ||
+                        playerData.lastReceivedMessage == playerData.bundle["command.hub.block.added", "10,10", "127.0.0.1"] ||
+                        playerData.lastReceivedMessage == Bundle()["command.hub.block.added", "10:10", "127.0.0.1"] ||
+                        playerData.lastReceivedMessage == Bundle()["command.hub.block.added", "10,10", "127.0.0.1"] ||
+                        playerData.lastReceivedMessage.contains("127.0.0.1")
+                )
+            }
         )
         assertNull(playerData.status["hub_block_selecting"])
         val addedWarpBlock = pluginData.data.warpBlock.find { it.x == 10 && it.y == 10 }
@@ -607,33 +582,25 @@ class ClientCommandTest {
         assertEquals("description", addedWarpBlock.description)
 
         // Test count command with missing parameters
-        clientCommand.handleMessage("/hub count", player)
-        sleep(100)
-        assertEquals(err("command.hub.count.parameter"), playerData.lastReceivedMessage)
+        assertEquals(err("command.hub.count.parameter"), replyTo(playerData, "/hub count"))
 
         // Test total command
-        clientCommand.handleMessage("/hub total", player)
-        sleep(100)
-        // todo block assert
+        val totalReply = Bundle()["command.hub.total", "@"].substringBefore("@")
+        assertTrue(replyTo(playerData, "/hub total").startsWith(totalReply))
+        assertTrue(pluginData.data.warpTotal.isNotEmpty())
 
         // Test remove command
-        clientCommand.handleMessage("/hub remove 127.0.0.1", player)
-        sleep(100)
-        assertEquals(Bundle()["command.hub.removed", "127.0.0.1"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.hub.removed", "127.0.0.1"], replyTo(playerData, "/hub remove 127.0.0.1"))
 
         // Test reset command
-        clientCommand.handleMessage("/hub reset", player)
-        sleep(100)
-        assertEquals(Bundle()["command.hub.reset"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.hub.reset"], replyTo(playerData, "/hub reset"))
         assertTrue(pluginData.data.warpZone.isEmpty())
         assertTrue(pluginData.data.warpBlock.isEmpty())
         assertTrue(pluginData.data.warpTotal.isEmpty())
         assertTrue(pluginData.data.warpCount.isEmpty())
 
         // Test invalid command
-        clientCommand.handleMessage("/hub invalid", player)
-        sleep(100)
-        assertEquals(Bundle()["command.hub.help"], playerData.lastReceivedMessage)
+        assertEquals(Bundle()["command.hub.help"], replyTo(playerData, "/hub invalid"))
 
         playerData.status.clear()
         world.tile(10, 10).setBlock(Blocks.air)
@@ -816,8 +783,7 @@ class ClientCommandTest {
         Groups.player.update()
 
         // Verify that the confirmation message was sent
-        sleep(100)
-        assertEquals(1, Groups.player.size())
+        awaitEquals(1) { Groups.player.size() }
     }
 
     @Test
@@ -987,14 +953,11 @@ class ClientCommandTest {
         val dummy = newPlayer()
 
         // Test mute command with valid player
-        clientCommand.handleMessage("/mute ${dummy.first.name}", player)
-        sleep(100)
-        assertEquals(true, findPlayerData(dummy.first.uuid())?.chatMuted)
+        replyTo(playerData, "/mute ${dummy.first.name}")
+        awaitEquals(true) { findPlayerData(dummy.first.uuid())?.chatMuted }
 
         // Test mute command with non-existent player
-        clientCommand.handleMessage("/mute nonexistentplayer", player)
-        sleep(100)
-        assertEquals(err("player.not.found"), playerData.lastReceivedMessage)
+        assertEquals(err("player.not.found"), replyTo(playerData, "/mute nonexistentplayer"))
 
         // Test mute command without player parameter
         clientCommand.handleMessage("/mute", player)
@@ -1562,13 +1525,11 @@ class ClientCommandTest {
 
         // Test strict command to enable strict mode
         clientCommand.handleMessage("/strict ${dummy.first.name}", player)
-        sleep(100)
-        assertEquals(true, findPlayerData(dummy.first.uuid())?.strictMode)
+        awaitEquals(true) { findPlayerData(dummy.first.uuid())?.strictMode }
 
         // Test strict command to disable strict mode
         clientCommand.handleMessage("/strict ${dummy.first.name}", player)
-        sleep(100)
-        assertEquals(false,findPlayerData(dummy.first.uuid())?.strictMode)
+        awaitEquals(false) { findPlayerData(dummy.first.uuid())?.strictMode }
 
         // Test strict command with non-existent player
         clientCommand.handleMessage("/strict nonexistentplayer", player)
