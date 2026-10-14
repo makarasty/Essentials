@@ -249,7 +249,8 @@ class ElectorateTest {
         val (normal, held) = join(2)
         val uuid = held.first.uuid()
         try {
-            Permission.bindDevice(uuid, "another-device")
+            // Bound to another device: this session is not the one the uuid was recognised on
+            Core.settings.put("essential-device-$uuid", "another-device")
             assertFalse(electorate.mayVote(held.second), "the hook refuses the untrusted session")
             assertEquals(Triple(uuid, false, true), FakeBlockIp.calls.last())
             assertTrue(electorate.mayVote(normal.second, starts = true))

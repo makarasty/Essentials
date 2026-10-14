@@ -105,7 +105,7 @@ internal object BlockIpHook {
         val hook = replacement ?: found ?: return true
         // A session on a device the uuid is not bound to may be someone presenting another player's uuid:
         // BlockIP is told so, and does not lend it that uuid's trust.
-        val untrusted = Permission.heldBack(data.uuid, Permission.sessionUsid(data.player))
+        val untrusted = Permission.heldBack(data)
         return try {
             hook(data.uuid, starts, untrusted) == null
         } catch (e: Throwable) {
