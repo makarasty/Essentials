@@ -81,4 +81,17 @@ class DeviceBindingTest {
             leavePlayer(back)
         }
     }
+
+    /** An offline owner's row has no live connection, so it is never held back: it keeps its rank. */
+    @Test
+    fun anOfflineOwnerKeepsTheirGroup() {
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        setPermission(owner, "owner", false)
+        leavePlayer(owner)
+
+        val stored = runBlocking { getPlayerData(uuid) }!!
+        assertEquals("owner", Permission.effectiveGroup(stored), "a placeholder Player's usid is not a device")
+        assertEquals(2, Permission.rank(Permission.effectiveGroup(stored)))
+    }
 }

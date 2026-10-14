@@ -30,6 +30,7 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import mindustry.Vars
 import mindustry.gen.Groups
+import mindustry.gen.Playerc
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.r2dbc.update
@@ -323,7 +324,7 @@ object Permission {
      *
      * The default reads Groups.player, so only the game thread may leave it out.
      */
-    fun heldBack(uuid: String, usid: String? = Groups.player.find { it.uuid() == uuid }?.usid()): Boolean {
+    fun heldBack(uuid: String, usid: String? = Groups.player.find { it.uuid() == uuid }?.let(::sessionUsid)): Boolean {
         if (usid.isNullOrEmpty()) return false
         val bound = boundDevice(uuid) ?: return false
         return bound != usid
@@ -361,7 +362,7 @@ object Permission {
         val settings = Core.settings ?: return
         if (settings.getString(deviceKey(uuid), null) != null) return
         // An existing vanilla admin binding is carried over, so unAdminPlayer cannot lose it later.
-        val usid = boundDevice(uuid) ?: Groups.player.find { it.uuid() == uuid }?.usid() ?: return
+        val usid = boundDevice(uuid) ?: Groups.player.find { it.uuid() == uuid }?.let(::sessionUsid) ?: return
         if (usid.isEmpty()) return
         settings.put(deviceKey(uuid), usid)
         settings.forceSave()
@@ -370,8 +371,15 @@ object Permission {
     /** The group [data] acts with on this server: their resolved group, or the default one while [heldBack]. */
     fun effectiveGroup(data: PlayerData): String {
         val group = groupOf(data.uuid, data.permission)
-        return if (isAdminGroup(group) && heldBack(data.uuid, data.player.usid())) default else group
+        return if (isAdminGroup(group) && heldBack(data.uuid, sessionUsid(data.player))) default else group
     }
+
+    /**
+     * The usid of a live connection, or null. A placeholder or detached Player (offline PlayerData)
+     * answers usid() with "[LOCAL]" or the old session's, which would read as an unrecognised device.
+     */
+    fun sessionUsid(player: Playerc): String? =
+        player.con()?.takeIf { it.isConnected && !it.hasDisconnected }?.usid
 
     /**
      * Rank of a group, the only ordering permission.yaml expresses: 2 for a group holding `all`, 1 for
