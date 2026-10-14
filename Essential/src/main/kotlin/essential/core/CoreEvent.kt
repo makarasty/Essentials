@@ -1619,6 +1619,7 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     }
 
     // Claimed after the join read the row, so noteOtherSession above saw the other server's claim, if any.
+    playerData.isConnected = true
     playerData.claimConnection()
     players.removeIf { it.uuid == playerData.uuid }
     // A rejoin leaves the leave-time snapshot parked in offlinePlayers (added at playerLeave) with

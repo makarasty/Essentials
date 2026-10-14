@@ -12,6 +12,7 @@ import essential.common.playerNumber
 import essential.common.systemTimezone
 import essential.core.Main
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
@@ -199,7 +200,9 @@ data class PlayerData(
         val base = dbSnapshot
         if (base?.isConnected == true && !isConnected) {
             // A leave releases the claim only if it is still this server's: another server's join may
-            // have claimed the row since, and clearing that would hide its session from the fleet.
+            // have claimed the row since, and clearing that would hide its session from the fleet. A
+            // claim this server still has in flight lands first, so the release is the last word.
+            claimWrite?.join()
             suspendTransaction {
                 PlayerTable.update({ (PlayerTable.uuid eq uuid) and (PlayerTable.connectedServer eq thisServerId) }) {
                     it[PlayerTable.isConnected] = false
@@ -218,22 +221,29 @@ data class PlayerData(
         return updateRow()
     }
 
+    /** The last [claimConnection] write; [update]'s release waits for it, so a late claim cannot undo a leave. */
+    @Volatile
+    private var claimWrite: Job? = null
+
     /**
-     * This server holds the player's session: is_connected and connected_server written now, by
-     * themselves, and mirrored into [dbSnapshot] so the ordinary save neither repeats nor reverts them.
+     * This server holds the player's session (the caller has set [isConnected]): is_connected and
+     * connected_server written now, by themselves, and mirrored into [dbSnapshot] so the ordinary save
+     * neither repeats nor reverts them. [isConnected] itself is left alone, so a leave or a warp that
+     * clears it meanwhile still releases.
      * Every join claims, over another server's claim too - the later join is the newer fact, and a
      * crashed server's claim would otherwise stand until it boots again. [update] releases only this
      * server's own claim. Game thread; the write runs on IO. Temporary data claims nothing.
      */
     fun claimConnection() {
-        isConnected = true
         connectedServer = thisServerId
         dbSnapshot?.let {
             it.isConnected = true
             it.connectedServer = thisServerId
         }
         if (temporary) return
-        Main.scope.launch {
+        claimWrite = Main.scope.launch {
+            // A leave or warp that cleared the flag before this ran has released the row already.
+            if (!isConnected) return@launch
             try {
                 suspendTransaction {
                     PlayerTable.update({ PlayerTable.uuid eq uuid }) {
