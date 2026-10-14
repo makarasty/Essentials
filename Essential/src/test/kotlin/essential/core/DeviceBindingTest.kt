@@ -80,7 +80,7 @@ class DeviceBindingTest {
         try {
             assertNull(Permission.boundDevice(uuid), "the own join binds nothing without a trusted IP")
             assertFalse(back.admin())
-            Permission.bindDevice(uuid, usid, back.ip())
+            assertNull(PluginTest.confirmFromDiscord(back))
             assertEquals(usid, Permission.boundDevice(uuid), "the confirm binds the connecting device")
             assertTrue(back.admin())
         } finally {
@@ -151,7 +151,7 @@ class DeviceBindingTest {
             Permission.load()
             PluginTest.pumpApp()
             assertNull(Permission.boundDevice(uuid), "a file entry is not a confirm")
-            Permission.bindDevice(uuid, usid, target.ip())
+            assertNull(PluginTest.confirmFromDiscord(target, "user"))
             assertEquals(usid, Permission.boundDevice(uuid))
             assertTrue(target.admin(), "the bound device gets the file's admin flag")
             assertEquals("BoundName", target.name(), "and the file's display name")
@@ -269,9 +269,9 @@ class DeviceBindingTest {
         }
     }
 
-    /** A console `admin add` survives a join from another device: that session is held back, not a revoke. */
+    /** A console `admin add` is not a binding: it grants another device nothing, and the join clears it. */
     @Test
-    fun aConsoleAdminSurvivesAnotherDevice() {
+    fun aConsoleAdminIsNotABinding() {
         val admins = Vars.netServer.admins
         val (first, _) = newPlayer()
         val uuid = first.uuid()
@@ -286,8 +286,8 @@ class DeviceBindingTest {
         try {
             assertFalse(impostor.admin(), "the other device gets nothing")
             assertEquals(Permission.default, impostorData.permission, "and is not imported into the admin group")
-            assertTrue(admins.getInfo(uuid).admin, "the console grant stays for the bound device")
-            assertEquals(usid, admins.getInfo(uuid).adminUsid)
+            assertNull(Permission.boundDevice(uuid), "vanilla's adminUsid binds nothing")
+            assertFalse(admins.getInfo(uuid).admin, "a flag on a plain group goes at the join")
         } finally {
             leavePlayer(impostor)
             admins.unAdminPlayer(uuid)
@@ -318,7 +318,7 @@ class DeviceBindingTest {
             Permission.load()
             PluginTest.pumpApp()
             assertNull(Permission.boundDevice(uuid), "a file promotion binds only from a trusted IP")
-            Permission.bindDevice(uuid, target.usid(), target.ip())
+            assertNull(PluginTest.confirmFromDiscord(target))
             assertTrue(admins.getInfo(uuid).admin)
             assertTrue(findPlayerData(uuid)?.adminTrust != null)
 

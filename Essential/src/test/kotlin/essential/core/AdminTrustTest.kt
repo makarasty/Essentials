@@ -17,11 +17,16 @@ import essential.common.database.data.getPlayerData
 import essential.common.database.runFlywayMigration
 import essential.common.permission.AdminTrust
 import essential.common.permission.Permission
+import essential.common.database.table.PlayerTable
+import essential.common.database.thisServerId
 import essential.common.rootPath
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
 import mindustry.gen.Player
 import mindustry.net.NetConnection
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.r2dbc.update
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.test.BeforeTest
@@ -137,10 +142,9 @@ class AdminTrustTest {
             assertFalse(back.admin())
             assertEquals(Permission.default, Permission.effectiveGroup(data))
 
-            val stored = Permission.bindDevice(uuid, usid, back.ip())
+            assertNull(PluginTest.confirmFromDiscord(back), "it completes once the row took the trust")
             assertTrue(back.admin(), "the Discord confirm binds this session")
             assertEquals("admin", Permission.effectiveGroup(data))
-            assertTrue(stored.get(10, TimeUnit.SECONDS), "it completes once the row took the trust")
             assertTrue(storedTrust(uuid)?.contains("198.51.100.23") == true, "and trusts its IP fleet-wide")
         } finally {
             leavePlayer(back)
@@ -318,6 +322,169 @@ class AdminTrustTest {
             assertEquals(listOf("198.51.100.27"), AdminTrust.read(stored.adminTrust, System.currentTimeMillis()).map { it.ip })
         } finally {
             leavePlayer(target)
+        }
+    }
+
+    private fun claimRow(uuid: String, server: String) = runBlocking {
+        suspendTransaction {
+            PlayerTable.update({ PlayerTable.uuid eq uuid }) {
+                it[PlayerTable.isConnected] = true
+                it[PlayerTable.connectedServer] = server
+            }
+        }
+    }
+
+    /** A uuid another server claimed after this one: nobody can tell which session Discord meant. */
+    @Test
+    fun aConfirmIsRefusedWhileTheUuidIsOnlineOnAnotherServer() {
+        val (player, data) = join(freshUuid(), "device", "198.51.100.30")
+        try {
+            claimRow(player.uuid(), "other-server")
+            val refused = assertNotNull(PluginTest.confirmFromDiscord(player))
+            assertTrue("other-server" in refused, refused)
+            assertFalse(player.admin())
+            assertEquals("user", data.permission, "the refusal changes no group")
+            assertNull(Permission.boundDevice(player.uuid()))
+        } finally {
+            leavePlayer(player)
+        }
+    }
+
+    /** A uuid another server claimed before this join: the join notes it from the row it loaded. */
+    @Test
+    fun aJoinNotesASessionAlreadyOnAnotherServer() {
+        val (first, _) = join(freshUuid(), "device", "198.51.100.31")
+        val uuid = first.uuid()
+        leavePlayer(first)
+        claimRow(uuid, "other-server")
+        val (back, _) = join(uuid, "device", "198.51.100.31")
+        try {
+            // This server's own save of the join claims the row back; the note is what still knows.
+            claimRow(uuid, thisServerId)
+            assertTrue("other-server" in assertNotNull(PluginTest.confirmFromDiscord(back)))
+        } finally {
+            leavePlayer(back)
+        }
+    }
+
+    /** The person confirming sees who it is about: server, player, IP - marked when new - and group. */
+    @Test
+    fun theConfirmNamesTheSessionAndANewIp() {
+        val (player, _) = join(freshUuid(), "device", "198.51.100.32")
+        try {
+            val before = assertNotNull(Permission.describeSession(player.uuid()))
+            assertTrue("198.51.100.32 NEW IP (not trusted before)" in before, before)
+            assertTrue("group user" in before && player.plainName() in before, before)
+            assertNull(PluginTest.confirmFromDiscord(player))
+            val after = assertNotNull(Permission.describeSession(player.uuid()))
+            assertFalse("NEW IP" in after, after)
+            assertTrue("group admin" in after, after)
+        } finally {
+            leavePlayer(player)
+        }
+    }
+
+    /** A held-back owner still ranks as the owner: an admin here cannot act on that account. */
+    @Test
+    fun aTargetRanksByItsStoredGroup() {
+        val (owner, _) = join(freshUuid(), "realDevice", "198.51.100.33")
+        val uuid = owner.uuid()
+        val (admin, adminData) = join(freshUuid(), "adminDevice", "198.51.100.34")
+        setPermission(owner, "owner", false)
+        setPermission(admin, "admin", false)
+        leavePlayer(owner)
+        val (impostor, impostorData) = join(uuid, "copied", "203.0.113.97")
+        try {
+            assertTrue(Permission.heldBack(uuid))
+            assertFalse(Permission.outranks(adminData, impostorData), "held back, but still the owner's account")
+            PluginTest.clientCommand.handleMessage("/setperm $uuid user", admin)
+            assertEquals("owner", impostorData.permission)
+        } finally {
+            leavePlayer(impostor)
+            leavePlayer(admin)
+        }
+    }
+
+    /** Bindings and vanilla flags from before fleet-wide trust go once, and only once. */
+    @Test
+    fun theOldBindingsAreDroppedOnce() {
+        val admins = Vars.netServer.admins
+        val settings = Core.settings
+        try {
+            settings.remove("essential-trust-reset")
+            settings.put("essential-device-oldTofuUuid", "someDevice")
+            admins.adminPlayer("oldVanillaUuid", "someDevice")
+            Permission.dropTofuBindings()
+            assertFalse(settings.has("essential-device-oldTofuUuid"))
+            assertFalse(admins.getInfo("oldVanillaUuid").admin)
+
+            settings.put("essential-device-oldTofuUuid", "someDevice")
+            Permission.dropTofuBindings()
+            assertTrue(settings.has("essential-device-oldTofuUuid"), "a binding grant makes later is kept")
+        } finally {
+            settings.remove("essential-device-oldTofuUuid")
+        }
+    }
+
+    /** Undoing the demotion of an admin online here gives them back their rights, not a held-back session. */
+    @Test
+    fun undoingADemotionConfirmsTheOnlineSession() {
+        val (admin, data) = join(freshUuid(), "device", "198.51.100.35")
+        val uuid = admin.uuid()
+        try {
+            setPermission(admin, "admin", false)
+            setPermission(admin, "user", false)
+            assertNull(Permission.boundDevice(uuid))
+            assertNotNull(Undo.take(Undo.CONSOLE, null)).revert(uuid)
+            assertEquals("admin", data.permission)
+            assertEquals(admin.usid(), Permission.boundDevice(uuid))
+            assertTrue(admin.admin())
+            assertFalse(Permission.heldBack(uuid))
+        } finally {
+            leavePlayer(admin)
+        }
+    }
+
+    /** A reload rewrites only the offline rows whose entry changed, and sees an entry another server dropped. */
+    @Test
+    fun aReloadAppliesOnlyWhatChanged() {
+        val userFile = rootPath.child("permission_user.yaml")
+        val good = userFile.readString()
+        val (offline, _) = newPlayer()
+        val offlineUuid = offline.uuid()
+        leavePlayer(offline)
+        val (online, onlineData) = join(freshUuid(), "device", "198.51.100.36")
+        val onlineUuid = online.uuid()
+        try {
+            userFile.writeString(good.trimEnd() + "\n$offlineUuid:\n  group: admin\n$onlineUuid:\n  group: user\n  admin: true\n", false)
+            Permission.load()
+            pumpApp()
+            assertTrue(waitUntil(10000) { runBlocking { getPlayerData(offlineUuid)?.permission } == "admin" })
+            assertNull(PluginTest.confirmFromDiscord(online, "user"), "the file's admin flag, confirmed here")
+            assertTrue(online.admin())
+
+            val row = runBlocking { getPlayerData(offlineUuid) }!!
+            row.permission = "user"
+            runBlocking { row.update() }
+            Permission.load()
+            pumpApp()
+            Thread.sleep(500)
+            assertEquals("user", runBlocking { getPlayerData(offlineUuid)?.permission }, "an unchanged entry is not rewritten")
+
+            // Another server drops the online player's entry; this one then writes the file itself.
+            Thread.sleep(20)
+            userFile.writeString(good.trimEnd() + "\n$offlineUuid:\n  group: admin\n", false)
+            Permission.setGroup(offlineUuid, "admin")
+            assertEquals(online.usid(), Permission.boundDevice(onlineUuid), "re-read, not applied yet")
+            Permission.refresh()
+            assertTrue(waitUntil(10000) { pumpApp(); Permission.boundDevice(onlineUuid) == null }, "the dropped entry is a demotion")
+            assertFalse(online.admin())
+            assertNull(onlineData.adminTrust)
+        } finally {
+            userFile.writeString(good, false)
+            Permission.load()
+            pumpApp()
+            leavePlayer(online)
         }
     }
 }

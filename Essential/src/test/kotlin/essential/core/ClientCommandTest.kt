@@ -746,7 +746,7 @@ class ClientCommandTest {
         }
     }
 
-    /** Discord's adminAdd reaches Permission.bindDevice by name: it accepts the device a held-back session is on. */
+    /** Discord's adminAdd reaches Permission.confirmFromDiscord by name: it accepts the device a held-back session is on. */
     @Test
     fun bindDeviceAcceptsANewDevice() {
         val (owner, _) = newPlayer()
@@ -760,7 +760,7 @@ class ClientCommandTest {
         val data = PluginTest.joinPlayer(newDevice)
         try {
             assertFalse(Permission.check(data, "js"), "held back before the rebind")
-            Permission.bindDevice(uuid, "newDevice", newDevice.ip())
+            assertNull(PluginTest.confirmFromDiscord(newDevice))
             assertTrue(newDevice.admin(), "the flag follows the rebind")
             assertTrue(Permission.check(data, "js"), "and so do the owner's nodes")
             assertEquals("newDevice", Vars.netServer.admins.getInfo(uuid).adminUsid)

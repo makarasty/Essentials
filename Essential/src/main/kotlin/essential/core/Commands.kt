@@ -2135,7 +2135,7 @@ class Commands {
      * the game thread before the lookup.
      */
     private fun outranksStored(sender: PlayerData, senderRank: Int, target: PlayerData): Boolean {
-        if (senderRank > Permission.rank(Permission.groupOf(target.uuid, target.permission))) return true
+        if (senderRank > Permission.storedRank(target)) return true
         sender.err("command.permission.false")
         return false
     }
@@ -2156,13 +2156,20 @@ class Commands {
     private fun applyPermissionGroup(data: PlayerData, group: String, sender: PlayerData?) {
         val previous = Permission.groupOf(data.uuid, data.permission)
         val hadUserEntry = Permission.hasUserEntry(data.uuid)
+        val by = sender?.player?.plainName() ?: "console"
+        // Who the confirm is about, read before it: whether the IP was trusted, and the group it had.
+        val confirming = if (Permission.sessionUsid(data.player) != null && Permission.privileged(data.uuid, group)) {
+            Permission.describeSession(data.uuid)
+        } else {
+            null
+        }
 
         // permission_user.yaml is one file symlinked into every server and wins over the shared
         // permission column, so an entry written here would mask this group on all of them and be pushed
         // back over the shared row on every load. An entry the operator wrote by hand is kept in step;
         // setGroup never creates one. On a player online here setperm is also the confirm: their device
         // is bound and their IP trusted on every server. A plain group ends that trust.
-        if (!Permission.setGroup(data.uuid, group, data, sender?.player?.plainName() ?: "console")) {
+        if (!Permission.setGroup(data.uuid, group, data, by)) {
             val problem = Permission.userFileProblem().orEmpty()
             if (sender != null) {
                 sender.err("permission.user.file.invalid", problem)
@@ -2193,9 +2200,13 @@ class Commands {
         } else {
             Log.info(Bundle()["command.setPerm.success", data.name, group])
         }
+        if (confirming != null) {
+            if (sender != null) sender.send("command.setPerm.confirmed", confirming) else Log.info(Bundle()["command.setPerm.confirmed", confirming])
+        }
 
+        // Undone by the same admin, who confirms the session again if it is online then.
         Undo.record(sender, "setperm", data.uuid, Undo.label(data.uuid)) {
-            Undo.permission(it, previous, hadUserEntry)
+            Undo.permission(it, previous, hadUserEntry, by)
         }
     }
 

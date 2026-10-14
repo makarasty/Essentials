@@ -825,6 +825,16 @@ class PluginTest {
             }
         }
 
+        /**
+         * Discord's adminAdd for an online [player], as ServerAdminer makes it: [group] unless theirs is
+         * admin level already, then the confirm. Waited out with the app queue pumped, since the confirm
+         * reads the shared row on IO and comes back to the game thread. Null when it was granted.
+         */
+        fun confirmFromDiscord(player: Playerc, group: String = "admin"): String? {
+            val answer = Permission.confirmFromDiscord(player.uuid(), player.usid(), player.ip(), group)
+            assertTrue(waitUntil(10000) { pumpApp(); answer.isDone }, "the Discord confirm did not complete")
+            return answer.get()
+        }
         fun err(key: String, vararg parameters: Any): String {
             return "[scarlet]" + Bundle().get(key, *parameters)
         }

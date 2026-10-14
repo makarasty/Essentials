@@ -550,7 +550,7 @@ fun serverLoad(event: ServerLoadEvent) {
     ServerDescription.start()
     TempBan.start()
     Undo.start()
-    Permission.startRefresh()
+    Permission.start()
 
     Vars.content.blocks().each { two ->
         var buf = 0
@@ -1585,6 +1585,7 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     // Admin is granted only by setperm or Discord's adminAdd. Never on temporary data: its group is a
     // stand-in for a row that could not be read.
     if (!playerData.temporary) {
+        Permission.noteOtherSession(playerData)
         Permission.recognise(playerData)
         Permission.syncVanillaAdmin(playerData.uuid, group, demote = false)
     }

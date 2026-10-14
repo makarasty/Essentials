@@ -223,9 +223,14 @@ object Undo {
      * disagreeing until somebody fixed the YAML - with the un-undone group the one still in effect.
      * Returns whether the undo happened.
      */
-    fun permission(uuid: String, group: String, hadUserEntry: Boolean): Boolean {
-        val restored =
-            if (hadUserEntry) Permission.setGroup(uuid, group) else Permission.removeUserEntry(uuid, group)
+    fun permission(uuid: String, group: String, hadUserEntry: Boolean, confirmedBy: String? = null): Boolean {
+        // [confirmedBy] vouches for the target's session if it is online now: undoing a demotion otherwise
+        // leaves them held back, because the demotion dropped their binding and trust.
+        val restored = if (hadUserEntry) {
+            Permission.setGroup(uuid, group, confirmedBy = confirmedBy)
+        } else {
+            Permission.removeUserEntry(uuid, group, confirmedBy)
+        }
         if (restored) update(uuid) { it.permission = group }
         return restored
     }

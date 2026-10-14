@@ -73,7 +73,10 @@ is the newest commit on `main`, rebuilt on every push; you can also build the ja
 - **One confirm, every server.** `setperm` on an online player, or Discord's admin add, also trusts the IP
   they play from (`players.admin_trust`, up to 3 IPs, 30 days since last use). A privileged player joining
   any server from a trusted IP is bound there; from any other IP they play as an ordinary player until
-  confirmed again. Nothing is trusted on first use, and a demotion clears the trust.
+  confirmed again. Nothing is trusted on first use, and a demotion clears the trust. Discord's admin add
+  is refused while the uuid is online on another server too, and its reply names the server, player, IP
+  (marked when new) and stored group. The first start of this version drops every older device binding
+  and vanilla admin flag once, so each admin needs one admin add while online.
 - New console commands: `perm` (effective group of a player), `permaban`, `delete` (player data and
   achievements), `mergeplayer`, `reloadplayer` and `undo`.
 

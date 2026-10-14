@@ -194,7 +194,7 @@ class ServerCommandTest {
         assertEquals("admin", data.permission)
         // No trust on first use: an offline grant reaches the session once it is confirmed.
         assertFalse(rejoin.admin(), "an untrusted device is held back")
-        Permission.bindDevice(uuid, rejoin.usid(), rejoin.ip())
+        assertNull(PluginTest.confirmFromDiscord(rejoin))
         assertTrue(rejoin.admin(), "Group admin flag should be applied once confirmed")
 
         leavePlayer(rejoin)
