@@ -1586,6 +1586,10 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     } else if (Permission.isAdminGroup(group)) {
         Permission.syncVanillaAdmin(playerData.uuid, group)
     }
+    // The usid itself stays out of the log: it is the one thing an impostor with this uuid lacks.
+    if (Permission.heldBack(playerData.uuid)) {
+        Log.warn("${player.plainName()} ${playerData.uuid} joined with an unrecognised device; admin rights held back until re-granted in Discord")
+    }
 
     val permission = Permission[playerData]
     val assignedName = Permission.assignedName(playerData.uuid)

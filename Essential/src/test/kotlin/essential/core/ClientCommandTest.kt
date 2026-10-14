@@ -38,6 +38,7 @@ import mindustry.game.EventType.GameOverEvent
 import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.gen.Groups
+import mindustry.gen.Player
 import net.datafaker.Faker
 import org.jetbrains.exposed.v1.r2dbc.transactions.suspendTransaction
 import org.mindrot.jbcrypt.BCrypt
@@ -703,6 +704,66 @@ class ClientCommandTest {
         setPermission(fakeAdmin.first, "user", true)
         clientCommand.handleMessage("/js yeah", fakeAdmin.first)
         assertTrue(fakeAdmin.first.con.kicked)
+    }
+
+    /** An owner's uuid on another device (another usid) gets the default group, not the owner's rights. */
+    @Test
+    fun adminRightsStayWithTheBoundDevice() {
+        val admins = Vars.netServer.admins
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        val usid = owner.usid()
+        setPermission(owner, "owner", false)
+        assertEquals(usid, admins.getInfo(uuid).adminUsid, "the owner's connecting device should be bound")
+        leavePlayer(owner)
+
+        fun rejoin(device: String): Pair<Player, PlayerData> {
+            val p = createPlayer()
+            p.con.uuid = uuid
+            p.con.usid = device
+            return p to PluginTest.joinPlayer(p)
+        }
+
+        val (impostor, impostorData) = rejoin("anotherDevice")
+        try {
+            assertFalse(impostor.admin(), "a device other than the bound one must not wear the admin flag")
+            assertFalse(Permission.check(impostorData, "js"), "a device other than the bound one must not reach /js")
+            assertFalse(Permission.isVanillaAdmin(uuid), "isVanillaAdmin must respect the device while online")
+            assertEquals("owner", impostorData.permission, "the shared group column must not change")
+            assertEquals(usid, admins.getInfo(uuid).adminUsid, "the impostor's device must not be bound")
+            clientCommand.handleMessage("/js yes", impostor)
+            assertTrue(impostor.con.kicked, "/js from the impostor should be refused")
+        } finally {
+            leavePlayer(impostor)
+        }
+
+        val (back, backData) = rejoin(usid)
+        try {
+            assertTrue(back.admin(), "the bound device keeps the admin flag")
+            assertTrue(Permission.check(backData, "js"), "the bound device keeps the owner's nodes")
+        } finally {
+            leavePlayer(back)
+        }
+    }
+
+    /** An admin record with no device yet takes the connecting one, on join and on reloadplayer. */
+    @Test
+    fun firstAdminJoinBindsTheConnectingDevice() {
+        val admins = Vars.netServer.admins
+        val (target, _) = newPlayer()
+        val uuid = target.uuid()
+        try {
+            setPermission(target, "admin", false)
+            admins.getInfo(uuid).adminUsid = ""
+            PluginTest.serverCommand.handleMessage("reloadplayer $uuid")
+            assertTrue(
+                waitUntil(10000) { admins.getInfo(uuid).adminUsid == target.usid() },
+                "the connecting device should be bound when no device is"
+            )
+            assertTrue(target.admin())
+        } finally {
+            leavePlayer(target)
+        }
     }
 
     @Test

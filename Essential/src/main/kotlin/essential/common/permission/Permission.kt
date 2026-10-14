@@ -303,13 +303,37 @@ object Permission {
      */
     fun isAdmin(uuid: String, fallbackGroup: String): Boolean {
         val entry = user?.get(uuid)
-        return entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)
+        return (entry?.admin == true || main[entry?.group ?: fallbackGroup]?.admin == true || isVanillaAdmin(uuid)) &&
+            !heldBack(uuid)
     }
 
     fun isAdminGroup(group: String): Boolean = main[group]?.admin == true
 
+    /** Vanilla admin on this server, and - while online - on the device the admin record is bound to. */
     fun isVanillaAdmin(uuid: String): Boolean =
-        Vars.netServer?.admins?.getInfoOptional(uuid)?.admin == true
+        Vars.netServer?.admins?.getInfoOptional(uuid)?.admin == true && !heldBack(uuid)
+
+    /**
+     * Whether [uuid] is connected with a device ([usid]) other than the one this server bound their
+     * admin record to. A uuid is only an identifier the client sends, and the Discord bot shows them in
+     * full, so a modified client can present an owner's uuid; the usid is per server and is not shown
+     * anywhere. While this answers true the session runs with the [default] group and no admin flag.
+     * The shared group column is left alone, so the real admin on the bound device is unaffected, and
+     * adminAdd from Discord rebinds a new device. Null [usid] (not online) is never held back.
+     *
+     * The default reads Groups.player, so only the game thread may leave it out.
+     */
+    fun heldBack(uuid: String, usid: String? = Groups.player.find { it.uuid() == uuid }?.usid()): Boolean {
+        if (usid.isNullOrEmpty()) return false
+        val info = Vars.netServer?.admins?.getInfoOptional(uuid) ?: return false
+        return info.admin && !info.adminUsid.isNullOrEmpty() && info.adminUsid != usid
+    }
+
+    /** The group [data] acts with on this server: their resolved group, or the default one while [heldBack]. */
+    fun effectiveGroup(data: PlayerData): String {
+        val group = groupOf(data.uuid, data.permission)
+        return if (isAdminGroup(group) && heldBack(data.uuid, data.player.usid())) default else group
+    }
 
     fun syncVanillaAdmin(uuid: String, group: String) {
         val admins = Vars.netServer?.admins ?: return
@@ -317,7 +341,10 @@ object Permission {
             admins.unAdminPlayer(uuid)
             return
         }
-        if (isVanillaAdmin(uuid)) return
+        // Bound already: a different device must not rebind it (that is heldBack's whole point). Only a
+        // record with no device yet - first admin join on this server - takes the connecting one.
+        val info = admins.getInfoOptional(uuid)
+        if (info != null && info.admin && !info.adminUsid.isNullOrEmpty()) return
         val usid = Groups.player.find { it.uuid() == uuid }?.usid() ?: admins.getInfoOptional(uuid)?.adminUsid
         if (usid.isNullOrEmpty()) {
             Log.info(bundle["permission.vanilla.admin.deferred", uuid])
@@ -500,9 +527,8 @@ object Permission {
      */
     fun check(data: PlayerData, command: String): Boolean {
         if (command in ALWAYS_ALLOWED) return true
-        // this[data] builds a fresh PermissionData, and the debug line is interpolated before Log.debug
-        // can drop it; both used to be paid twice per check at every log level.
-        val groupName = this[data].group
+        // The debug line is interpolated before Log.debug can drop it, so it is only built at debug level.
+        val groupName = effectiveGroup(data)
         val group = main[groupName]
         val passed = group != null && (group.permission.contains(command) || group.permission.contains("all"))
         if (Log.level == Log.LogLevel.debug) {
