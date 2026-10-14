@@ -67,7 +67,6 @@ import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.regex.Pattern
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -112,7 +111,6 @@ var isNotTargetMap = false
 val coreListeners: ArrayList<ApplicationListener> = arrayListOf()
 lateinit var actionFilter: Administration.ActionFilter
 
-private val blockSelectRegex: Pattern = Pattern.compile("^build\\d{1,2}$")
 private val motdLocaleRegex = Regex("^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 val worldEditSelection = mutableMapOf<String, WorldEditSelection>()
 
@@ -1906,8 +1904,16 @@ private fun calculateMapMD5Hash(map: Map): String {
     }
 }
 
+/**
+ * Same as matching `^build\d{1,2}$` (ConstructBlock's names, build1..build16), without a Matcher per
+ * logged action. `\d` is ASCII-only in java.util.regex unless UNICODE_CHARACTER_CLASS is set.
+ */
+internal fun isConstructBlockName(name: String): Boolean =
+    (name.length == 6 || name.length == 7) && name.startsWith("build") &&
+        name[5] in '0'..'9' && (name.length == 6 || name[6] in '0'..'9')
+
 private fun checkValidBlock(tile: Tile): String {
-    return if (tile.build != null && blockSelectRegex.matcher(tile.block().name).matches()) {
+    return if (tile.build != null && isConstructBlockName(tile.block().name)) {
         (tile.build as ConstructBlock.ConstructBuild).current.name
     } else {
         tile.block().name
