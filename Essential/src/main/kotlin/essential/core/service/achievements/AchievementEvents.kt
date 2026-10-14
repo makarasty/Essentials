@@ -559,7 +559,7 @@ fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
     if (victim.type.name.equals("quill", true)) {
         val currentTime = System.currentTimeMillis()
         val lastKillTime = data.status.getOrDefault("record.turret.quill.kill.time", "0").toLong()
-        val killCount = if (currentTime - lastKillTime < 10000) {
+        val killCount = if (currentTime - lastKillTime < KillTuning.COMBO_WINDOW_MS) {
             data.status.getOrDefault("record.turret.quill.kill", "0").toInt() + 1
         } else {
             1
@@ -578,7 +578,7 @@ fun unitBulletDestroy(event: UnitBulletDestroyEvent) {
     if (victim.type == UnitTypes.zenith) {
         val currentTime = System.currentTimeMillis()
         val lastKillTime = data.status.getOrDefault("record.turret.zenith.kill.time", "0").toLong()
-        val killCount = if (currentTime - lastKillTime < 10000) {
+        val killCount = if (currentTime - lastKillTime < KillTuning.COMBO_WINDOW_MS) {
             data.status.getOrDefault("record.turret.zenith.kill", "0").toInt() + 1
         } else {
             1

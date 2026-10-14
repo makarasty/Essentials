@@ -7,6 +7,7 @@ import essential.common.database.data.getMapRatings
 import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.rootPath
+import essential.core.service.web.MapRenderTuning
 import essential.core.service.web.WebService.Companion.conf
 import essential.core.service.web.auth.UserSession
 import essential.core.service.web.onGameThread
@@ -66,10 +67,6 @@ data class MapInfo(
 data class MapUploader(val accountID: String?, val name: String)
 
 class MapController {
-    private companion object {
-        const val MAX_QUEUED_FETCHES = 32
-    }
-
     /**
      * `Vars.maps.all()` hands back the engine's own live Seq, and this module's upload and delete
      * handlers post `Vars.maps.reload()` - which clears it - to the game thread. Searching a copy
@@ -95,8 +92,8 @@ class MapController {
     private class MapHashCacheEntry(val lastModified: Long, val size: Long, val hash: String)
 
     private val activeTasks = ConcurrentHashMap<String, CompletableDeferred<ByteArray?>>()
-    private val fetchChannel = Channel<FetchTask>(MAX_QUEUED_FETCHES)
-    private val fetchSemaphore = Semaphore(3)
+    private val fetchChannel = Channel<FetchTask>(MapRenderTuning.MAX_QUEUED_FETCHES)
+    private val fetchSemaphore = Semaphore(MapRenderTuning.CONCURRENT_FETCHES)
     private val mapHashCache = ConcurrentHashMap<String, MapHashCacheEntry>()
     private val directRenderEndpoints = ConcurrentHashMap.newKeySet<String>()
     internal val uploadersMap = Collections.synchronizedMap(mutableMapOf<String, MapUploader>())
@@ -135,7 +132,7 @@ class MapController {
             processFetchQueue()
         }
         scope.launch {
-            delay(5000)
+            delay(MapRenderTuning.CACHE_WARMUP_DELAY_MS)
             warmupMapImageCache()
         }
     }
@@ -454,7 +451,7 @@ class MapController {
                 // A render job's own deadline is ten minutes, three attempts deep. Nothing waiting on an
                 // HTTP request should be held for that; the queue worker keeps rendering either way and
                 // writes the result to the cache, so a later request for the same image picks it up.
-                val image = withTimeoutOrNull(60.seconds) {
+                val image = withTimeoutOrNull(MapRenderTuning.REQUEST_WAIT_SECONDS.seconds) {
                     queueFetchMapImage(hash, msavBytes, map.file.name(), map.name(), width)
                 }
                 if (image == null) {
@@ -587,8 +584,8 @@ class MapController {
 
     private suspend fun fetchMapImageWithRetry(msavBytes: ByteArray, fileName: String, mapName: String, width: Int? = null): ByteArray? {
         var attempts = 0
-        val maxAttempts = 3
-        val retryDelay = 10.seconds
+        val maxAttempts = MapRenderTuning.MAX_ATTEMPTS
+        val retryDelay = MapRenderTuning.RETRY_DELAY_SECONDS.seconds
 
         while (attempts < maxAttempts) {
             attempts++
@@ -636,8 +633,8 @@ class MapController {
 
         Log.debug("Render job submitted for map '$mapName' (width: $width): jobId=$jobId")
 
-        val pollIntervalMs = 2000L
-        val maxWaitMs = 600_000L // 10 minutes per job
+        val pollIntervalMs = MapRenderTuning.JOB_POLL_INTERVAL_MS
+        val maxWaitMs = MapRenderTuning.JOB_MAX_WAIT_MS
         val deadline = System.currentTimeMillis() + maxWaitMs
 
         while (System.currentTimeMillis() < deadline) {
@@ -676,8 +673,8 @@ class MapController {
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
+            conn.connectTimeout = MapRenderTuning.SUBMIT_CONNECT_TIMEOUT_MS
+            conn.readTimeout = MapRenderTuning.SUBMIT_READ_TIMEOUT_MS
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             conn.setRequestProperty("Connection", "close")
 
@@ -728,8 +725,8 @@ class MapController {
         try {
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 30000
-            conn.readTimeout = 120000
+            conn.connectTimeout = MapRenderTuning.DIRECT_CONNECT_TIMEOUT_MS
+            conn.readTimeout = MapRenderTuning.DIRECT_READ_TIMEOUT_MS
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
             conn.setRequestProperty("Connection", "close")
 
@@ -772,8 +769,8 @@ class MapController {
         val conn = url.openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "GET"
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
+            conn.connectTimeout = MapRenderTuning.POLL_CONNECT_TIMEOUT_MS
+            conn.readTimeout = MapRenderTuning.POLL_READ_TIMEOUT_MS
             conn.setRequestProperty("Connection", "close")
 
             val responseCode = conn.responseCode
@@ -795,8 +792,8 @@ class MapController {
         val conn = url.openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "GET"
-            conn.connectTimeout = 30000
-            conn.readTimeout = 120000
+            conn.connectTimeout = MapRenderTuning.RESULT_CONNECT_TIMEOUT_MS
+            conn.readTimeout = MapRenderTuning.RESULT_READ_TIMEOUT_MS
             conn.setRequestProperty("Connection", "close")
 
             val responseCode = conn.responseCode

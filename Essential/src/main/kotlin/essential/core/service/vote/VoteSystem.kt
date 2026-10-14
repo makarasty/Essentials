@@ -37,9 +37,6 @@ import kotlin.time.Duration.Companion.minutes
 private val yesWords = setOf("y", "yes", "так", "+")
 private val noWords = setOf("n", "no", "ні", "-")
 
-/** How long a passed kick vote keeps its target out, in milliseconds: three hours. */
-private const val voteKickDuration = 3L * 60 * 60 * 1000
-
 private fun isYes(message: String) = message.trim().lowercase() in yesWords
 private fun isNo(message: String) = message.trim().lowercase() in noWords
 
@@ -70,7 +67,7 @@ internal fun findVoteBackSave(): Fi? =
  * wrapper was discarded and the object's own `cancel()` then cancelled a `java.util.Timer` scheduling
  * that had never happened. Nothing could stop the decay, on this map or any map loaded after it.
  */
-internal fun scheduleFireDecay(ticks: Int = 600, onSupply: () -> Unit): Timer.Task {
+internal fun scheduleFireDecay(ticks: Int = VoteTuning.FIRE_DECAY_TICKS, onSupply: () -> Unit): Timer.Task {
     val task = object : Timer.Task() {
         var tick = ticks
         val listener: Cons<WorldLoadEvent>
@@ -105,7 +102,7 @@ internal fun scheduleFireDecay(ticks: Int = 600, onSupply: () -> Unit): Timer.Ta
         }
     }
 
-    Timer.schedule(task, 0f, 10f)
+    Timer.schedule(task, 0f, VoteTuning.FIRE_DECAY_INTERVAL_SECONDS)
     return task
 }
 
@@ -122,7 +119,7 @@ internal fun scheduleFireDecay(ticks: Int = 600, onSupply: () -> Unit): Timer.Ta
  * posts it to the app thread, so a world load landing in that gap has nothing left to unschedule and the
  * body would run on the new map anyway.
  */
-internal fun scheduleRandomOutcome(delaySeconds: Float = 3f, outcome: () -> Unit): Timer.Task {
+internal fun scheduleRandomOutcome(delaySeconds: Float = VoteTuning.RANDOM_OUTCOME_DELAY_SECONDS, outcome: () -> Unit): Timer.Task {
     val task = object : Timer.Task() {
         var stopped = false
         val listener: Cons<WorldLoadEvent>
@@ -153,7 +150,7 @@ internal fun scheduleRandomOutcome(delaySeconds: Float = 3f, outcome: () -> Unit
 }
 
 class VoteSystem(val voteData: VoteData) : Timer.Task() {
-    private var count = 60
+    private var count = VoteTuning.COUNTDOWN_SECONDS
     private var voted = ArrayList<String>()
     private var isAdminVote = false
     private var isCanceled = false
@@ -324,7 +321,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 send("command.vote.canceled.leave")
                 this.cancel()
             } else {
-                if (count % 10 == 0) {
+                if (count % VoteTuning.REMINDER_INTERVAL_SECONDS == 0) {
                     if (isPvP) {
                         Groups.player.forEach {
                             if (it.team() == voteData.team) {
@@ -358,7 +355,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                 // banPlayerID, a permanent ban that the ban listener copies to every server
                                 // sharing the database - so leaving mid-vote turned a raid's kick into a
                                 // fleet-wide ban.
-                                Vars.netServer.admins.handleKicked(targetUUID, Vars.netServer.admins.getInfo(targetUUID).lastIP, voteKickDuration)
+                                Vars.netServer.admins.handleKicked(targetUUID, Vars.netServer.admins.getInfo(targetUUID).lastIP, VoteTuning.KICK_DURATION_MS)
                                 send("command.vote.kick.target.kicked", name)
                                 Events.fire(
                                     CustomEvents.PlayerVoteBanned(
@@ -377,7 +374,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                         ModuleRuntime.awardVotingBan(voteData.starter)
                                     }
                                 }
-                                targetPlayer.kick(Packets.KickReason.kick, voteKickDuration)
+                                targetPlayer.kick(Packets.KickReason.kick, VoteTuning.KICK_DURATION_MS)
                                 send("command.vote.kick.target.kicked", name)
                                 Events.fire(
                                     CustomEvents.PlayerVoteKicked(
@@ -401,7 +398,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
                         VoteType.GameOver -> {
                             if (!Permission.check(voteData.starter, "vote.pass")) {
-                                voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(3.minutes)
+                                voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(VoteTuning.STARTER_COOLDOWN_MINUTES.minutes)
                             }
                             if (isPvP) {
                                 Vars.world.tiles.forEach {
@@ -417,7 +414,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
                         VoteType.Draw -> {
                             if (!Permission.check(voteData.starter, "vote.pass")) {
-                                voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(3.minutes)
+                                voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(VoteTuning.STARTER_COOLDOWN_MINUTES.minutes)
                             }
                             val event = CustomEvents.VoteDrawEvent(voteData.starter)
                             Events.fire(event)
@@ -428,7 +425,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         }
 
                         VoteType.Skip -> {
-                            voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(3.minutes)
+                            voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(VoteTuning.STARTER_COOLDOWN_MINUTES.minutes)
                             repeat(voteData.wave!!) {
                                 Vars.spawner.spawnEnemies()
                                 Vars.state.wave++
@@ -464,8 +461,8 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                         }
 
                         VoteType.Random -> {
-                            voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(7.minutes)
-                            nextVoteAvailable = timeSource.markNow().plus(5.minutes)
+                            voterCooldown[voteData.starter.uuid] = timeSource.markNow().plus(VoteTuning.RANDOM_STARTER_COOLDOWN_MINUTES.minutes)
+                            nextVoteAvailable = timeSource.markNow().plus(VoteTuning.RANDOM_NEXT_VOTE_MINUTES.minutes)
                             send("command.vote.random.done")
                             send("command.vote.random.is")
                             scheduleRandomOutcome {
@@ -519,7 +516,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                                         send("command.vote.random.fire")
                                         // One broadcast per tile was 40,000 packets to every player in a
                                         // single frame on a 200x200 map; a stride keeps it near a thousand
-                                        val step = ceil(sqrt(Vars.world.width() * Vars.world.height() / 1000.0)).toInt().coerceAtLeast(1)
+                                        val step = ceil(sqrt(Vars.world.width() * Vars.world.height() / VoteTuning.FIRE_EFFECT_TARGET_COUNT)).toInt().coerceAtLeast(1)
                                         for (x in 0 until Vars.world.width() step step) {
                                             for (y in 0 until Vars.world.height() step step) {
                                                 Call.effect(

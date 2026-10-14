@@ -9,9 +9,6 @@ import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-internal const val MAX_BRIDGE_LINE_LENGTH = 8 * 1024
-internal const val MAX_BRIDGE_CRASH_REPORT_LENGTH = 64 * 1024
-
 internal fun hasValidBridgeSecret(secret: String): Boolean =
     secret.toByteArray(StandardCharsets.UTF_8).size >= 32
 
@@ -40,7 +37,7 @@ internal fun decodeBridgePayload(payload: String): String? = try {
     null
 }
 
-internal fun readBridgeLine(reader: Reader, maxLength: Int = MAX_BRIDGE_LINE_LENGTH): String? {
+internal fun readBridgeLine(reader: Reader, maxLength: Int = BridgeTuning.MAX_LINE_LENGTH): String? {
     val line = StringBuilder()
     while (true) {
         when (val character = reader.read()) {

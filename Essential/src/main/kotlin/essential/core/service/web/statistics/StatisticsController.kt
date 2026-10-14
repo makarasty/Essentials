@@ -13,6 +13,7 @@ import essential.common.systemTimezone
 import essential.common.util.size
 import essential.common.util.toHString
 import essential.core.isGlobalMute
+import essential.core.service.web.StatisticsTuning
 import essential.core.service.web.auth.UserSession
 import essential.core.service.web.onGameThread
 import io.ktor.http.*
@@ -93,7 +94,7 @@ class StatisticsController {
     fun init(scope: CoroutineScope) {
         scope.launch {
             while (true) {
-                delay(60000.milliseconds)
+                delay(StatisticsTuning.STATUS_SAMPLE_INTERVAL_MS.milliseconds)
                 try {
                     // Groups and Vars.state belong to the game thread; this loop runs on a coroutine one.
                     onGameThread { recordStatusPoint() }
@@ -111,7 +112,7 @@ class StatisticsController {
             val chatMessage = ChatMessage(player.name(), message, isWeb = false)
             synchronized(chatHistory) {
                 chatHistory.add(chatMessage)
-                if (chatHistory.size > 100) {
+                if (chatHistory.size > StatisticsTuning.CHAT_HISTORY_LIMIT) {
                     chatHistory.removeAt(0)
                 }
             }
@@ -245,7 +246,7 @@ class StatisticsController {
 
         synchronized(statusHistory) {
             statusHistory.add(point)
-            if (statusHistory.size > 1440) {
+            if (statusHistory.size > StatisticsTuning.STATUS_HISTORY_LIMIT) {
                 statusHistory.removeAt(0)
             }
         }
@@ -330,7 +331,7 @@ class StatisticsController {
         val message = call.receiveText()
 
         // Validate chat message
-        if (message.isBlank() || message.length > 100) {
+        if (message.isBlank() || message.length > StatisticsTuning.WEB_CHAT_MAX_LENGTH) {
             return call.respond(HttpStatusCode.BadRequest, "Invalid message")
         }
 
@@ -362,7 +363,7 @@ class StatisticsController {
         val chatMessage = ChatMessage(data.name, sanitizedMessage, isWeb = true)
         synchronized(chatHistory) {
             chatHistory.add(chatMessage)
-            if (chatHistory.size > 100) {
+            if (chatHistory.size > StatisticsTuning.CHAT_HISTORY_LIMIT) {
                 chatHistory.removeAt(0)
             }
         }

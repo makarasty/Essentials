@@ -88,7 +88,7 @@ class ProtectService : Plugin() {
                         it.sendMessage(Bundle(it.locale)["event.player.first.register"])
                     }
                 }
-            }, 0f, 20f)
+            }, 0f, ProtectTuning.REGISTER_REMINDER_INTERVAL_SECONDS)
         }
 
         // 이벤트 설정

@@ -96,7 +96,7 @@ class WebServer {
 
             install(RateLimit) {
                 register {
-                    rateLimiter(limit = 300, refillPeriod = 1.minutes)
+                    rateLimiter(limit = WebServerTuning.RATE_LIMIT_REQUESTS, refillPeriod = WebServerTuning.RATE_LIMIT_REFILL_MINUTES.minutes)
                     requestKey { call ->
                         call.request.local.remoteAddress
                     }

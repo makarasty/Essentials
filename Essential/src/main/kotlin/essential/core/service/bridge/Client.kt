@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class Client : Runnable {
-    private val messageQueue = ArrayBlockingQueue<String>(128)
+    private val messageQueue = ArrayBlockingQueue<String>(BridgeTuning.CLIENT_QUEUE_CAPACITY)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val isConnected = AtomicBoolean(false)
     private val isReconnecting = AtomicBoolean(false)
@@ -32,9 +32,9 @@ class Client : Runnable {
     @Volatile private var writer: BufferedWriter? = null
     var lastReceivedMessage: String? = ""
 
-    private val maxReconnectAttempts = 5
+    private val maxReconnectAttempts = BridgeTuning.MAX_RECONNECT_ATTEMPTS
     private var reconnectAttempts = 0
-    private val reconnectDelay = 5f
+    private val reconnectDelay = BridgeTuning.RECONNECT_DELAY_SECONDS
 
     override fun run() {
         connect()
@@ -45,8 +45,8 @@ class Client : Runnable {
             try {
                 val connectedSocket = withContext(Dispatchers.IO) {
                     Socket().apply {
-                        connect(InetSocketAddress(conf.address, conf.port), 5_000)
-                        soTimeout = 10_000
+                        connect(InetSocketAddress(conf.address, conf.port), BridgeTuning.CONNECT_TIMEOUT_MS)
+                        soTimeout = BridgeTuning.AUTH_READ_TIMEOUT_MS
                     }
                 }
                 val connectedReader = BufferedReader(InputStreamReader(connectedSocket.getInputStream()))
@@ -140,7 +140,7 @@ class Client : Runnable {
         scope.launch {
             try {
                 while (isConnected.get()) {
-                    val message = messageQueue.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                    val message = messageQueue.poll(BridgeTuning.WRITER_POLL_MS, TimeUnit.MILLISECONDS) ?: continue
                     val activeWriter = writer ?: throw IOException("Bridge connection has no writer")
                     synchronized(activeWriter) {
                         activeWriter.write(message)
@@ -211,7 +211,7 @@ class Client : Runnable {
             Log.warn("Cannot send bridge message: not connected")
             return
         }
-        if (payload.toByteArray().size > MAX_BRIDGE_LINE_LENGTH / 2) {
+        if (payload.toByteArray().size > BridgeTuning.MAX_LINE_LENGTH / 2) {
             Log.warn("Bridge message exceeds the configured size limit")
             return
         }

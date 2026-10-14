@@ -23,10 +23,6 @@ import kotlin.random.Random
 private val hexColorCache = HashMap<String, Color>()
 
 class EffectSystem : Timer.Task() {
-    companion object {
-        /** Eight tiles of camera travel between a client's view report and an effect reaching it. */
-        private const val VIEW_MARGIN = 8f * Vars.tilesize
-    }
     class EffectPos(
         val player: Playerc,
         val effect: Effect,
@@ -376,12 +372,12 @@ class EffectSystem : Timer.Task() {
     /**
      * Whether a viewer could draw an effect at ([x], [y]). The client drops an effect whose clip
      * rectangle misses its camera when it arrives (Effect.create), so a packet sent outside the view
-     * it last reported only costs bandwidth. [VIEW_MARGIN] covers the camera moving between that
+     * it last reported only costs bandwidth. [EffectTuning.VIEW_MARGIN] covers the camera moving between that
      * report and the packet landing. A connection that has not reported a view yet gets everything.
      */
     internal fun inView(con: NetConnection?, x: Float, y: Float, clip: Float): Boolean {
         if (con == null || con.viewWidth <= 0f || con.viewHeight <= 0f) return true
-        val margin = clip + VIEW_MARGIN
+        val margin = clip + EffectTuning.VIEW_MARGIN
         return abs(x - con.viewX) <= con.viewWidth / 2f + margin &&
             abs(y - con.viewY) <= con.viewHeight / 2f + margin
     }

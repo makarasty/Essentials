@@ -26,8 +26,6 @@ import java.util.concurrent.TimeUnit
 
 class Server(private var server: ServerSocket? = null) : Runnable {
     companion object {
-        private const val MAX_CLIENTS = 32
-
         fun bind(port: Int): Server? = try {
             Server(ServerSocket(port))
         } catch (_: IOException) {
@@ -38,11 +36,11 @@ class Server(private var server: ServerSocket? = null) : Runnable {
     var lastSentMessage: String = ""
     val clients = CopyOnWriteArrayList<Socket>()
     private val executor = ThreadPoolExecutor(
-        2,
-        8,
-        60,
+        BridgeTuning.SERVER_CORE_THREADS,
+        BridgeTuning.SERVER_MAX_THREADS,
+        BridgeTuning.SERVER_THREAD_KEEP_ALIVE_SECONDS,
         TimeUnit.SECONDS,
-        ArrayBlockingQueue(32),
+        ArrayBlockingQueue(BridgeTuning.SERVER_QUEUE_CAPACITY),
         ThreadPoolExecutor.AbortPolicy()
     )
 
@@ -51,7 +49,7 @@ class Server(private var server: ServerSocket? = null) : Runnable {
             val activeServer = server ?: ServerSocket(conf.port).also { server = it }
             while (!Thread.currentThread().isInterrupted) {
                 val socket = activeServer.accept()
-                if (clients.size >= MAX_CLIENTS) {
+                if (clients.size >= BridgeTuning.MAX_CLIENTS) {
                     socket.close()
                     continue
                 }
@@ -99,7 +97,7 @@ class Server(private var server: ServerSocket? = null) : Runnable {
     }
 
     private fun authenticate(socket: Socket, reader: BufferedReader, writer: BufferedWriter): Boolean {
-        socket.soTimeout = 10_000
+        socket.soTimeout = BridgeTuning.AUTH_READ_TIMEOUT_MS
         val challenge = createBridgeChallenge()
         writer.write("auth-challenge")
         writer.newLine()
@@ -190,7 +188,7 @@ class Server(private var server: ServerSocket? = null) : Runnable {
     }
 
     private fun writeCrashReport(stacktrace: String) {
-        if (stacktrace.toByteArray().size > MAX_BRIDGE_CRASH_REPORT_LENGTH) return
+        if (stacktrace.toByteArray().size > BridgeTuning.MAX_CRASH_REPORT_LENGTH) return
         rootPath.child("report/${LocalDateTime.now().withNano(0)}.txt").writeString(stacktrace)
     }
 }

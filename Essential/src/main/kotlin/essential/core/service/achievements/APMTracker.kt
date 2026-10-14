@@ -34,15 +34,6 @@ class APMTracker {
     )
 
     companion object {
-        // Window size for APM calculation in milliseconds (5 minutes)
-        private const val APM_WINDOW_SIZE = 5 * 60 * 1000
-
-        // Maximum number of action timestamps to store per player
-        private const val MAX_ACTION_TIMESTAMPS = 1000
-
-        // Debounce intervals
-        private const val DEBOUNCE_TAP_MS = 100L
-
         // Map of uuid -> map of threshold -> startTimestamp
         private val thresholdStartTimes = ConcurrentHashMap<String, MutableMap<Int, Long>>()
         private val lastTapTimes = ConcurrentHashMap<String, Long>()
@@ -194,7 +185,7 @@ class APMTracker {
                 val now = System.currentTimeMillis()
                 val lastTap = lastTapTimes[player.uuid()] ?: 0L
 
-                if (now - lastTap >= DEBOUNCE_TAP_MS) {
+                if (now - lastTap >= ApmTuning.DEBOUNCE_TAP_MS) {
                     lastTapTimes[player.uuid()] = now
                     trackAction(data)
                 }
@@ -230,10 +221,10 @@ class APMTracker {
         // task.app.post). Do not call this from a coroutine.
         //
         // Only records: the one-second timer above recomputes the APM. Recomputing here walked all
-        // MAX_ACTION_TIMESTAMPS entries per action, and a dragged line of plans is one action per block.
+        // ApmTuning.MAX_ACTION_TIMESTAMPS entries per action, and a dragged line of plans is one action per block.
         fun trackAction(data: PlayerData) {
             data.apmTimestamps.addLast(System.currentTimeMillis())
-            if (data.apmTimestamps.size > MAX_ACTION_TIMESTAMPS) data.apmTimestamps.removeFirst()
+            if (data.apmTimestamps.size > ApmTuning.MAX_ACTION_TIMESTAMPS) data.apmTimestamps.removeFirst()
         }
 
         // Calculate APM for a player based on action timestamps
@@ -246,10 +237,10 @@ class APMTracker {
                 return
             }
 
-            // count, not filter: this walks up to MAX_ACTION_TIMESTAMPS entries once a second per
+            // count, not filter: this walks up to ApmTuning.MAX_ACTION_TIMESTAMPS entries once a second per
             // player and on every tracked action, and only the size of the result was ever used.
-            val recent = data.apmTimestamps.count { currentTime - it <= APM_WINDOW_SIZE }
-            val windowSizeMinutes = APM_WINDOW_SIZE / (60.0 * 1000.0)
+            val recent = data.apmTimestamps.count { currentTime - it <= ApmTuning.WINDOW_MS }
+            val windowSizeMinutes = ApmTuning.WINDOW_MS / (60.0 * 1000.0)
 
             data.apm = if (recent > 0) (recent / windowSizeMinutes).toInt() else 0
 
@@ -260,7 +251,7 @@ class APMTracker {
                     val startTime = playerStarts[threshold]
                     if (startTime == null) {
                         playerStarts[threshold] = currentTime
-                    } else if (currentTime - startTime >= 60 * 1000) {
+                    } else if (currentTime - startTime >= ApmTuning.SUSTAIN_MS) {
                         if (achievement.success(data)) {
                             achievement.set(data)
                         }
@@ -289,8 +280,8 @@ class APMTracker {
             }
 
             val currentTime = System.currentTimeMillis()
-            val windowSizeMinutes = APM_WINDOW_SIZE / (60.0 * 1000.0)
-            val totalActions = data.apmTimestamps.count { currentTime - it <= APM_WINDOW_SIZE }
+            val windowSizeMinutes = ApmTuning.WINDOW_MS / (60.0 * 1000.0)
+            val totalActions = data.apmTimestamps.count { currentTime - it <= ApmTuning.WINDOW_MS }
 
             return "APM: ${data.apm} (${totalActions} actions in last ${windowSizeMinutes.toInt()} minutes)"
         }
