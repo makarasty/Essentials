@@ -67,6 +67,33 @@ class GameOverExpTest {
     }
 
     /**
+     * A parked snapshot used to hold the leaver's own Player, and through its connection the socket
+     * buffers, until game over. It now holds a stand-in that answers the same questions.
+     */
+    @Test
+    fun theParkedSnapshotDoesNotHoldTheLeaversConnection() {
+        val (player, data) = newPlayer()
+        val con = player.con()
+        val team = player.team()
+        val x = player.x()
+        try {
+            leavePlayer(player)
+            val parked = offlinePlayers.first { it.uuid == data.uuid }
+            assertTrue(parked.player !== player, "the snapshot must not keep the leaver's Player")
+            assertTrue(parked.player.con() !== con, "the snapshot must not keep the leaver's connection")
+            assertEquals(data.uuid, parked.player.uuid())
+            assertEquals(player.name(), parked.player.name())
+            assertEquals(team, parked.player.team())
+            assertEquals(x, parked.player.x(), "a random vote's fire still lands where the starter stood")
+            assertEquals(player.locale(), parked.player.locale())
+            assertEquals(con.address, parked.player.con().address)
+            assertTrue(!parked.player.con().isConnected, "the stand-in must not look connected")
+        } finally {
+            offlinePlayers.removeIf { it.uuid == data.uuid }
+        }
+    }
+
+    /**
      * task-093: currentUnitDestroyedCount/currentBuildDestroyedCount/currentBuildAttackCount fed
      * straight into earnEXP's score and were never zeroed anywhere in the repository, so a player
      * connected across several maps carried one map's counters into the next map's EXP calculation.

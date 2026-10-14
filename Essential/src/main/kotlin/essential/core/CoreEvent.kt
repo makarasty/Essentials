@@ -51,6 +51,7 @@ import mindustry.gen.Playerc
 import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.Administration
+import mindustry.net.NetConnection
 import mindustry.net.Packets
 import mindustry.ui.Menus
 import mindustry.world.Tile
@@ -1132,6 +1133,34 @@ fun playerJoin(event: PlayerJoin) {
     )
 }
 
+/** A Player that answers what the offline readers ask (uuid, name, team, locale, address) and holds no socket. */
+internal fun detachedPlayer(left: Playerc): Player {
+    val stand = Player.create()
+    stand.id(left.id())
+    stand.name(left.name())
+    stand.locale(left.locale())
+    stand.admin(left.admin())
+    stand.color.set(left.color())
+    stand.team(left.team())
+    stand.set(left.x(), left.y())
+    val gone = left.con() ?: return stand
+    stand.con = object : NetConnection(gone.address) {
+        override fun send(`object`: Any?, reliable: Boolean) = Unit
+        override fun close() = Unit
+        override fun isConnected() = false
+    }.also {
+        it.uuid = gone.uuid
+        it.usid = gone.usid
+        it.mobile = gone.mobile
+        it.modclient = gone.modclient
+        it.connectTime = gone.connectTime
+        it.hasConnected = gone.hasConnected
+        it.kicked = gone.kicked
+        it.hasDisconnected = true
+    }
+    return stand
+}
+
 @OptIn(ExperimentalTime::class)
 @Event
 fun playerLeave(event: PlayerLeave) {
@@ -1175,6 +1204,9 @@ fun playerLeave(event: PlayerLeave) {
             }
         }
         players.removeIf { it.uuid == data.uuid }
+        // The snapshot stays parked in offlinePlayers until game over; the leaver's own Player would keep
+        // the closed socket and its ~57 KB of buffers alive that long, so the snapshot gets a stand-in.
+        data.player = detachedPlayer(event.player)
         // PvpTeamAssigner hands a known uuid its recorded team back, which is only what a rejoin should
         // get when the operator asked for it.
         if (!conf.feature.pvp.rememberTeam) pvpPlayer.remove(data.uuid)
