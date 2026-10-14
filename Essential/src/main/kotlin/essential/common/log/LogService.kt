@@ -246,22 +246,27 @@ private fun rotate(type: LogType, time: String) {
 class FileAppender(private val file: File) {
     private val raf: RandomAccessFile
 
+    /** Where the next write lands, which is the file's length while only this appender writes it. */
+    private var size: Long
+
     init {
         if (!file.exists()) {
             file.parentFile?.mkdirs()
             file.writeText("")
         }
         raf = RandomAccessFile(file, "rw")
-        raf.seek(raf.length())
+        size = raf.length()
+        raf.seek(size)
     }
 
     fun write(text: String) {
-        raf.write(("\n$text").toByteArray(StandardCharsets.UTF_8))
+        val bytes = ("\n$text").toByteArray(StandardCharsets.UTF_8)
+        raf.write(bytes)
+        size += bytes.size
     }
 
-    fun length(): Long {
-        return file.length()
-    }
+    /** Tracked rather than a stat of the file per logged line: rotation asks after every write. */
+    fun length(): Long = size
 
     fun close() {
         raf.close()
