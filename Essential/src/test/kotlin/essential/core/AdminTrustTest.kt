@@ -398,6 +398,36 @@ class AdminTrustTest {
         }
     }
 
+    /** A player who leaves while a refresh's read is out is not claimed back by it. */
+    @Test
+    fun aRefreshDoesNotClaimAPlayerWhoLeft() {
+        val (player, _) = join(freshUuid(), "device", "198.51.100.43")
+        val uuid = player.uuid()
+        assertTrue(waitUntil(10000) { claimedBy(uuid) == thisServerId })
+        claimRow(uuid, "other-server")
+        Permission.refresh()
+        leavePlayer(player)
+        assertFalse(waitUntil(1500) { pumpApp(); claimedBy(uuid) == thisServerId }, "no ghost claim")
+        assertEquals("other-server", claimedBy(uuid))
+    }
+
+    /** A player warping to another server is no longer this server's, whatever the refresh read. */
+    @Test
+    fun aRefreshDoesNotClaimAPlayerWarpingAway() {
+        val (player, data) = join(freshUuid(), "device", "198.51.100.44")
+        val uuid = player.uuid()
+        try {
+            assertTrue(waitUntil(10000) { claimedBy(uuid) == thisServerId })
+            claimRow(uuid, "hub-target")
+            Permission.refresh()
+            data.isConnected = false // what a warp sets before the client moves
+            assertFalse(waitUntil(1500) { pumpApp(); claimedBy(uuid) == thisServerId }, "no ghost claim")
+            assertFalse(data.isConnected)
+        } finally {
+            leavePlayer(player)
+        }
+    }
+
     /** A leave here does not clear a claim another server made since. */
     @Test
     fun aLeaveReleasesOnlyThisServersClaim() {

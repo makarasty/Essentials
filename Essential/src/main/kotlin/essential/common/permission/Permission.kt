@@ -466,9 +466,18 @@ object Permission {
             }
             data to previous
         } ?: return@future left
-        if (data.permission != previous && !data.update()) {
-            onGameThread { setGroup(uuid, previous, data) }
-            return@future "the group change was not saved, so nothing was granted"
+        if (data.permission != previous) {
+            val failure = try {
+                if (data.update()) null else "the row was not found"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
+            if (failure != null) {
+                onGameThread { setGroup(uuid, previous, data) }
+                return@future "the group change was not saved ($failure), so nothing was granted"
+            }
         }
         val trusted = onGameThread { session()?.let { grant(uuid, usid, ip, "discord", it) } } ?: return@future left
         if (trusted.await()) null else "the player's row was not found"
@@ -856,6 +865,9 @@ object Permission {
             }
             Core.app.post {
                 online.forEachIndexed { i, data ->
+                    // Read a moment ago: a player who left since, or is warping away (isConnected already
+                    // false), is neither claimed back - that would be a ghost claim - nor adopted into.
+                    if (players.none { it === data } || !data.isConnected || sessionUsid(data.player) == null) return@forEachIndexed
                     val row = rows[data.uuid] ?: return@forEachIndexed
                     val connected = row[PlayerTable.isConnected]
                     val server = row[PlayerTable.connectedServer]
@@ -878,7 +890,6 @@ object Permission {
      */
     private fun adopt(data: PlayerData, group: String?, trust: String?, trustCurrent: Boolean) {
         val base = data.dbSnapshot ?: return
-        if (players.none { it === data }) return
         if (trustCurrent && base.adminTrust != trust) {
             base.adminTrust = trust
             data.adminTrust = trust
