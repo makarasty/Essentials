@@ -201,7 +201,7 @@ In this fork, ``false`` (the default) removes vanilla's ``/votekick`` as well, a
 ### feature.vote.rtv.ratio
 
 Default: ``0.6``<br>
-Share of the players who may vote that must use ``/rtv`` before the server moves on: to the next map, or with ``/rtv <id>`` to the map with that ID in ``/maps`` (a name works too; not the map being played) (0.6 = 60%, rounded up, at least one vote). Players who are AFK, spectating, without the ``rtv`` permission, or refused by BlockIP when it is installed may not vote and are not counted.
+Share of the players who may vote that must use ``/rtv`` before the server moves on: to the next map, or with ``/rtv <id or name>`` to that map from ``/maps`` (a number is only ever an ID; a name matches the first map whose name contains it, ignoring case; not the map being played) (0.6 = 60%, rounded up, at least one vote). Players who are AFK, spectating, without the ``rtv`` permission, or refused by BlockIP when it is installed may not vote and are not counted.
 
 ### feature.vote.rtv.cooldown
 

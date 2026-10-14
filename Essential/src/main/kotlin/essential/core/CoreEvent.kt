@@ -861,12 +861,7 @@ fun gameOver(event: GameOverEvent) {
     ServerDescription.changed()
     gameOverCount++
     if (mapVotes.isNotEmpty()) {
-        val voteCount = HashMap<Map, Int>()
-        mapVotes.values.forEach { map ->
-            voteCount[map] = voteCount.getOrDefault(map, 0) + 1
-        }
-
-        val mostVotedMap = voteCount.maxByOrNull { it.value }?.key
+        val mostVotedMap = nextMapWinner()
 
         if (mostVotedMap != null) {
             Call.sendMessage(Bundle()["command.nextmap.vote.result", mostVotedMap.plainName()])

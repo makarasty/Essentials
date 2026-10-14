@@ -25,6 +25,7 @@ import essential.common.rootPath
 import essential.common.systemTimezone
 import essential.common.timeSource
 import essential.common.util.changeTeam
+import essential.common.util.findPlayerData
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,7 @@ import mindustry.gen.Groups
 import mindustry.gen.Playerc
 import mindustry.io.SaveIO
 import mindustry.io.SaveOptions
+import mindustry.net.Administration
 import mindustry.net.Host
 import mindustry.net.NetworkIO
 import mindustry.world.Tile
@@ -124,6 +126,16 @@ object Trigger {
         val con = data.player.con()
         return if (data.player.unit() == null && con != null) con.viewX + con.viewY
         else data.player.mouseX() + data.player.mouseY()
+    }
+
+    /**
+     * Marks input (see [markInput]) for a chat line that every filter before it let through - installed last, so a
+     * line another plugin drops (BlockIP's, a blacklist's) never counts. A running vote's own filter, added later,
+     * marks the vote words it takes itself. Core's, so it works with the chat module off.
+     */
+    private val inputFilter = Administration.ChatFilter { player, message ->
+        findPlayerData(player.uuid())?.let(::markInput)
+        message
     }
 
     /**
@@ -964,6 +976,10 @@ object Trigger {
         }, 0f, 60f)
 
         Events.on(EventType.ServerLoadEvent::class.java) {
+            // A frame later, after every plugin and module added its chat filters at load, so this one runs last
+            Core.app.post {
+                if (!Vars.netServer.admins.chatFilters.contains(inputFilter)) Vars.netServer.admins.addChatFilter(inputFilter)
+            }
             if (conf.feature.level.effect.enabled) {
                 ModuleRuntime.scheduleLevelEffects()
             }

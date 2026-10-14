@@ -55,7 +55,6 @@ import mindustry.gen.Unit
 import mindustry.maps.Map
 import mindustry.net.NetConnection
 import mindustry.net.Packets
-import mindustry.net.WorldReloader
 import mindustry.type.Item
 import mindustry.type.UnitType
 import mindustry.ui.Menus
@@ -269,31 +268,6 @@ class Commands {
          * without needing CoreEvent.kt's game-over handler (which clears mapVotes) to know about this.
          */
         private var nextMapAdminOverride: Map? = null
-
-        /**
-         * History rows are keyed by tile coordinates and by nothing else, so across a map change they
-         * become claims about a map that is no longer loaded and a rollback rebuilds and removes real
-         * blocks from them. The game over handler already clears them; a map changed directly never
-         * fires one. The flush first is so that rows still sitting in the buffer cannot land after the
-         * table has been emptied.
-         */
-        /** Replaces the world with [map] now, in [mode]: /changemap, and `vote map` from a player alone on the server. */
-        private fun loadMapNow(map: Map, mode: Gamemode) {
-            val reloader = WorldReloader()
-            reloader.begin()
-            Vars.world.loadMap(map, map.applyRules(mode))
-            Vars.state.rules = Vars.state.map.applyRules(mode)
-            Vars.logic.play()
-            reloader.end()
-            discardWorldHistory()
-        }
-
-        private fun discardWorldHistory() {
-            scope.launch {
-                WorldHistoryBuffer.flush()
-                clearWorldHistory()
-            }
-        }
 
         /**
          * `/info` on yourself has no actions on it, so its listener is a no-op and one id serves
@@ -2471,7 +2445,7 @@ class Commands {
         vote(playerData, arrayOf("map", arg[0], playerData.bundle["command.votemap.reason"]))
     }
 
-    @ClientCommand("rtv", "[id]", "Vote to move on to the next map, or to the map with this ID (see /maps)")
+    @ClientCommand("rtv", "[id/name]", "Vote to move on to the next map, or to the map with this ID or name (see /maps)")
     fun rtv(playerData: PlayerData, arg: Array<out String>) {
         Rtv.vote(playerData, arg.firstOrNull())
     }
@@ -2936,12 +2910,13 @@ class Commands {
                 val target = findMap(arg[1])
                 if (target == null) {
                     playerData.err(mapNotFound)
-                } else if (isCurrentMap(target)) {
-                    playerData.err("command.vote.map.current", target.plainName())
                 } else if (players.size != 1) {
                     // gg/skip/random/draw all obey this cooldown; map did not. The solo path below
                     // is a direct change with no vote and is rightly exempt, same as the gate above.
-                    if (!nextVoteAvailable.hasPassedNow()) {
+                    if (isCurrentMap(target)) {
+                        // A vote to move on to the map being played; alone, the direct load below is a restart
+                        playerData.err("command.vote.map.current", target.plainName())
+                    } else if (!nextVoteAvailable.hasPassedNow()) {
                         playerData.err(coolTime)
                     } else {
                         val voteData = VoteData(
@@ -3084,15 +3059,8 @@ class Commands {
             if (mapVotes.isEmpty()) {
                 playerData.send("command.nextmap.vote.none")
             } else {
-                val voteCount = HashMap<Map, Int>()
-                mapVotes.values.forEach { map ->
-                    voteCount[map] = voteCount.getOrDefault(map, 0) + 1
-                }
-
-                val sortedVotes = voteCount.entries.sortedByDescending { it.value }
-
                 val message = StringBuilder(playerData.bundle["command.nextmap.vote.current"] + "\n")
-                sortedVotes.forEach { (map, count) ->
+                nextMapTally().forEach { (map, count) ->
                     message.append(playerData.bundle["command.nextmap.vote.count", map.plainName(), count] + "\n")
                 }
 
@@ -3148,13 +3116,7 @@ class Commands {
             }
 
             if (mapVotes.isNotEmpty()) {
-                val winner = nextMapAdminOverride ?: run {
-                    val voteCount = HashMap<Map, Int>()
-                    mapVotes.values.forEach { map ->
-                        voteCount[map] = voteCount.getOrDefault(map, 0) + 1
-                    }
-                    voteCount.maxByOrNull { it.value }?.key
-                }
+                val winner = nextMapAdminOverride ?: nextMapWinner()
                 if (winner != null) {
                     Vars.maps.setNextMapOverride(winner)
                 }

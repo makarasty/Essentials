@@ -21,8 +21,6 @@ object Rtv {
     private class Target(val file: Fi, val name: String)
 
     private var target: Target? = null
-
-    internal val targetFile: Fi? get() = target?.file
     private var changing = false
 
     /** Every player online who may use /rtv: late joiners vote and count like anyone else. */
@@ -35,8 +33,9 @@ object Rtv {
     val required: Int get() = requiredFor(electorate.count())
 
     /**
-     * A vote to move on: to the next map, or with [id] (an ID /maps shows) to that map. The first vote sets the
-     * target; later ones without an id, or with the same one, join it, and another id is refused until it ends.
+     * A vote to move on: to the next map, or with [id] (an ID /maps shows, or a name, see [findMap]) to that map.
+     * The first vote sets the target; later ones without an id, or with the same map, join it, and another map is
+     * refused until it ends.
      */
     fun vote(playerData: PlayerData, id: String? = null) {
         val settings = conf.feature.vote.rtv
@@ -121,11 +120,14 @@ object Rtv {
     private fun change() {
         val wanted = target
         val map = wanted?.let { mapByFile(it.file) }
-        clearVotes()
         if (wanted != null && map == null) {
+            // Nobody's /rtv did anything, so nobody waits out a cooldown for it
+            votes.forEach(cooldown::remove)
+            clearVotes()
             broadcast("command.rtv.map.gone", wanted.name)
             return
         }
+        clearVotes()
         changing = true
         broadcast("command.rtv.done")
         endMap(map)

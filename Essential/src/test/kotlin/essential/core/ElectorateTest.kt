@@ -245,7 +245,6 @@ class ElectorateTest {
         val name = a.first.plainName()
 
         Rtv.vote(a.second, "$id")
-        assertEquals(map.file, Rtv.targetFile)
         assertEquals(log("command.rtv.voted.map", name, 1, 3, map.plainName()), a.second.lastReceivedMessage)
 
         Rtv.vote(b.second, "$other")
@@ -271,6 +270,8 @@ class ElectorateTest {
             assertFalse(gameOverDuring { Rtv.vote(b.second) })
             assertEquals(log("command.rtv.map.gone", map.plainName()), b.second.lastReceivedMessage)
             assertEquals(0, Rtv.count)
+            Rtv.vote(a.second)
+            assertEquals(1, Rtv.count, "a vote that did nothing leaves no cooldown behind")
         } finally {
             Vars.maps.all().add(map)
         }
@@ -304,6 +305,45 @@ class ElectorateTest {
     }
 
     @Test
+    fun aLonePlayerMayRestartTheMapBeingPlayedButAVoteForItIsRefused() {
+        players.toList().forEach { leavePlayer(it.player) }
+        val (id, _) = twoOtherMaps()
+        val map = mapsById()[id]
+        val (a) = join(1)
+        setPermission(a.first, "owner", false)
+        Vars.state.map = map
+        a.second.lastReceivedMessage = ""
+        clientCommand.handleMessage("/vote map $id restart", a.first)
+        assertTrue(a.second.lastReceivedMessage != err("command.vote.map.current", map.plainName()), "alone it is a restart")
+        assertEquals(map.file, Vars.state.map.file)
+
+        join(1)
+        clientCommand.handleMessage("/vote map $id again", a.first)
+        assertEquals(err("command.vote.map.current", map.plainName()), a.second.lastReceivedMessage, "as a vote it is refused")
+        assertFalse(isVoting)
+    }
+
+    @Test
+    fun findMapReadsANumberAsAnIdOnlyAndAnythingElseAsANameIgnoringCase() {
+        val maps = mapsById()
+        assertEquals(maps[0], findMap("0"))
+        assertNull(findMap("${maps.size}"), "past the last ID there is no map, whatever the names hold")
+        assertEquals(maps.first { it.plainName().contains(maps[1].plainName().uppercase(), ignoreCase = true) },
+            findMap(maps[1].plainName().uppercase()))
+    }
+
+    @Test
+    fun aChatLinePastEveryFilterIsInputWithoutTheChatModule() {
+        val (a) = join(1)
+        a.second.afk = true
+        // The chat module's formatter takes no part: it is the core's own filter, at the end of the chain
+        Vars.netServer.chatFormatter.format(a.first, "hello")
+        assertFalse(electorate.mayVote(a.second), "the formatter is the chat module's and marks nothing")
+        Vars.netServer.admins.filterMessage(a.first, "hello")
+        assertTrue(electorate.mayVote(a.second), "a line the filters let through is input")
+    }
+
+    @Test
     fun voteMapIsRefusedToAPlayerWhoMayNotVoteOnceAnotherPlayerIsOn() {
         val (id, _) = twoOtherMaps()
         val (a, _) = join(2)
@@ -331,7 +371,6 @@ class ElectorateTest {
         val (id, _) = twoOtherMaps()
         val (a, b, _) = join(3)
         Rtv.vote(a.second)
-        assertNull(Rtv.targetFile)
         assertEquals(log("command.rtv.voted", a.first.plainName(), 1, 2), a.second.lastReceivedMessage)
         Rtv.vote(b.second, "$id")
         assertEquals(err("command.rtv.other.next"), b.second.lastReceivedMessage)
