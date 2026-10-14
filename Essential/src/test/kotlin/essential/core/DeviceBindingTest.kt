@@ -327,4 +327,28 @@ class DeviceBindingTest {
             leavePlayer(target)
         }
     }
+    /** A demotion made on another server leaves a binding here; the next join as a plain player drops it. */
+    @Test
+    fun aStaleBindingGoesOnAPlainJoin() {
+        val (owner, _) = newPlayer()
+        val uuid = owner.uuid()
+        val usid = owner.usid()
+        setPermission(owner, "owner", false)
+        leavePlayer(owner)
+        val row = runBlocking { getPlayerData(uuid) }!!
+        row.permission = "user"
+        runBlocking { row.update() }
+
+        val (back, _) = rejoin(uuid, usid)
+        leavePlayer(back)
+        assertNull(Permission.boundDevice(uuid), "the stale binding is gone after a plain join")
+        assertFalse(Vars.netServer.admins.getInfo(uuid).admin)
+
+        val (other, _) = rejoin(uuid, "anotherDevice")
+        try {
+            assertFalse(Permission.heldBack(uuid), "a plain player on a new device is not held back")
+        } finally {
+            leavePlayer(other)
+        }
+    }
 }

@@ -435,14 +435,16 @@ object Permission {
         val admins = Vars.netServer?.admins ?: return
         // A group permission.yaml does not define (parse failure, rename) is not a demotion to anything.
         if (!main.containsKey(group)) return
-        if (rank(group) > 0 || user?.get(uuid)?.admin == true) {
-            bindSession(uuid)
-        } else if (demote) {
-            Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }
-        }
+        val privileged = rank(group) > 0 || user?.get(uuid)?.admin == true
+        if (privileged) bindSession(uuid)
         if (!isAdminGroup(group)) {
             // Guarded: unAdminPlayer saves every PlayerInfo, and this runs on every join.
             if (admins.getInfoOptional(uuid)?.admin == true && (demote || !heldBack(uuid))) admins.unAdminPlayer(uuid)
+            // A plain session has nothing to hold back, so a binding left by a demotion made on another
+            // server goes on join too - unless a vanilla flag still needs it (a held-back console admin).
+            if (!privileged && (demote || admins.getInfoOptional(uuid)?.admin != true)) {
+                Core.settings?.let { if (it.has(deviceKey(uuid))) { it.remove(deviceKey(uuid)); it.forceSave() } }
+            }
             return
         }
         // Only ever the bound device: a stale adminUsid or an offline promote binds nothing here.
