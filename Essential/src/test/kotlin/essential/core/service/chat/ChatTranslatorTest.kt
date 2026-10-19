@@ -308,11 +308,11 @@ class ChatTranslatorTest {
         ex.responseBody.flush()
         Thread.sleep(10_000)
     }) { uri ->
-        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build().use { client ->
-            val started = System.nanoTime()
-            assertFailsWith<IOException> { ChatTranslator.send(client, HttpRequest.newBuilder(uri).build(), 500) }
-            assertTrue(System.nanoTime() - started < 5_000_000_000L, "headers came, the body stalled: still bounded")
-        }
+        // no .use: HttpClient is AutoCloseable only on JDK 21+, CI builds on an older JDK
+        val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()
+        val started = System.nanoTime()
+        assertFailsWith<IOException> { ChatTranslator.send(client, HttpRequest.newBuilder(uri).build(), 500) }
+        assertTrue(System.nanoTime() - started < 5_000_000_000L, "headers came, the body stalled: still bounded")
     }
 
     @Test
@@ -320,9 +320,7 @@ class ChatTranslatorTest {
         ex.sendResponseHeaders(200, 0)
         ex.responseBody.write(ByteArray(ChatTuning.TRANSLATE_MAX_RESPONSE_BYTES + 10))
     }) { uri ->
-        HttpClient.newHttpClient().use { client ->
-            val e = assertFailsWith<IOException> { ChatTranslator.send(client, HttpRequest.newBuilder(uri).build(), 5_000) }
-            assertTrue("answer over" in e.message.orEmpty(), e.message)
-        }
+        val e = assertFailsWith<IOException> { ChatTranslator.send(HttpClient.newHttpClient(), HttpRequest.newBuilder(uri).build(), 5_000) }
+        assertTrue("answer over" in e.message.orEmpty(), e.message)
     }
 }
