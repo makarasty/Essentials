@@ -93,11 +93,13 @@ val pvpSpecters = mutableSetOf<String>()
 val pvpPlayer = mutableMapOf<String, Team>()
 
 /**
- * Teams [PvpTeamAssigner] picked by autoTeam for a connecting player, taken back by attachPlayerData.
- * Kept apart from [pvpPlayer]: a pick made before the player's data (and so their spectator
- * permission) is loaded must not read as a remembered team.
+ * Players [PvpTeamAssigner] gave a team, by uuid, until attachPlayerData puts them in [players]: the
+ * engine's player list and [players] both miss a player still in the handshake, so team counts read
+ * them from here. Kept apart from [pvpPlayer]: a team given before the player's data (and so their
+ * spectator permission) is loaded must not read as a remembered team. The engine fires no PlayerLeave
+ * for a player who drops mid-handshake, so readers skip a disconnected one.
  */
-val pvpConnectPicks = mutableMapOf<String, Team>()
+val pvpConnectPicks = mutableMapOf<String, Player>()
 
 /** Whether global chat is muted. Volatile: written from the game thread by /chat off, read from a
  *  Ktor worker by the web chat endpoint. */
@@ -1170,6 +1172,8 @@ fun playerLeave(event: PlayerLeave) {
     // Their dialogs went with their connection, so the menu ids they held can be handed out again.
     OwnedMenus.release(event.player.uuid())
     cancelPlayerDataRetry(event.player.uuid())
+    // A player who leaves before their data loads would otherwise stay counted on their connect pick.
+    pvpConnectPicks.remove(event.player.uuid(), event.player)
     val data = findPlayerData(event.player.uuid())
     if (data != null) {
         data.lastPlayedWorldName = Vars.state.map.plainName()
@@ -1634,13 +1638,18 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     // If the current mode is PvP. PvpTeamAssigner normally picked this team at connect, before the
     // engine spawned the player, so the changeTeam below is a no-op; it only acts on what needs the
     // loaded data (the spectator permission) or when something other than the plugin assigned the team.
+    // This also runs again mid-match (/login, /reg, reloadplayer, the temporary-data swap), so a player
+    // already on a live team keeps it rather than being re-balanced into the enemy base.
     if (Vars.state.rules.pvp) {
         val uuid = playerData.uuid
-        val picked = pvpConnectPicks.remove(uuid)
+        pvpConnectPicks.remove(uuid)
         val team = when {
-            conf.feature.pvp.rememberTeam && uuid in pvpPlayer -> pvpPlayer.getValue(uuid)
-            conf.feature.pvp.spector && (uuid in pvpSpecters || Permission.check(playerData, "pvp.spector")) -> Team.derelict
-            conf.feature.pvp.autoTeam -> picked?.takeIf(::isPlayablePvpTeam) ?: selectAutoTeam(uuid)
+            // A remembered team that lost its cores while the player was away is no team: the assigner
+            // already skipped it, and applying it here left the player unitless on it every rejoin.
+            conf.feature.pvp.rememberTeam && pvpPlayer[uuid]?.let(::isPlayablePvpTeam) == true -> pvpPlayer.getValue(uuid)
+            // A defeated player sits out the match with spector off too: they used to rejoin or /login onto a live team.
+            uuid in pvpSpecters || conf.feature.pvp.spector && Permission.check(playerData, "pvp.spector") -> Team.derelict
+            conf.feature.pvp.autoTeam -> player.team().takeIf(::isPlayablePvpTeam) ?: selectAutoTeam(uuid)
             else -> null
         }
         if (team != null) player.changeTeam(team)
@@ -1675,51 +1684,56 @@ fun movePlayerToTeam(player: Playerc, team: Team) {
  * costs a respawn (join) or is overwritten outright (map change), so the PvP pick is made here, from
  * what worldLoad planned into [pvpPlayer] or, for a fresh join, [selectAutoTeam]. Anything the plugin
  * has no opinion on goes to [fallback], the engine's own fewest-players rule.
+ *
+ * The engine's `others` is Groups.player, which lacks every player still in the handshake, so two
+ * players connecting together were both counted against empty teams. Each team handed out here is
+ * kept in [pvpConnectPicks] and those players are counted until their data loads.
  */
 class PvpTeamAssigner(private val fallback: NetServer.TeamAssigner) : NetServer.TeamAssigner {
     override fun assign(player: Player, others: Iterable<Player>): Team {
+        if (!Vars.state.rules.pvp) return fallback.assign(player, others)
         val uuid = player.uuid()
-        return when {
-            !Vars.state.rules.pvp -> fallback.assign(player, others)
-            conf.feature.pvp.spector && uuid in pvpSpecters -> Team.derelict
+        val team = when {
+            uuid in pvpSpecters -> Team.derelict
             else -> pvpPlayer[uuid]?.takeIf(::isPlayablePvpTeam)
-                ?: (if (conf.feature.pvp.autoTeam) selectAutoTeam(uuid)?.also { pvpConnectPicks[uuid] = it } else null)
-                ?: fallback.assign(player, others)
+                ?: (if (conf.feature.pvp.autoTeam) selectAutoTeam(uuid) else null)
+                ?: fallback.assign(player, others + connectingPlayers().filter { it !== player && it !in others })
         }
+        pvpConnectPicks[uuid] = player
+        return team
     }
 }
 
+/** Players given a team at connect whose data has not loaded yet. Drops any who left mid-handshake. */
+private fun connectingPlayers(): List<Player> {
+    pvpConnectPicks.values.removeIf { it.con()?.hasDisconnected != false }
+    return pvpConnectPicks.values.toList()
+}
+
+/**
+ * The team with the fewest players, lowest average win rate first among those tied. Counts are kept
+ * level: the old rule let a team one ahead take another player, so with two players the second joined
+ * the first whenever the first's win rate was under 0.5 (an empty team scores 0.5) - a 2v0 that a
+ * rejoin repeated. A player still connecting has no [PlayerData] yet, so [pvpConnectPicks] counts too;
+ * without it two players joining together both saw empty teams and got the same one.
+ */
 fun selectAutoTeam(uuid: String, targetPlayers: List<PlayerData> = players): Team? {
     val activeTeams = Vars.state?.teams?.active ?: return null
-    val playableTeams = activeTeams.filter { isPlayablePvpTeam(it.team) }
-    if (!playableTeams.any()) return null
+    val playableTeams = activeTeams.map { it.team }.filter(::isPlayablePvpTeam)
+    if (playableTeams.isEmpty()) return null
 
-    val teamStats = playableTeams.map { teamData ->
-        val team = teamData.team
-        val teamPlayers = targetPlayers.filter {
-            it.player.team() == team && it.uuid != uuid
-        }
-        val playerCount = teamPlayers.size
-        val avgWinRate = if (teamPlayers.isEmpty()) 0.5 else teamPlayers.map {
-            val total = it.pvpWinCount + it.pvpLoseCount
-            if (total == 0) 0.5 else it.pvpWinCount.toDouble() / total
-        }.average()
-        team to (playerCount to avgWinRate)
-    }.toList()
+    val loaded = targetPlayers.filter { it.uuid != uuid }
+    val loadedUuids = loaded.mapTo(HashSet()) { it.uuid }
+    val connecting = connectingPlayers().filter { it.uuid() != uuid && it.uuid() !in loadedUuids }.map { it.team() }
 
-    if (teamStats.isEmpty()) return null
+    fun count(team: Team) = loaded.count { it.player.team() == team } + connecting.count { it == team }
+    fun winRate(team: Team) = loaded.filter { it.player.team() == team }.map {
+        val total = it.pvpWinCount + it.pvpLoseCount
+        if (total == 0) 0.5 else it.pvpWinCount.toDouble() / total
+    }.ifEmpty { listOf(0.5) }.average()
 
-    val sortedByWinRate = teamStats.sortedBy { it.second.second }
-
-    val bestTeam = sortedByWinRate.find { stats ->
-        val team = stats.first
-        val count = stats.second.first
-        val otherTeams = teamStats.filter { it.first != team }
-        val minOthers = if (otherTeams.isEmpty()) count else otherTeams.minOf { it.second.first }
-        count < minOthers + 2
-    }?.first ?: sortedByWinRate.first().first
-
-    return bestTeam
+    val fewest = playableTeams.minOf(::count)
+    return playableTeams.filter { count(it) == fewest }.minBy(::winRate)
 }
 
 @Serializable

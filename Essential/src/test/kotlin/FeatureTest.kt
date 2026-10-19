@@ -45,6 +45,7 @@ import essential.core.mergeTemporaryPlayerData
 import essential.core.playerDataRetries
 import essential.core.playerIpUnban
 import essential.core.selectAutoTeam
+import essential.core.pvpConnectPicks
 import essential.core.service.achievements.AchievementHooks
 import essential.core.swapTemporaryPlayerData
 import essential.core.tap
@@ -68,6 +69,7 @@ import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
 import mindustry.gen.Bullet
 import mindustry.gen.Groups
+import mindustry.gen.Player
 import mindustry.net.Administration
 import mindustry.world.blocks.storage.CoreBlock.CoreBuild
 import mindustry.net.NetConnection
@@ -429,9 +431,8 @@ class FeatureTest {
         .associate { td -> td.team to players.count { it.player.team() == td.team } }
 
     /**
-     * selectAutoTeam (CoreEvent.kt:1612) promises the lowest average win rate among the teams that hold
-     * a core, unless that team already has two more members than the smallest of the others, in which
-     * case the next one by win rate that passes the same guard. Both halves are scored over the plugin's
+     * selectAutoTeam promises the team with the fewest members among those that hold a core, the lowest
+     * average win rate first among the tied ones. Both halves are scored over the plugin's
      * own `players` list, and that list is not this class's to control: `/changemap` goes through
      * WorldReloader, whose begin() clears Groups.player via Logic.reset() and whose end() re-teams the
      * saved players but never calls player.add() again. So every player of every earlier test in this
@@ -524,26 +525,46 @@ class FeatureTest {
                 "level counts: the lowest average win rate takes the player"
             )
             assertEquals(
-                teamLowest, selectAutoTeam(joining.uuid, scored(teamLowest to 1)),
-                "one ahead of the smallest team is still inside the handicap the guard allows"
+                teamSecondLowest, selectAutoTeam(joining.uuid, scored(teamLowest to 1)),
+                "a team already one ahead takes no one: the next win rate among the smallest teams does"
             )
-            assertEquals(
-                teamSecondLowest, selectAutoTeam(joining.uuid, scored(teamLowest to 2)),
-                "two ahead of the smallest team is the handicap ceiling, so the next win rate takes the player"
-            )
-            // The recorded flake, forced. The guard compares each team against the smallest OTHER team,
-            // so once every other team is within one, the lowest win rate takes the player at +2 as well.
-            // That is the state a single leaked player from an earlier test produces, and it is why "the
-            // eleventh player goes to the second lowest win rate" was never the promise.
             assertEquals(
                 teamLowest,
-                selectAutoTeam(
-                    joining.uuid,
-                    scored(teamLowest to 2, *byWinRate.drop(1).map { it to 1 }.toTypedArray())
-                ),
-                "the guard is about counts, not win rates: with every other team within one of it, the " +
-                        "lowest win rate takes the player at +2 as well"
+                selectAutoTeam(joining.uuid, scored(*byWinRate.drop(1).map { it to 1 }.toTypedArray())),
+                "counts first: the lowest win rate takes the player only while its team is among the smallest"
             )
+        }
+
+        // The 2v0 the old +2 guard allowed: one player on a team with a low win rate, an empty team
+        // beside it scoring 0.5, and the second player joined the first.
+        withProbeData { joining ->
+            val lone = seeded.first { it.player.team() == teamLowest }
+            assertNotEquals(
+                teamLowest, selectAutoTeam(joining.uuid, listOf(lone)),
+                "with one player on the server the second goes to another team"
+            )
+        }
+
+        // Two players connecting together: neither has PlayerData yet, only the pick made at connect.
+        withProbeData { first ->
+            withProbeData { second ->
+                val firstPick = assertNotNull(selectAutoTeam(first.uuid, emptyList()))
+                first.player.team(firstPick)
+                pvpConnectPicks[first.uuid] = first.player as Player
+                try {
+                    assertNotEquals(
+                        firstPick, selectAutoTeam(second.uuid, emptyList()),
+                        "a player still connecting counts on the team picked for them"
+                    )
+                    first.player.con().hasDisconnected = true
+                    assertEquals(
+                        firstPick, selectAutoTeam(second.uuid, emptyList()),
+                        "but not once they dropped mid-handshake"
+                    )
+                } finally {
+                    pvpConnectPicks.remove(first.uuid)
+                }
+            }
         }
 
         // End to end, three real joins through the real join path. Two things are asserted per join.
@@ -552,11 +573,14 @@ class FeatureTest {
         // the wiring at CoreEvent.kt:1596-1601 - a rememberTeam or spector branch swallowing a fresh
         // join, say - without depending on what is in `players`, because both sides read the same list.
         // Second, the invariant the guard maintains whatever else is in `players`: a joiner lands on a
-        // team that holds a core, and never on one already more than one player ahead of the smallest.
+        // team that holds a core, and always on one of the smallest.
         repeat(3) { i ->
             val before = playableTeamCounts()
             val oracle = withProbeData { selectAutoTeam(it.uuid, players) }
-            val joined = newPlayer().first.team()
+            // As the engine connects a player: the assigner's team first, then the join loads the data.
+            val joining = createPlayer()
+            joining.team(Vars.netServer.assigner.assign(joining, Groups.player))
+            val joined = PluginTest.joinPlayer(joining).player.team()
             assertEquals(
                 oracle, joined,
                 "join ${i + 1} landed on $joined, but selectAutoTeam asked the same question on the same " +
@@ -569,9 +593,9 @@ class FeatureTest {
             )
             val minOthers = (before - joined).values.minOrNull() ?: had
             assertTrue(
-                had <= minOthers + 1,
+                had <= minOthers,
                 "join ${i + 1} went to $joined, which already had $had players while the smallest other " +
-                        "core-holding team had $minOthers; the handicap guard allows at most minOthers + 1. " +
+                        "core-holding team had $minOthers. " +
                         "playable=$before"
             )
         }
@@ -637,7 +661,7 @@ class FeatureTest {
         val shardedCount = activeNonSpectators.count { it.player.team() == Team.sharded }
         val cruxCount = activeNonSpectators.count { it.player.team() == Team.crux }
         assertEquals(activeNonSpectators.size, shardedCount + cruxCount, "All active non-spectators should be on Sharded or Crux")
-        assertTrue(kotlin.math.abs(shardedCount - cruxCount) <= 2, "Teams should be balanced within autoTeam handicap range")
+        assertTrue(kotlin.math.abs(shardedCount - cruxCount) <= 1, "Teams should differ by at most one player")
     }
 
     @Test

@@ -3,6 +3,7 @@ package essential.core
 import PluginTest.Companion.createPlayer
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.newPlayer
 import essential.common.util.changeTeam
 import mindustry.Vars
 import mindustry.content.Blocks
@@ -89,7 +90,7 @@ class TeamChangeRespawnTest {
             pvp(autoTeam = true)
             val picked = assertNotNull(selectAutoTeam(uuid), "the map should have a team autoTeam can pick")
             assertEquals(picked, assigner.assign(player, emptyList()), "autoTeam picks for a fresh join")
-            assertEquals(picked, pvpConnectPicks[uuid], "and records it, so attachPlayerData keeps it")
+            assertEquals(player, pvpConnectPicks[uuid], "and records the player, so team counts see them before their data loads")
             assertEquals(null, pvpPlayer[uuid], "but not as a remembered team: it was made before the permissions were known")
 
             pvpSpecters.add(uuid)
@@ -103,6 +104,86 @@ class TeamChangeRespawnTest {
             pvpSpecters.remove(uuid)
             leavePlayer(player)
             Call.setTile(coreTile, Blocks.air, Team.derelict, 0)
+        }
+    }
+
+    /**
+     * Without autoTeam the engine's own rule decides, and it counts Groups.player, which lacks a player
+     * still in the handshake. Two players connecting together both went to the same empty team.
+     */
+    @Test
+    fun assigner_fallbackCountsPlayersStillConnecting() {
+        val first = createPlayer()
+        val second = createPlayer()
+        val wasPvp = Vars.state.rules.pvp
+        val conf = Main.conf
+        // Stands in for the engine: the first team nobody in `others` is on.
+        val assigner = PvpTeamAssigner { _, others -> if (others.any { it.team() == Team.blue }) Team.green else Team.blue }
+
+        try {
+            Vars.state.rules.pvp = true
+            Main.conf = conf.copy(feature = conf.feature.copy(pvp = conf.feature.pvp.copy(autoTeam = false)))
+            first.team(assigner.assign(first, emptyList()))
+            assertEquals(Team.blue, first.team())
+            assertEquals(Team.green, assigner.assign(second, emptyList()), "the first player is still connecting, not absent")
+
+            first.con.hasDisconnected = true
+            assertEquals(Team.blue, assigner.assign(second, emptyList()), "a player who dropped mid-handshake is not counted")
+        } finally {
+            Main.conf = conf
+            Vars.state.rules.pvp = wasPvp
+            pvpConnectPicks.remove(first.uuid())
+            pvpConnectPicks.remove(second.uuid())
+            first.con.hasDisconnected = false
+            leavePlayer(first)
+            leavePlayer(second)
+        }
+    }
+
+    /**
+     * attachPlayerData runs again mid-match (/login, /reg, reloadplayer, the temporary-data swap). It
+     * used to re-run autoTeam, which moved a playing player to another team, and to apply a remembered
+     * team that had lost its cores, which left the player unitless on it every rejoin.
+     */
+    @Test
+    fun attach_keepsALiveTeamAndSkipsADeadRememberedOne() {
+        val coreTiles = listOf(Vars.world.tile(Vars.world.width() - 20, Vars.world.height() - 20), Vars.world.tile(20, Vars.world.height() - 20))
+        coreTiles.zip(listOf(Team.blue, Team.green)).forEach { (tile, team) -> Call.setTile(tile, Blocks.coreShard, team, 0) }
+        val (player, data) = newPlayer()
+        val conf = Main.conf
+        val wasPvp = Vars.state.rules.pvp
+
+        try {
+            Vars.state.rules.pvp = true
+            Main.conf = conf.copy(feature = conf.feature.copy(pvp = conf.feature.pvp.copy(autoTeam = true, rememberTeam = false)))
+            val rebalanced = assertNotNull(selectAutoTeam(player.uuid()))
+            val other = if (rebalanced == Team.blue) Team.green else Team.blue
+            player.changeTeam(other)
+            attachPlayerData(data, false)
+            assertEquals(other, player.team(), "a player on a live team keeps it")
+
+            Main.conf = conf.copy(feature = conf.feature.copy(pvp = conf.feature.pvp.copy(autoTeam = true, rememberTeam = true)))
+            pvpPlayer[player.uuid()] = Team.malis
+            attachPlayerData(data, false)
+            assertEquals(other, player.team(), "a remembered team without a core is not applied")
+            assertEquals(other, pvpPlayer[player.uuid()], "and the entry follows the team the player is on")
+
+            // Defeated with spector off: recordPvpDefeat leaves them on their dead team, in pvpSpecters.
+            Main.conf = conf.copy(feature = conf.feature.copy(pvp = conf.feature.pvp.copy(autoTeam = true, spector = false)))
+            pvpPlayer.remove(player.uuid())
+            pvpSpecters.add(player.uuid())
+            player.changeTeam(Team.malis)
+            attachPlayerData(data, false)
+            assertEquals(Team.derelict, player.team(), "a defeated player is not re-balanced onto a live team")
+            assertEquals(Team.derelict, PvpTeamAssigner { _, _ -> Team.blue }.assign(player, emptyList()), "nor on rejoin")
+        } finally {
+            Main.conf = conf
+            Vars.state.rules.pvp = wasPvp
+            pvpSpecters.remove(player.uuid())
+            pvpConnectPicks.remove(player.uuid())
+            pvpPlayer.remove(player.uuid())
+            leavePlayer(player)
+            coreTiles.forEach { Call.setTile(it, Blocks.air, Team.derelict, 0) }
         }
     }
 }
