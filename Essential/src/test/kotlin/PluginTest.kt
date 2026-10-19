@@ -45,6 +45,7 @@ import essential.core.mapRatings
 import essential.core.mapVotes
 import essential.core.maxDps
 import essential.core.playerDataRetries
+import essential.core.pvpConnectPicks
 import essential.core.pvpPlayer
 import essential.core.pvpSpecters
 import essential.core.unitLimitMessageCooldown
@@ -265,6 +266,7 @@ class PluginTest {
             mapRatings.clear()
             pvpSpecters.clear()
             pvpPlayer.clear()
+            pvpConnectPicks.clear()
             worldEditSelection.clear()
             Commands.charsPlacing.clear()
             // Jobs, not data. The job itself re-checks `isPlayerOnline` after each delay, so the
@@ -1159,6 +1161,7 @@ class PluginTest {
         mapRatings["probe"] = true
         pvpSpecters.add("probe")
         pvpPlayer["probe"] = Team.sharded
+        pvpConnectPicks["probe"] = Player.create()
         worldEditSelection["probe"] = Commands.WorldEditSelection()
         Commands.charsPlacing["probe"] = arrayOf("probe")
         val retry = Job()
@@ -1182,6 +1185,7 @@ class PluginTest {
         assertTrue(mapRatings.isEmpty(), "mapRatings carried into the next class")
         assertTrue(pvpSpecters.isEmpty(), "pvpSpecters carried into the next class")
         assertTrue(pvpPlayer.isEmpty(), "pvpPlayer carried into the next class")
+        assertTrue(pvpConnectPicks.isEmpty(), "pvpConnectPicks carried into the next class")
         assertTrue(worldEditSelection.isEmpty(), "worldEditSelection carried into the next class")
         assertTrue(Commands.charsPlacing.isEmpty(), "a pending /chars placement carried into the next class")
         assertTrue(playerDataRetries.isEmpty(), "a player-data retry job carried into the next class")
