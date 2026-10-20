@@ -60,6 +60,7 @@ feature:
     autoTeam: false
     spector: false
     rememberTeam: false
+    manageTeams: true
   level:
     effect:
       enabled: false
@@ -254,6 +255,11 @@ On PvP maps, move a player to the derelict (spectator) team as soon as their tea
 
 Default: ``false``<br>
 Put a player who rejoins during the same PvP match back on the team they had. ``false`` lets them be assigned again.
+
+### feature.pvp.manageTeams
+
+Default: ``true``<br>
+Let Essentials own PvP teams: ``autoTeam``, ``spector`` and ``rememberTeam`` only act while this is on, and so do the auto-pause on leave and the game over when one team is left. Turn it off when another plugin (Hexed, for example) sets player teams; PvP statistics are still recorded.
 
 ## feature.level
 

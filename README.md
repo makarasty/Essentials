@@ -9,12 +9,12 @@ hubs and a lot of admin tooling. This is a fork of [Kieaer/Essentials](https://g
 run on a group of servers that share one database. It follows upstream closely and merges it
 regularly; everything listed under [What this fork changes](#what-this-fork-changes) is on top of it.
 
-Currently based on upstream **v22** for **Mindustry v160.4** (8.0).
+Currently based on upstream **v22** for **Mindustry v160.7** (8.0).
 
 ## Requirements
 
 - **Java 17 or newer.**
-- A Mindustry dedicated server on **v160.4**.
+- A Mindustry dedicated server on **v160.7**.
 - Essentials does not get along with other plugins that ship their own copy of the same libraries
   (Kotlin, Ktor, Exposed, Flyway, SLF4J and so on). Mindustry loads plugins into a shared classloader, so
   two copies of one package clash. That is a limitation of Mindustry, not something either plugin can fix.
@@ -96,6 +96,8 @@ is the newest commit on `main`, rebuilt on every push; you can also build the ja
   `account_id` and deletes every duplicate row but the newest. Before it runs, this fork folds the older
   rows into the newest one with the same logic as `mergeplayer`: stats are summed and achievements move
   over.
+- **A player row is found by uuid only.** Upstream also matches a new player to an existing row by name,
+  which would hand anyone who picks a taken nickname that player's data, group and account.
 - **Legacy upgrades are tolerant.** Databases from before v5 are upgraded by the V4/V5 scripts statement by
   statement: a non-critical statement that fails is logged and skipped instead of abandoning the upgrade,
   and the boot log says exactly which statements were skipped and whether the upgrade finished. Flyway
