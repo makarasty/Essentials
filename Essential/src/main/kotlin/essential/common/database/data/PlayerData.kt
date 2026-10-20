@@ -398,6 +398,7 @@ suspend fun createPlayerData(player: Playerc): PlayerData {
 }
 
 suspend fun createPlayerData(name: String, uuid: String, accountID: String, accountPW: String): PlayerData {
+    // Matched by uuid only: upstream's name match would hand a new device whoever already holds that name.
     suspendTransaction {
         PlayerTable.insert {
             it[PlayerTable.name] = name

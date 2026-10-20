@@ -223,6 +223,8 @@ data class PvP(
     val spector: Boolean = false,
     @YamlComment("Put a rejoining player back into the team they had before; off = they pick again")
     val rememberTeam: Boolean = false,
+    @YamlComment("Manage PvP teams and spectators; disable when another plugin controls player teams")
+    val manageTeams: Boolean = true,
 )
 
 /** Feature - Player level feature settings */

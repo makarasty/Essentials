@@ -3,6 +3,7 @@ package essential.common.database.data
 import arc.util.Log
 import kotlinx.coroutines.CancellationException
 import essential.common.database.table.AchievementTable
+import essential.common.database.table.PlayerTable
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
@@ -27,6 +28,7 @@ data class AchievementData(
  * Check if a player has completed an achievement
  */
 suspend fun hasAchievement(playerData: PlayerData, achievementName: String): Boolean {
+    if (playerData.id == 0u) return false
     return suspendTransaction {
         val query = AchievementTable.select(AchievementTable.id)
             .where { 
@@ -42,11 +44,17 @@ suspend fun hasAchievement(playerData: PlayerData, achievementName: String): Boo
  * Set an achievement as completed for a player
  */
 suspend fun setAchievement(playerData: PlayerData, achievementName: String) {
+    if (playerData.id == 0u) return
     // Reading an absent row takes no lock, so the player earning this on two of the six servers at
     // once passes the check twice and the unique (player_id, achievement_name) index refuses the
     // second insert. That refusal means the row is there, which is all this function wanted.
-    val refused = runCatching {
+    val attempt = runCatching {
         suspendTransaction {
+            val playerExists = !PlayerTable.select(PlayerTable.id)
+                .where { PlayerTable.id eq playerData.id }
+                .empty()
+            if (!playerExists) return@suspendTransaction false
+
             // Check if the achievement is already completed
             val query = AchievementTable.select(AchievementTable.id)
                 .where {
@@ -64,8 +72,12 @@ suspend fun setAchievement(playerData: PlayerData, achievementName: String) {
                     // completedAt will be set automatically by the default value
                 }
             }
+            true
         }
-    }.exceptionOrNull()
+    }
+    // The player row is gone, so there is nothing to award against.
+    if (attempt.getOrNull() == false) return
+    val refused = attempt.exceptionOrNull()
 
     if (refused is CancellationException) throw refused
 

@@ -54,13 +54,15 @@ object ChatFormatResolver {
         "%player.worldMode" to { data: PlayerData -> data.lastPlayedWorldMode ?: "unknown" }
     )
 
+    private val sortedPlaceholders = placeholders.entries.sortedByDescending { it.key.length }
+
     /**
      * Replaces all known placeholders in [format] with actual values from [data] and [message].
      * Unknown placeholders are left as-is.
      */
     fun resolve(format: String, data: PlayerData, message: String): String {
         var resolved = format
-        for ((key, value) in placeholders) {
+        for ((key, value) in sortedPlaceholders) {
             // Ask the format first. This runs on every chat message, and a format naming two
             // placeholders was still evaluating all seventeen - a database field read and a
             // toString each - and scanning the string seventeen times to replace nothing.

@@ -386,7 +386,8 @@ fun tap(event: TapEvent) {
 
                 shown.forEach { two ->
                         val who = ids[two.uuid]?.let { "${two.player}[lightgray] @$it[]" } ?: two.player
-                        val block = coreBundle["block.${two.tile}.name"].takeUnless { it == "block.${two.tile}.name" }
+                        val block = if (two.tile == "air") bundle["event.log.air"]
+                            else coreBundle["block.${two.tile}.name"].takeUnless { it == "block.${two.tile}.name" }
                             ?: Vars.content.block(two.tile)?.localizedName ?: two.tile
                         val action = when (two.action) {
                             "tap" -> "[royal]${bundle["event.log.tap"]}[]"
@@ -1022,8 +1023,9 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
 
                     if (!Vars.state.rules.infiniteResources) {
                         target.blockBreakCount++
-                        target.exp -= blockExp[tile.block().name] ?: 0
-                        target.currentExp -= blockExp[tile.block().name] ?: 0
+                        val removedExp = blockExp[checkValidBlock(tile)] ?: 0
+                        target.exp -= removedExp
+                        target.currentExp -= removedExp
                     }
                 }
             }
@@ -1185,7 +1187,7 @@ fun playerLeave(event: PlayerLeave) {
 
         offlinePlayers.add(data)
 
-        if (Administration.Config.autoPause.bool()) {
+        if (Administration.Config.autoPause.bool() && (!Vars.state.rules.pvp || conf.feature.pvp.manageTeams)) {
             if (Vars.state.rules.pvp) {
                 val b = Groups.player.copy()
                 b.remove(event.player)
@@ -1327,7 +1329,7 @@ fun worldLoad(event: WorldLoadEvent) {
     // into pvpPlayer. Without autoTeam the engine's own fewest-players rule re-teams everyone, and
     // registerPvpPlayer records the result. The changeTeam calls keep the counts selectAutoTeam reads
     // right while it plans, and hold for a world loaded outside a reloader.
-    if (Vars.state.rules.pvp) {
+    if (Vars.state.rules.pvp && conf.feature.pvp.manageTeams) {
         val nonSpectators = players.filter { data ->
             val spectator = conf.feature.pvp.spector && Permission.check(data, "pvp.spector")
             if (spectator) {
@@ -1488,7 +1490,7 @@ fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
             }
             data.send("event.bullet.kill", event.bullet.team.coloredName(), event.build.team.coloredName())
         }
-        if (Vars.netServer.isWaitingForPlayers) {
+        if (conf.feature.pvp.manageTeams && Vars.netServer.isWaitingForPlayers) {
             // isWaitingForPlayers only reports that fewer than two teams have someone connected; it
             // says nothing about who survived.
             soleSurvivingTeam()?.let { Events.fire(GameOverEvent(it)) }
@@ -1635,12 +1637,12 @@ fun attachPlayerData(playerData: PlayerData, announce: Boolean) {
     players.add(playerData)
 
 
-    // If the current mode is PvP. PvpTeamAssigner normally picked this team at connect, before the
+    // If the current mode is PvP and Essentials owns team management. PvpTeamAssigner normally picked this team at connect, before the
     // engine spawned the player, so the changeTeam below is a no-op; it only acts on what needs the
     // loaded data (the spectator permission) or when something other than the plugin assigned the team.
     // This also runs again mid-match (/login, /reg, reloadplayer, the temporary-data swap), so a player
     // already on a live team keeps it rather than being re-balanced into the enemy base.
-    if (Vars.state.rules.pvp) {
+    if (Vars.state.rules.pvp && conf.feature.pvp.manageTeams) {
         val uuid = playerData.uuid
         pvpConnectPicks.remove(uuid)
         val team = when {
@@ -1691,7 +1693,7 @@ fun movePlayerToTeam(player: Playerc, team: Team) {
  */
 class PvpTeamAssigner(private val fallback: NetServer.TeamAssigner) : NetServer.TeamAssigner {
     override fun assign(player: Player, others: Iterable<Player>): Team {
-        if (!Vars.state.rules.pvp) return fallback.assign(player, others)
+        if (!Vars.state.rules.pvp || !conf.feature.pvp.manageTeams) return fallback.assign(player, others)
         val uuid = player.uuid()
         val team = when {
             uuid in pvpSpecters -> Team.derelict
@@ -1718,6 +1720,7 @@ private fun connectingPlayers(): List<Player> {
  * without it two players joining together both saw empty teams and got the same one.
  */
 fun selectAutoTeam(uuid: String, targetPlayers: List<PlayerData> = players): Team? {
+    if (!conf.feature.pvp.manageTeams) return null
     val activeTeams = Vars.state?.teams?.active ?: return null
     val playableTeams = activeTeams.map { it.team }.filter(::isPlayablePvpTeam)
     if (playableTeams.isEmpty()) return null
@@ -1925,12 +1928,9 @@ internal fun isConstructBlockName(name: String): Boolean =
     (name.length == 6 || name.length == 7) && name.startsWith("build") &&
         name[5] in '0'..'9' && (name.length == 6 || name[6] in '0'..'9')
 
-private fun checkValidBlock(tile: Tile): String {
-    return if (tile.build != null && isConstructBlockName(tile.block().name)) {
-        (tile.build as ConstructBlock.ConstructBuild).current.name
-    } else {
-        tile.block().name
-    }
+internal fun checkValidBlock(tile: Tile): String {
+    val construction = tile.build as? ConstructBlock.ConstructBuild
+    return construction?.current?.name ?: tile.block().name
 }
 
 /**
