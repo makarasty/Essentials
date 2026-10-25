@@ -1,4 +1,4 @@
-import com.github.jengelman.gradle.plugins.shadow.ShadowJavaPlugin.Companion.shadowJar
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
@@ -16,6 +16,9 @@ plugins {
     `java-library`
     jacoco
 }
+
+// Shadow 9 stable dropped the TaskContainer.shadowJar accessor that 9.0.0-beta12 shipped
+val TaskContainer.shadowJar: TaskProvider<ShadowJar> get() = named<ShadowJar>("shadowJar")
 
 /**
  * Comma-separated optional modules to omit from an artifact.
@@ -119,17 +122,17 @@ if (excludedModules.isNotEmpty()) {
     logger.lifecycle("Building Essentials without optional modules: ${excludedModules.joinToString(", ")}")
 }
 
-val mindustryAssets: Configuration by configurations.creating {
+val mindustryAssets: Configuration = configurations.create("mindustryAssets") {
     isCanBeConsumed = false
     isCanBeResolved = true
 }
 
-val proguard by configurations.creating {
+val proguard: Configuration = configurations.create("proguard") {
     isCanBeConsumed = false
     isCanBeResolved = true
 }
 
-val proguardLibraries by configurations.creating {
+val proguardLibraries: Configuration = configurations.create("proguardLibraries") {
     isCanBeConsumed = false
     isCanBeResolved = true
 }
@@ -345,7 +348,7 @@ abstract class ExtractMindustryBundlesTask @javax.inject.Inject constructor(
     }
 }
 
-val extractMindustryBundles by tasks.registering(ExtractMindustryBundlesTask::class) {
+val extractMindustryBundles = tasks.register<ExtractMindustryBundlesTask>("extractMindustryBundles") {
     assetsJar.from(mindustryAssets)
     outputDir.set(layout.buildDirectory.dir("generated/resources/mindustry-bundles"))
 }

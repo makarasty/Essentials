@@ -159,6 +159,17 @@
 -dontwarn jakarta.servlet.**
 -dontwarn com.google.j2objc.annotations.**
 -dontwarn com.google.common.hash.Hashing$Crc32cMethodHandles
+# Signature-polymorphic MethodHandle/VarHandle calls in newer Guava and Netty, which ProGuard cannot resolve
+-dontwarn com.google.common.hash.ChecksumHashFunction$ChecksumMethodHandles
+-dontwarn com.google.common.hash.LittleEndianByteArray$VarHandleLittleEndianBytes**
+-dontwarn com.google.common.util.concurrent.AbstractFutureState$VarHandleAtomicHelper
+-dontwarn io.netty.util.concurrent.ConcurrentSkipListIntObjMultimap
+# Flyway 13: lombok is compile-only, Jackson 3 is optional (config-file parsing, unused here)
+-dontwarn lombok.**
+-dontwarn tools.jackson.**
+# kotlin-reflect 2.4 compile-time-only marker annotations
+-dontwarn kotlin.reflect.jvm.internal.SuppressJdk6SignatureCheck
+-dontwarn kotlin.reflect.jvm.internal.impl.builtins.functions.AllowedToUsedOnlyInK1
 -dontwarn org.locationtech.jts.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.apache.lucene.**

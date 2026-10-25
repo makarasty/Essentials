@@ -1,4 +1,4 @@
-import com.github.jengelman.gradle.plugins.shadow.ShadowJavaPlugin.Companion.shadowJar
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
 plugins {
     alias(libs.plugins.kotlin)
@@ -6,6 +6,9 @@ plugins {
     alias(libs.plugins.shadowJar) apply false
     `maven-publish`
 }
+
+// Shadow 9 stable dropped the TaskContainer.shadowJar accessor that 9.0.0-beta12 shipped
+val TaskContainer.shadowJar: TaskProvider<ShadowJar> get() = named<ShadowJar>("shadowJar")
 
 subprojects {
     apply(plugin = "org.jetbrains.kotlin.jvm")
