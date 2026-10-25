@@ -314,25 +314,29 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
                 send("command.vote.canceled.leave")
                 this.cancel()
             } else {
+                // Once a tick: each check() asks every voter's eligibility (BlockIP's score included), and
+                // the PvP reminder used to ask it again for every team member.
+                val need = check()
+                val have = votes()
                 if (count % VoteTuning.REMINDER_INTERVAL_SECONDS == 0) {
                     if (isPvP) {
                         Groups.player.forEach {
                             if (it.team() == voteData.team) {
                                 val data = findPlayerData(it.uuid())
                                 if (data != null && voteData.targetUUID != data.uuid) {
-                                    data.send("command.vote.count", count.toString(), check() - votes())
+                                    data.send("command.vote.count", count.toString(), need - have)
                                 }
                             }
                         }
                     } else {
-                        send("command.vote.count", count.toString(), check() - votes())
+                        send("command.vote.count", count.toString(), need - have)
                         if (voteData.type == VoteType.Kick && Groups.player.find { a -> a.uuid() == voteData.targetUUID } == null) {
                             send("command.vote.kick.target.leave")
                         }
                     }
                 }
                 count--
-                if ((count == 0 && check() <= votes()) || check() <= votes() || isAdminVote) {
+                if (need <= have || isAdminVote) {
                     send("command.vote.success")
 
                     val onlinePlayers = players.joinToString(", ") { it.name }
