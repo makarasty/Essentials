@@ -744,7 +744,10 @@ class FeatureTest {
                             "the player had no row at all when the transfer fired"
                 )
                 assertEquals(99999, row.exp, "exp was not durable when the transfer fired")
-                assertEquals(88888, row.totalPlayed, "totalPlayed was not durable when the transfer fired")
+                // Trigger.kt's once-a-second timer bumps totalPlayed for every online player, so a tick
+                // between the assignment above and the save legitimately lands 88889 (seen on CI). An
+                // unsaved row would hold the old near-zero value, so the lower bound still proves durability.
+                assertTrue(row.totalPlayed >= 88888, "totalPlayed was not durable when the transfer fired: ${row.totalPlayed}")
                 assertEquals(77777, row.blockPlaceCount, "blockPlaceCount was not durable when the transfer fired")
                 assertFalse(
                     row.isConnected,
