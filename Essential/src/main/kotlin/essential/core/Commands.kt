@@ -77,7 +77,6 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.pow
-import kotlin.math.round
 import kotlin.random.Random
 import kotlin.reflect.full.declaredFunctions
 import kotlin.reflect.full.findAnnotation
@@ -1228,7 +1227,7 @@ class Commands {
     }
 
     @ClientCommand("maps", "[page]", "Show server map lists")
-    fun maps(playerData: PlayerData) {
+    fun maps(playerData: PlayerData, arg: Array<out String>) {
         val list = mapsById()
         val bundle = playerData.bundle
         val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
@@ -1243,7 +1242,7 @@ class Commands {
             }
 
             val options = arrayOf(
-                arrayOf("<-", bundle["command.maps.page", page, pages], "->"),
+                arrayOf("<-", bundle["command.maps.page", page + 1, pages + 1], "->"),
                 arrayOf(bundle["command.maps.close"])
             )
 
@@ -1251,7 +1250,7 @@ class Commands {
         }
 
         var mainMenu = 0
-        var page = 0
+        var page = ((arg.firstOrNull()?.toIntOrNull() ?: 1) - 1).coerceIn(0, pages)
         mainMenu = OwnedMenus.register(playerData) { p, select ->
             when (select) {
                 0 -> {
@@ -1271,7 +1270,7 @@ class Commands {
                 else -> {}
             }
         }
-        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
+        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
     }
 
     @ClientCommand("meme", "<type>", "Enjoy mindustry meme features!")
@@ -1501,7 +1500,7 @@ class Commands {
     }
 
     @ClientCommand("players", "[page]", "Show current players list")
-    fun players(playerData: PlayerData) {
+    fun players(playerData: PlayerData, arg: Array<out String>) {
         val bundle = playerData.bundle
         val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
         val buffer = Mathf.ceil(players.size.toFloat() / CommandsTuning.LIST_PAGE_SIZE)
@@ -1518,7 +1517,7 @@ class Commands {
             }
 
             val options = arrayOf(
-                arrayOf("<-", bundle["command.players.page", page, pages], "->"),
+                arrayOf("<-", bundle["command.players.page", page + 1, pages + 1], "->"),
                 arrayOf(bundle["command.players.close"])
             )
 
@@ -1526,7 +1525,7 @@ class Commands {
         }
 
         var mainMenu = 0
-        var page = 0
+        var page = ((arg.firstOrNull()?.toIntOrNull() ?: 1) - 1).coerceIn(0, pages)
         mainMenu = OwnedMenus.register(playerData) { p, select ->
             when (select) {
                 0 -> {
@@ -1546,7 +1545,7 @@ class Commands {
                 else -> {}
             }
         }
-        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[0].first, prebuilt[0].second)
+        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
     }
 
     @ClientCommand("ranking", "<time/exp/attack/place/break/pvp> [page]", "Show player ranking")
@@ -1619,7 +1618,8 @@ class Commands {
                         sortColumn,
                         PlayerTable.pvpLoseCount
                     ).where { PlayerTable.hideRanking eq false }
-                        .orderBy(sortColumn, SortOrder.DESC)
+                        // uuid breaks ties, or equal rows could swap between the LIMIT/OFFSET pages
+                        .orderBy(sortColumn to SortOrder.DESC, PlayerTable.uuid to SortOrder.ASC)
                         .limit(per)
                         .offset(page.toLong() * per)
                         .map {
@@ -2359,17 +2359,10 @@ class Commands {
                 """.trimIndent()
             )
 
-            fun winPercentage(team: Team): Double {
-                var player = arrayOf<Pair<Team, Double>>()
-                players.forEach {
-                    val rate = it.pvpWinCount.toDouble() / (it.pvpWinCount + it.pvpLoseCount).toDouble()
-                    player += Pair(it.player.team(), if (rate.isNaN()) 0.0 else rate)
-                }
-
-                val targetTeam = player.filter { it.first == team }
-                val rate = targetTeam.map { it.second }
-                return rate.average()
-            }
+            // The members' average win rate: how strong the team's players are, not the team's own record.
+            fun winPercentage(team: Team): Double = players.filter { it.player.team() == team }
+                .map { pvpWinRate(it.pvpWinCount.toInt(), it.pvpLoseCount.toInt()) }
+                .average().let { if (it.isNaN()) 0.0 else it }
 
             val teamRate = mutableMapOf<Team, Double>()
             var teams = arrayOf<Pair<Team, Int>>()
@@ -2380,7 +2373,7 @@ class Commands {
             }
 
             teamRate.forEach {
-                message.appendLine("${it.key.coloredName()} : ${round(it.value * 100).toInt()}%")
+                message.appendLine("${it.key.coloredName()} : ${it.value.toInt()}%")
             }
 
             playerData.sendDirect(message.toString().dropLast(1))

@@ -757,6 +757,12 @@ fun mergeTemporaryPlayerData(temporary: PlayerData, data: PlayerData) {
     data.totalPlayed += temporary.totalPlayed
     data.currentPlayTime += temporary.currentPlayTime
     data.attendanceDays += temporary.attendanceDays
+    data.waveClear += temporary.waveClear
+    data.attackClear += temporary.attackClear
+    fun sum(a: Short, b: Short) = (a + b).coerceIn(0, Short.MAX_VALUE.toInt()).toShort()
+    data.pvpWinCount = sum(data.pvpWinCount, temporary.pvpWinCount)
+    data.pvpLoseCount = sum(data.pvpLoseCount, temporary.pvpLoseCount)
+    data.pvpEliminatedCount = sum(data.pvpEliminatedCount, temporary.pvpEliminatedCount)
     data.chatMuted = data.chatMuted || temporary.chatMuted
     data.strictMode = data.strictMode || temporary.strictMode
     data.isBanned = data.isBanned || temporary.isBanned
@@ -934,6 +940,8 @@ fun gameOver(event: GameOverEvent) {
             earnEXP(event.winner, data.player, data, true)
         }
         for (data in offlinePlayers) {
+            // A leaver whose exit ended the match is still in players while this runs: paid above already.
+            if (players.any { it.uuid == data.uuid }) continue
             earnEXP(event.winner, data.player, data, false)
         }
         // An online player's exp mutation above rides along on whatever next persists that PlayerData -
@@ -1802,7 +1810,7 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
             } else {
                 0
             }
-        } else if (p.team() != Team.derelict) {
+        } else if (p.team() != Team.derelict && target.uuid !in pvpSpecters) { // recordPvpDefeat paid the defeat
             if (Vars.state.rules.attackMode) {
                 time - target.currentBuildDestroyedCount
             } else if (Vars.state.rules.pvp) {

@@ -154,4 +154,40 @@ class GameOverExpTest {
             offlinePlayers.removeIf { it.uuid == data.uuid }
         }
     }
+
+    /**
+     * A leaver whose exit ends the match (autoPause + manageTeams) is parked in offlinePlayers before
+     * GameOverEvent fires and is only dropped from players after it, so gameOver paid them twice. A
+     * player already paid their defeat by recordPvpDefeat was also paid the loser's share again.
+     */
+    @Test
+    fun matchExpIsPaidOncePerPlayer() {
+        val (player, data) = newPlayer()
+        val (_, specter) = newPlayer()
+        val previousPvp = Vars.state.rules.pvp
+        val previousMapStart = mapStartTime
+        try {
+            data.player.team(Team.sharded)
+            specter.player.team(Team.crux)
+            Vars.state.rules.pvp = true
+            mapStartTime = timeSource.markNow().minus(6.minutes)
+            offlinePlayers.add(data) // still in players, as during playerLeave's GameOverEvent
+            pvpSpecters.add(specter.uuid)
+            val exp = data.exp
+            val expected = ((data.currentPlayTime + ExpTuning.PVP_BONUS) * data.expMultiplier).toInt()
+            val specterExp = specter.exp
+
+            Events.fire(GameOverEvent(Team.sharded))
+
+            assertEquals(exp + expected, data.exp, "the winner's match EXP must be paid once")
+            assertEquals(specterExp, specter.exp, "recordPvpDefeat already paid this player's defeat")
+        } finally {
+            Vars.state.rules.pvp = previousPvp
+            mapStartTime = previousMapStart
+            offlinePlayers.removeIf { it.uuid == data.uuid }
+            pvpSpecters.remove(specter.uuid)
+            leavePlayer(player)
+            leavePlayer(specter.player)
+        }
+    }
 }
