@@ -255,6 +255,9 @@ internal object OwnedMenus {
     }
 }
 
+/** Share of decided games won, 0..100, rounded down so only an unbeaten record shows 100. */
+internal fun pvpWinRate(win: Int, lose: Int): Int = if (win + lose > 0) win * 100 / (win + lose) else 0
+
 class Commands {
     companion object {
         const val PLAYER_NOT_FOUND = "player.not.found"
@@ -715,11 +718,7 @@ class Commands {
             }
                 ${bundle["command.info.attackClear"]}: ${target.attackClear}
                 ${bundle["command.info.waveClear"]}: ${target.waveClear}
-                ${bundle["command.info.pvpWinRate"]}: [green]${target.pvpWinCount}[white]/[scarlet]${target.pvpLoseCount}[white]([sky]${
-                if (target.pvpWinCount + target.pvpLoseCount != 0) round(
-                    target.pvpWinCount.toDouble() / (target.pvpWinCount + target.pvpLoseCount) * 100
-                ) else 0
-            }%[white])
+                ${bundle["command.info.pvpWinRate"]}: [green]${target.pvpWinCount}[white]/[scarlet]${target.pvpLoseCount}[white] ([sky]${pvpWinRate(target.pvpWinCount.toInt(), target.pvpLoseCount.toInt())}%[white])
                 ${bundle["command.info.joinStacks"]}: ${target.attendanceDays}
                 ${bundle["command.info.discord"]}: ${if (target.discordID != null) bundle["command.info.discord.verified"] else bundle["command.info.discord.none"]}
                 """.trimIndent()
@@ -1611,15 +1610,14 @@ class Commands {
                     return@launch
                 }
 
-                data class Rank(val name: String, val uuid: String, val value: Int, val lose: Int, val eliminated: Int)
+                data class Rank(val name: String, val uuid: String, val value: Int, val lose: Int)
 
                 val rows = suspendTransaction {
                     PlayerTable.select(
                         PlayerTable.name,
                         PlayerTable.uuid,
                         sortColumn,
-                        PlayerTable.pvpLoseCount,
-                        PlayerTable.pvpEliminatedCount
+                        PlayerTable.pvpLoseCount
                     ).where { PlayerTable.hideRanking eq false }
                         .orderBy(sortColumn, SortOrder.DESC)
                         .limit(per)
@@ -1636,33 +1634,26 @@ class Commands {
                                     "break" -> it[PlayerTable.blockBreakCount]
                                     else -> it[PlayerTable.pvpWinCount].toInt()
                                 },
-                                it[PlayerTable.pvpLoseCount].toInt(),
-                                it[PlayerTable.pvpEliminatedCount].toInt()
+                                it[PlayerTable.pvpLoseCount].toInt()
                             )
                         }.toList()
                 }
 
+                // pvp: the header names the colours once, so a line is just the numbers
                 fun format(rank: Rank): String = when (kind) {
                     "time" -> timeFormat(rank.value.toLong())
                     "exp" -> "Lv.${Exp.calculateLevel(rank.value)} - ${rank.value}"
+                    "pvp" -> "[green]${rank.value}[white]/[scarlet]${rank.lose}[white] [sky]${pvpWinRate(rank.value, rank.lose)}%"
                     else -> rank.value.toString()
                 }
 
-                fun pvpLine(position: Int, rank: Rank): String {
-                    val rate = round((rank.value.toFloat() / (rank.lose.toFloat() + rank.eliminated.toFloat())) * 100)
-                    return "[white]$position[] ${rank.name}[white] [yellow]-[] [green]${rank.value}${bundle["command.ranking.pvp.win"]}[] / [scarlet]${rank.lose}${bundle["command.ranking.pvp.lose"]}[] ($rate%)"
-                }
+                fun line(position: Long, rank: Rank) = "[white]$position. ${rank.name}[white] [yellow]-[white] ${format(rank)}[white]"
 
                 val string = StringBuilder()
                 string.append(bundle[firstMessage, page + 1, pages] + "\n")
 
                 rows.forEachIndexed { index, rank ->
-                    val position = per * page + index
-                    if (kind == "pvp") {
-                        string.append(pvpLine(position, rank) + "\n")
-                    } else {
-                        string.append("[white]${position + 1}[] ${rank.name}[white] [yellow]-[] ${format(rank)}\n")
-                    }
+                    string.append(line(per.toLong() * page + index + 1, rank) + "\n")
                 }
 
                 if (!playerData.hideRanking) {
@@ -1694,14 +1685,10 @@ class Commands {
                         playerData.name,
                         playerData.uuid,
                         own,
-                        playerData.pvpLoseCount.toInt(),
-                        playerData.pvpEliminatedCount.toInt()
+                        playerData.pvpLoseCount.toInt()
                     )
                     string.append("[purple]=======================================[]\n")
-                    string.append(
-                        if (kind == "pvp") pvpLine((ahead + 1).toInt(), self)
-                        else "[white]${ahead + 1}[] ${self.name}[white] [yellow]-[] ${format(self)}"
-                    )
+                    string.append(line(ahead + 1, self))
                 }
 
                 Core.app.post {
