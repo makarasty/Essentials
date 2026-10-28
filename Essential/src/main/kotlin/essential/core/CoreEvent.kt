@@ -1492,10 +1492,10 @@ fun playerConnect(event: PlayerConnect) {
 @Event
 fun buildingBulletDestroy(event: BuildingBulletDestroyEvent) {
     if (Vars.state.rules.pvp && event.build.block is CoreBlock && event.build.closestCore() == null) {
+        // Only the player whose unit fired the killing shot; a turret's shot or friendly fire credits nobody.
+        val shooter = (event.bullet.owner as? Unit)?.player?.let { findPlayerData(it.uuid()) }
+        if (shooter != null && event.bullet.team != event.build.team) shooter.pvpEliminatedCount++
         for (data in players) {
-            if (data.player.team() == event.bullet.team) {
-                data.pvpEliminatedCount++
-            }
             data.send("event.bullet.kill", event.bullet.team.coloredName(), event.build.team.coloredName())
         }
         if (conf.feature.pvp.manageTeams && Vars.netServer.isWaitingForPlayers) {
@@ -1858,7 +1858,11 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
 }
 
 private fun addLog(log: TileLog) {
-    if (!conf.command.rollback.enabled) return
+    if (!conf.command.rollback.enabled) {
+        // Without this, place-break-place on one tile earned place/break counts forever.
+        WorldHistoryBuffer.rememberBlock(log.x, log.y, log.tile)
+        return
+    }
     WorldHistoryBuffer.enqueue(
         time = log.time,
         player = log.player,

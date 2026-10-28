@@ -168,7 +168,8 @@ class PvpTeamManagementTest {
 
     @Test
     fun coreDestructionRecordsStatisticsWithoutEndingExternalMatch() {
-        val (_, data) = newPlayer()
+        val (shooter, data) = newPlayer()
+        val (_, teammate) = newPlayer()
         val originalTeams = Groups.player.toList().associateWith { it.team() }
         val gameOver = Vars.state.gameOver
         var gameOverEvents = 0
@@ -181,14 +182,16 @@ class PvpTeamManagementTest {
                 block = Blocks.coreShard
                 team = Team.crux
             }
-            val bullet = Bullet.create().apply { team = Team.sharded }
+            val bullet = Bullet.create().apply { team = Team.sharded; owner = shooter.unit() }
             val eliminated = data.pvpEliminatedCount
+            val teammateEliminated = teammate.pvpEliminatedCount
             Events.on(GameOverEvent::class.java, listener)
 
             buildingBulletDestroy(BuildingBulletDestroyEvent(build, bullet))
 
             assertEquals(0, gameOverEvents)
             assertEquals(eliminated + 1, data.pvpEliminatedCount.toInt())
+            assertEquals(teammateEliminated, teammate.pvpEliminatedCount, "only the shooter destroyed the core")
         } finally {
             Events.remove(GameOverEvent::class.java, listener)
             Vars.state.gameOver = gameOver

@@ -24,6 +24,42 @@ class BlockExperienceTest {
         verifyDeconstruction(infiniteResources = true)
     }
 
+    /** With rollback off nothing remembered the tile's last block, so rebuilding it paid every time. */
+    @Test
+    fun rebuildingTheSameBlockIsCreditedOnceWithRollbackOff() {
+        loadGame(true)
+        val (player, data) = newPlayer()
+        val unit = UnitTypes.nova.spawn(player.team(), player.x, player.y).also {
+            it.controller(player)
+            player.unit(it)
+        }
+        val tile = Vars.world.tile(12, 12)
+        val previousConf = Main.conf
+        val originalInfiniteResources = Vars.state.rules.infiniteResources
+        val originalBlock = tile.block()
+        val originalTeam = tile.team()
+        try {
+            Main.conf = Main.conf.copy(
+                command = Main.conf.command.copy(rollback = Main.conf.command.rollback.copy(enabled = false))
+            )
+            Vars.state.rules.infiniteResources = false
+            tile.setBlock(Blocks.air)
+            val placed = data.blockPlaceCount
+            repeat(3) {
+                ConstructBlock.constructFinish(tile, Blocks.duo, unit, 0, player.team(), null)
+                Build.beginBreak(unit, player.team(), tile.x.toInt(), tile.y.toInt())
+                ConstructBlock.deconstructFinish(tile, Blocks.duo, unit)
+            }
+            assertEquals(placed + 1, data.blockPlaceCount, "only the first build of the same block counts")
+        } finally {
+            Main.conf = previousConf
+            Vars.state.rules.infiniteResources = originalInfiniteResources
+            tile.setBlock(originalBlock, originalTeam, 0)
+            leavePlayer(player)
+            unit.remove()
+        }
+    }
+
     private fun verifyDeconstruction(infiniteResources: Boolean) {
         loadGame(true)
         val (player, data) = newPlayer()

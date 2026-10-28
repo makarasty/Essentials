@@ -80,6 +80,14 @@ object WorldHistoryBuffer {
         return lastBlockCache[packed]
     }
 
+    /**
+     * Records what was last built or broken on a tile without writing history. blockBuildEnd reads it to
+     * refuse place/break credit for rebuilding the same block, and needs that with rollback off too.
+     */
+    fun rememberBlock(x: Short, y: Short, tile: String) {
+        lastBlockCache[(x.toInt() shl 16) or (y.toInt() and 0xFFFF)] = tile
+    }
+
     fun start(scope: CoroutineScope) {
         if (flushJob != null && !flushJob!!.isCancelled) return
         stopped.set(false)
@@ -106,8 +114,7 @@ object WorldHistoryBuffer {
         uuid: String? = null,
     ) {
         if (stopped.get()) return
-        val packed = (x.toInt() shl 16) or (y.toInt() and 0xFFFF)
-        lastBlockCache[packed] = tile
+        rememberBlock(x, y, tile)
         offerNewest(
             PendingInsert(
                 time = time,
