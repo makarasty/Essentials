@@ -1,7 +1,10 @@
+import PluginTest.Companion.changeMap
 import PluginTest.Companion.clientCommand
 import PluginTest.Companion.createPlayer
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.menuListenerCount
+import PluginTest.Companion.menuRegisteredBy
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.observeMessages
 import PluginTest.Companion.player
@@ -437,7 +440,8 @@ class FeatureTest {
      * WorldReloader, whose begin() clears Groups.player via Logic.reset() and whose end() re-teams the
      * saved players but never calls player.add() again. So every player of every earlier test in this
      * class stays in `players`, invisible to Groups.player, and is counted by both the averages and the
-     * guard.
+     * guard. (The harness's `changeMap` now re-adds them to Groups.player, but they are still in
+     * `players`, so the reasoning below stands.)
      *
      * Measured on a green run at 30772163, immediately after this test's own /changemap: `players=7
      * groups=0`, and by the time the test predicted anything the four teams it believes are 2/2/2/2 were
@@ -457,7 +461,7 @@ class FeatureTest {
         // Enable autoTeam in config
         Main.conf = Main.conf.copy(feature = Main.conf.feature.copy(pvp = Main.conf.feature.pvp.copy(autoTeam = true)))
 
-        clientCommand.handleMessage("/changemap Glacier pvp", player)
+        changeMap("Glacier pvp")
         assertTrue(awaitCondition(7000L, 100L) { Vars.state.rules.pvp })
 
         // Scenario: 4 teams (A, B, C, D) with 2 players each
@@ -609,7 +613,7 @@ class FeatureTest {
 
         Main.conf = Main.conf.copy(feature = Main.conf.feature.copy(pvp = Main.conf.feature.pvp.copy(autoTeam = true, spector = true)))
 
-        clientCommand.handleMessage("/changemap Glacier pvp", player)
+        changeMap("Glacier pvp")
         assertTrue(awaitCondition(7000L, 100L) { Vars.state.rules.pvp })
 
         val testTeams = listOf(Team.sharded, Team.crux)
@@ -1084,14 +1088,13 @@ class FeatureTest {
             p.first.remove()
             Groups.player.update()
 
-            val menusBefore = Menus.registerMenu { _, _ -> }
+            val menusBefore = menuListenerCount()
             gameOver(GameOverEvent(Team.crux))
             awaitPumped(5000L) { false }
-            val menusAfter = Menus.registerMenu { _, _ -> }
 
             assertEquals(
-                1,
-                menusAfter - menusBefore,
+                menusBefore,
+                menuListenerCount(),
                 "No rating menu should be built for a player who already left."
             )
         } finally {
@@ -1428,8 +1431,7 @@ class FeatureTest {
             owner.second.status["hub_ip"] = "127.0.0.1"
             owner.second.status["hub_port"] = "6567"
 
-            tap(TapEvent(owner.first, tile))
-            val zoneMenu = Menus.registerMenu { _, _ -> } - 1
+            val zoneMenu = menuRegisteredBy("the hub zone tap") { tap(TapEvent(owner.first, tile)) }
 
             Menus.menuChoose(intruder.first, zoneMenu, 0)
             assertEquals(
@@ -1476,24 +1478,28 @@ class FeatureTest {
             Vars.state.rules.infiniteResources = true
             mapStartTime = timeSource.markNow() - 10.minutes
 
-            // Exactly one menu must be built, so the last registered id is unambiguously the owner's.
+            // Only the owner is shown the rating flow, so the menus below are unambiguously the owner's.
             players.forEach { if (it.uuid != ownerUuid) mapRatings[it.uuid] = true }
             mapRatings.remove(ownerUuid)
 
-            gameOver(GameOverEvent(Team.crux))
-            awaitPumped(5000L) { false }
-            val difficultyMenu = Menus.registerMenu { _, _ -> } - 1
+            // Both menus are registered once, behind a lazy, by the first flow that reaches them; this
+            // is that flow today. If something earlier ever does, menuRegisteredBy fails by name here.
+            val difficultyMenu = menuRegisteredBy("game over") {
+                gameOver(GameOverEvent(Team.crux))
+                awaitPumped(5000L) { false }
+            }
 
-            val menusBefore = Menus.registerMenu { _, _ -> }
+            val menusBefore = menuListenerCount()
             Menus.menuChoose(intruder.first, difficultyMenu, 0)
             assertEquals(
-                1,
-                Menus.registerMenu { _, _ -> } - menusBefore,
+                menusBefore,
+                menuListenerCount(),
                 "Answering another player's difficulty menu must not open a rating menu"
             )
 
-            Menus.menuChoose(owner.first, difficultyMenu, 0)
-            val ratingMenu = Menus.registerMenu { _, _ -> } - 1
+            val ratingMenu = menuRegisteredBy("the owner's difficulty answer") {
+                Menus.menuChoose(owner.first, difficultyMenu, 0)
+            }
 
             Menus.menuChoose(intruder.first, ratingMenu, 4)
             assertFalse(
@@ -1641,7 +1647,7 @@ class FeatureTest {
     fun pvpDefeatCountAndInfoTest() {
         setPermission("owner", true)
 
-        clientCommand.handleMessage("/changemap Glacier pvp", player)
+        changeMap("Glacier pvp")
         assertTrue(awaitCondition(7000L, 100L) { Vars.state.rules.pvp })
 
         val testTeams = listOf(Team.sharded, Team.crux)

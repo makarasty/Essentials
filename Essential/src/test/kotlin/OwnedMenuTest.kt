@@ -1,6 +1,8 @@
 import PluginTest.Companion.clientCommand
 import PluginTest.Companion.leavePlayer
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.menuListenerCount
+import PluginTest.Companion.ownedMenuOpenedBy
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import arc.struct.Seq
@@ -37,36 +39,6 @@ import kotlin.test.assertTrue
 class OwnedMenuTest {
     companion object {
         private var done = false
-
-        private fun menuListenerCount(): Int {
-            val field = Menus::class.java.getDeclaredField("menuListeners")
-            field.isAccessible = true
-            return (field.get(null) as Seq<*>).size
-        }
-
-        /**
-         * The id the block opened its owned menu under.
-         *
-         * The other menu tests take this from the growth of `Menus.menuListeners`, which can no
-         * longer answer it: a slot the pool recycles registers nothing with the engine at all, so
-         * the list does not move. `OwnedMenus.allocationCount` counts the same event one level up -
-         * a menu handed to a player - and the "exactly one" is kept, for the same reason it was
-         * written: if a second owned menu is opened in the window, "the id this block took" is
-         * ambiguous and a click on the wrong one reaches a different listener silently, because
-         * `menuChoose` only range-checks.
-         */
-        private fun ownedMenuOpenedBy(what: String, block: () -> Unit): Int {
-            val before = OwnedMenus.allocationCount
-            block()
-            // Counted on allocations, not on the id list: a block that allocated the same slot twice
-            // - which happens whenever a menu is answered inside the block, freeing its slot for the
-            // next one - yields one id for two menus, and the gate would pass on the wrong one.
-            assertEquals(
-                1, (OwnedMenus.allocationCount - before).toInt(),
-                "$what should have opened exactly one owned menu, otherwise this test proves nothing"
-            )
-            return OwnedMenus.idsAllocatedAfter(before).last()
-        }
     }
 
     @BeforeTest

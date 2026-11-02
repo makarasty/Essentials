@@ -1,5 +1,6 @@
 import PluginTest.Companion.clientCommand
 import PluginTest.Companion.loadGame
+import PluginTest.Companion.ownedMenuOpenedBy
 import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import essential.core.OwnedMenus
@@ -22,32 +23,6 @@ import kotlin.test.assertTrue
 class InfoMenuTest {
     companion object {
         private var done = false
-
-        /**
-         * The id the block opened its owned menu under.
-         *
-         * This used to count `Menus.menuListeners`, taking the first index the block registered and
-         * requiring the count to have moved by exactly one. That question can no longer be asked of
-         * the engine's list: `OwnedMenus` registers each slot's listener once and hands the id out
-         * again when nothing can still answer on it, so a menu opened on a recycled slot does not
-         * move that list at all. `OwnedMenus.allocationCount` counts the same event one level up - a
-         * menu handed to a player - and the claim is unchanged, including the "exactly one": if a
-         * second owned menu is opened in the window, "the id this block took" is ambiguous, and a
-         * click on the wrong one reaches a different listener silently because `menuChoose` only
-         * range-checks the id. Two is still a named failure, not something addressed by accident.
-         */
-        private fun menuOpenedBy(what: String, block: () -> Unit): Int {
-            val before = OwnedMenus.allocationCount
-            block()
-            // Counted on allocations, not on the id list: a block that allocated the same slot twice
-            // - which happens whenever a menu is answered inside the block, freeing its slot for the
-            // next one - yields one id for two menus, and the gate would pass on the wrong one.
-            assertEquals(
-                1, (OwnedMenus.allocationCount - before).toInt(),
-                "$what should have opened exactly one owned menu, otherwise this test proves nothing"
-            )
-            return OwnedMenus.idsAllocatedAfter(before).last()
-        }
     }
 
     @BeforeTest
@@ -69,11 +44,11 @@ class InfoMenuTest {
      * A uuid matches exactly and cannot be ambiguous. `/info <name>` is ClientCommandTest's.
      */
     private fun openInfo(admin: Player, target: Player): Int =
-        menuOpenedBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
+        ownedMenuOpenedBy("/info") { clientCommand.handleMessage("/info ${target.uuid()}", admin) }
 
     /** Clicking an option that opens the next menu; returns that menu's own id. */
     private fun choose(player: Player, menu: Int, option: Int, what: String = "option $option"): Int =
-        menuOpenedBy(what) { Menus.menuChoose(player, menu, option) }
+        ownedMenuOpenedBy(what) { Menus.menuChoose(player, menu, option) }
 
     @Test
     fun infoMenu_strangerCannotOpenTheBanMenu() {

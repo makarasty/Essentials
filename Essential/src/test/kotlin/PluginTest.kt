@@ -38,6 +38,7 @@ import essential.common.voterCooldown
 import essential.core.Commands
 import essential.core.CoreConfig
 import essential.core.Main
+import essential.core.OwnedMenus
 import essential.core.dpsBlocks
 import essential.core.dpsTile
 import essential.core.isGlobalMute
@@ -63,6 +64,7 @@ import mindustry.game.Team
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.Playerc
+import mindustry.ui.Menus
 import mindustry.maps.Map
 import mindustry.mod.Mod
 import mindustry.net.Net
@@ -785,6 +787,79 @@ class PluginTest {
             }
 
             sleep(500)
+        }
+
+        /**
+         * Runs `/changemap [args]` as [by] and puts back into `Groups.player` the players the engine
+         * dropped on the way.
+         *
+         * `loadMapNow` goes through `WorldReloader`: `begin()` saves the players in `Groups.player` and
+         * runs `Logic.reset()`, which is `Groups.clear()`; `end()` re-teams the saved players and sends
+         * them the world, but never calls `player.add()` - on a live server `NetServer.connectConfirm`
+         * does that when the client answers, and there is no client under test. Without this every
+         * player of the calling test is still in the plugin's `players` and invisible to the engine.
+         *
+         * Only the players that were in `Groups.player` before the call are re-added, which is the set
+         * `begin()` saves. Not every row of `players`: by then it holds the ghosts of earlier tests,
+         * and re-adding them would make a half leak a whole one.
+         */
+        fun changeMap(args: String, by: Playerc = player) {
+            val saved = Groups.player.toList()
+            clientCommand.handleMessage("/changemap $args", by)
+            saved.filter { !it.isAdded }.forEach { it.add() }
+            Groups.player.update()
+            assertTrue(
+                saved.all { s -> Groups.player.find { it === s } != null },
+                "changeMap must leave every player the engine saved back in Groups.player"
+            )
+        }
+
+        /** The engine's menu registry size. A menu id is its listener's index in that list. */
+        fun menuListenerCount(): Int {
+            val field = Menus::class.java.getDeclaredField("menuListeners")
+            field.isAccessible = true
+            return (field.get(null) as Seq<*>).size
+        }
+
+        /**
+         * The first engine menu id [block] registered, from a snapshot of the registry taken before it.
+         *
+         * Replaces `Menus.registerMenu { _, _ -> } - 1`, which named whatever the JVM registered last
+         * (and leaked a listener per read): sound only while nothing else registers a menu in the
+         * window. Fails rather than guessing when [block] registered nothing.
+         *
+         * For menus registered straight with `Menus.registerMenu`. An `OwnedMenus` slot is recycled
+         * without registering anything, so use [ownedMenuOpenedBy] for those. A menu registered once
+         * behind a `lazy` shows up only in the block that first touches it.
+         */
+        fun menuRegisteredBy(what: String, block: () -> Unit): Int {
+            val before = menuListenerCount()
+            block()
+            if (menuListenerCount() == before) fail("$what registered no new menu, otherwise this test proves nothing")
+            return before
+        }
+
+        /**
+         * The id the block opened its owned menu under.
+         *
+         * `Menus.menuListeners` cannot answer this: `OwnedMenus` registers each slot's listener once
+         * and hands the id out again when nothing can still answer on it, so a menu opened on a
+         * recycled slot does not move that list at all. `OwnedMenus.allocationCount` counts the same
+         * event one level up - a menu handed to a player. "Exactly one", because if a second owned
+         * menu is opened in the window "the id this block took" is ambiguous, and a click on the wrong
+         * one reaches a different listener silently: `menuChoose` only range-checks the id.
+         */
+        fun ownedMenuOpenedBy(what: String, block: () -> Unit): Int {
+            val before = OwnedMenus.allocationCount
+            block()
+            // Counted on allocations, not on the id list: a block that allocated the same slot twice
+            // - which happens whenever a menu is answered inside the block, freeing its slot for the
+            // next one - yields one id for two menus, and the gate would pass on the wrong one.
+            assertEquals(
+                1, (OwnedMenus.allocationCount - before).toInt(),
+                "$what should have opened exactly one owned menu, otherwise this test proves nothing"
+            )
+            return OwnedMenus.idsAllocatedAfter(before).last()
         }
 
         /**
