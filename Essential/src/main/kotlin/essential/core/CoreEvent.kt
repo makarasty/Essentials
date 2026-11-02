@@ -462,7 +462,7 @@ fun tap(event: TapEvent) {
             val options = arrayOf(arrayOf(bundle["command.hub.zone.yes"], bundle["command.hub.zone.no"]))
             // This registers one listener per warp zone created and the engine never prunes
             // menuListeners, so it leaks the same way registerOwnedMenu used to. OwnedMenus would
-            // close it, but FeatureTest.kt:1451 addresses this menu as `Menus.registerMenu {} - 1`
+            // close it, but FeatureTest addresses this menu by the engine registry's growth (menuRegisteredBy)
             // and a pooled id does not always move that list. Left alone deliberately.
             val menu = Menus.registerMenu { player, option ->
                 // menuChoose is client-callable with any id, and menu ids are process-wide, so without
