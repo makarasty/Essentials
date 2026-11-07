@@ -12,6 +12,8 @@ import essential.common.event.CustomEvents.PlayerReported
 import essential.common.log.LogType
 import essential.common.log.writeLog
 import essential.common.util.PlayerLookup
+import essential.core.ui.askTextFor
+import essential.core.ui.pickPlayerFor
 import essential.common.util.currentTime
 import essential.common.util.passesCooldown
 import essential.core.Main.Companion.scope
@@ -164,8 +166,22 @@ class Commands {
         }
     }
 
-    @ClientCommand(name = "report", parameter = "<player> <reason...>", description = "Report a player")
+    @ClientCommand(name = "report", parameter = "[player] [reason...]", description = "Report a player")
     fun report(playerData: PlayerData, arg: Array<out String>) {
+        // Before the cooldown: the command runs again for the pick and takes it then.
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "report") { askTextFor(playerData, "report", "#${it.entityId}", "command.menu.report.reason") }
+            return
+        }
+        if (arg.size == 1) {
+            // Re-run with the resolved session id: a name that leaves before the text is sent must not match someone else.
+            // An offline name stays as typed: /report reports offline players too.
+            val found = PlayerLookup.findOnline(arg[0])
+            if (PlayerLookup.ambiguous(found, arg[0], playerData)) return
+            val who = (found as? PlayerLookup.Result.Found)?.value?.let { p -> PlayerLookup.sessionId(p.uuid())?.let { "#$it" } } ?: arg[0]
+            askTextFor(playerData, "report", who, "command.menu.report.reason")
+            return
+        }
         if (!playerData.passesCooldown("report")) return
         val online = PlayerLookup.findOnline(arg[0])
         if (online is PlayerLookup.Result.Found) {

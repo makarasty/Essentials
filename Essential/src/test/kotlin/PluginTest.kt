@@ -805,7 +805,7 @@ class PluginTest {
          */
         fun changeMap(args: String, by: Playerc = player) {
             val saved = Groups.player.toList()
-            clientCommand.handleMessage("/changemap $args", by)
+            essential.core.answerYes(by, "/changemap") { clientCommand.handleMessage("/changemap $args", by) }
             saved.filter { !it.isAdded }.forEach { it.add() }
             Groups.player.update()
             assertTrue(

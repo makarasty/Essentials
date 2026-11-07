@@ -5,6 +5,7 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import essential.common.database.WorldHistoryBuffer
+import essential.core.answerYes
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.game.Team
@@ -72,7 +73,7 @@ class RollbackPlayerMatchTest {
         try {
             setPermission(admin.first, "owner", true)
 
-            clientCommand.handleMessage("/rollback $bobName", admin.first)
+            answerYes(admin.first, "/rollback") { clientCommand.handleMessage("/rollback $bobName", admin.first) }
 
             assertEquals(
                 true,
@@ -116,7 +117,7 @@ class RollbackPlayerMatchTest {
         try {
             setPermission(admin.first, "owner", true)
 
-            clientCommand.handleMessage("/rollback $plainName", admin.first)
+            answerYes(admin.first, "/rollback") { clientCommand.handleMessage("/rollback $plainName", admin.first) }
 
             assertEquals(
                 true,
@@ -170,7 +171,7 @@ class RollbackPlayerMatchTest {
                 value = null, uuid = theirs.first.uuid()
             )
 
-            clientCommand.handleMessage("/rollback ${mine.first.uuid()}", admin.first)
+            answerYes(admin.first, "/rollback") { clientCommand.handleMessage("/rollback ${mine.first.uuid()}", admin.first) }
 
             assertEquals(
                 true,

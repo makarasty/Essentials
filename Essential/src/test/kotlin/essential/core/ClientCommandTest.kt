@@ -104,12 +104,12 @@ class ClientCommandTest {
         assertEquals(err("command.changeMap.map.not.found", "nothing"), playerData.lastReceivedMessage)
 
         // Number method
-        clientCommand.handleMessage("/changemap 0 survival", player)
+        answerYes(player, "/changemap 0 survival") { clientCommand.handleMessage("/changemap 0 survival", player) }
         assertEquals("Ancient Caldera", Vars.state.map.name())
         reload()
 
         // Name method
-        clientCommand.handleMessage("/changemap fork survival", player)
+        answerYes(player, "/changemap fork survival") { clientCommand.handleMessage("/changemap fork survival", player) }
         assertEquals("Fork", Vars.state.map.name())
         reload()
 
@@ -118,7 +118,7 @@ class ClientCommandTest {
         assertEquals(err("command.changeMap.mode.not.found", "creative"), playerData.lastReceivedMessage)
 
         // If player enter only map name
-        clientCommand.handleMessage("/changemap glacier", player)
+        answerYes(player, "/changemap glacier") { clientCommand.handleMessage("/changemap glacier", player) }
         assertEquals("Glacier", Vars.state.map.name())
         assertEquals(Gamemode.survival, Vars.state.rules.mode())
         reload()
@@ -444,28 +444,28 @@ class ClientCommandTest {
         }
 
         // No args
-        clientCommand.handleMessage("/gg", player)
+        answerYes(player, "/gg") { clientCommand.handleMessage("/gg", player) }
         while (Vars.state.gameOver) {
             sleep(16)
         }
         assertEquals(Vars.state.rules.waveTeam, winner)
 
         // Select win team
-        clientCommand.handleMessage("/gg green", player)
+        answerYes(player, "/gg green") { clientCommand.handleMessage("/gg green", player) }
         while (Vars.state.gameOver) {
             sleep(16)
         }
         assertEquals(Team.green, winner)
 
         // If only the first letter of the team name is entered
-        clientCommand.handleMessage("/gg b", player)
+        answerYes(player, "/gg b") { clientCommand.handleMessage("/gg b", player) }
         while (Vars.state.gameOver) {
             sleep(16)
         }
         assertEquals(Team.blue, winner)
 
         // If player select wrong team
-        clientCommand.handleMessage("/gg ah!", player)
+        answerYes(player, "/gg ah!") { clientCommand.handleMessage("/gg ah!", player) }
         while (Vars.state.gameOver) {
             sleep(16)
         }
@@ -484,37 +484,16 @@ class ClientCommandTest {
 
     @Test
     fun client_help() {
-        // Test permission
+        // The menu itself is covered by HelpMenuTest; here /help only has to run at every permission level.
         setPermission("visitor", true)
-
         clientCommand.handleMessage("/help", player)
-        assertContains(playerData.lastReceivedMessage, "help")
         clientCommand.handleMessage("/help 1", player)
-        assertContains(playerData.lastReceivedMessage, "help")
         clientCommand.handleMessage("/help 3", player)
-        assertFalse(playerData.lastReceivedMessage.contains("help"))
-
-        setPermission("user", true)
-        clientCommand.handleMessage("/help", player)
-        val pageCount = Regex("""\[gray]/\[lightgray](\d+)\[orange]""")
-            .find(playerData.lastReceivedMessage)?.groupValues?.get(1)?.toInt()
-        assertNotNull(pageCount, "the help header should carry a page count")
-        // /help paginates Vars.netServer.clientCommands in registration order, and which page a
-        // command lands on is an artefact of that order rather than of the permission being
-        // checked here: re-applying the command set (a /reload, or a config.yaml edit picked up by
-        // the watcher) re-registers every plugin command, and CommandHandler.register appends,
-        // so they all move. Assert that a user's help lists /vote, not which page it prints on.
-        val listed = (1..pageCount).joinToString("\n") { page ->
-            clientCommand.handleMessage("/help $page", player)
-            playerData.lastReceivedMessage
-        }
-        assertContains(listed, "/vote ")
-        clientCommand.handleMessage("/help 3", player)
-        clientCommand.handleMessage("/help 5", player)
+        clientCommand.handleMessage("/help motd", player)
+        assertContains(playerData.lastReceivedMessage, "motd")
 
         setPermission("owner", true)
         clientCommand.handleMessage("/help", player)
-        clientCommand.handleMessage("/help 2", player)
         clientCommand.handleMessage("/help 7", player)
     }
 
@@ -652,13 +631,13 @@ class ClientCommandTest {
     fun client_js() {
         // Test js command work
         setPermission("owner", true)
-        clientCommand.handleMessage("/js Vars.state.rules.infiniteResources = true", player)
+        answerYes(player, "/js Vars.state.rules.infiniteResources = true") { clientCommand.handleMessage("/js Vars.state.rules.infiniteResources = true", player) }
         assertTrue(Vars.state.rules.infiniteResources)
 
-        clientCommand.handleMessage("/js Vars.state.rules.infiniteResources = false", player)
+        answerYes(player, "/js Vars.state.rules.infiniteResources = false") { clientCommand.handleMessage("/js Vars.state.rules.infiniteResources = false", player) }
         assertFalse(Vars.state.rules.infiniteResources)
 
-        clientCommand.handleMessage("/js badCommand", player)
+        answerYes(player, "/js badCommand") { clientCommand.handleMessage("/js badCommand", player) }
         assertContains(playerData.lastReceivedMessage, ">")
 
         // Test js command works only owner
@@ -768,7 +747,7 @@ class ClientCommandTest {
         val dummy2 = newPlayer()
 
         // Execute kickall command
-        clientCommand.handleMessage("/kickall", player)
+        answerYes(player, "/kickall") { clientCommand.handleMessage("/kickall", player) }
 
         // Verify that all non-admin players were kicked
         assertTrue(dummy1.first.con().kicked)
@@ -800,12 +779,12 @@ class ClientCommandTest {
 
         // Test killall command without team parameter
         val totalBefore = Groups.unit.size()
-        clientCommand.handleMessage("/killall", player)
+        answerYes(player, "/killall") { clientCommand.handleMessage("/killall", player) }
         assertTrue(playerData.lastReceivedMessage.contains(Bundle()["command.killall.count", totalBefore]))
 
         // Test killall command with team parameter
         val teamCountBefore = Groups.unit.filter { u -> u.team() == Team.sharded }.size
-        clientCommand.handleMessage("/killall sharded", player)
+        answerYes(player, "/killall sharded") { clientCommand.handleMessage("/killall sharded", player) }
         assertTrue(playerData.lastReceivedMessage.contains(Bundle()["command.killall.count", teamCountBefore]))
     }
 
@@ -816,13 +795,13 @@ class ClientCommandTest {
         setPermission("owner", true)
 
         // Test killunit command with valid unit name
-        clientCommand.handleMessage("/killunit dagger", player)
+        answerYes(player, "/killunit dagger") { clientCommand.handleMessage("/killunit dagger", player) }
 
         // Test killunit command with valid unit name and amount
-        clientCommand.handleMessage("/killunit dagger 5", player)
+        answerYes(player, "/killunit dagger 5") { clientCommand.handleMessage("/killunit dagger 5", player) }
 
         // Test killunit command with valid unit name, amount, and team
-        clientCommand.handleMessage("/killunit dagger 5 sharded", player)
+        answerYes(player, "/killunit dagger 5 sharded") { clientCommand.handleMessage("/killunit dagger 5 sharded", player) }
 
         // Test killunit command with invalid unit name
         clientCommand.handleMessage("/killunit invalidunit", player)
@@ -1090,7 +1069,7 @@ class ClientCommandTest {
 
         unit.plans.clear()
         // Test rollback command with valid player
-        clientCommand.handleMessage("/rollback ${dummy.first.name}", player)
+        answerYes(player, "/rollback ${dummy.first.name}") { clientCommand.handleMessage("/rollback ${dummy.first.name}", player) }
         val rollbackDone = Bundle()["command.rollback.success", dummy.first.name, 1]
         val rollbackSeen = observeMessages(playerData, 10000) { it == rollbackDone }
         assertTrue(
@@ -1134,7 +1113,7 @@ class ClientCommandTest {
     fun client_setperm() {
         setPermission("owner", true)
         val dummy = newPlayer()
-        clientCommand.handleMessage("/setperm ${dummy.first.name} admin", player)
+        answerYes(player, "/setperm ${dummy.first.name} admin") { clientCommand.handleMessage("/setperm ${dummy.first.name} admin", player) }
         assertEquals("admin", findPlayerData(dummy.first.uuid())?.permission)
         assertTrue(dummy.first.admin())
         assertTrue(
@@ -1142,7 +1121,7 @@ class ClientCommandTest {
             "the group change should reach the database"
         )
 
-        clientCommand.handleMessage("/setperm ${dummy.first.uuid()} user", player)
+        answerYes(player, "/setperm ${dummy.first.uuid()} user") { clientCommand.handleMessage("/setperm ${dummy.first.uuid()} user", player) }
         assertEquals("user", findPlayerData(dummy.first.uuid())?.permission)
         assertFalse(dummy.first.admin())
 
@@ -1656,7 +1635,7 @@ class ClientCommandTest {
             assertEquals("owner", findPlayerData(dummy.uuid())?.permission, "an owner must not move another owner")
 
             setPermission(dummy, "admin", false)
-            clientCommand.handleMessage("/setperm ${dummy.uuid()} user", player)
+            answerYes(player, "/setperm") { clientCommand.handleMessage("/setperm ${dummy.uuid()} user", player) }
             assertEquals("user", findPlayerData(dummy.uuid())?.permission, "an owner still moves an admin")
         } finally {
             leavePlayer(dummy)
@@ -1719,8 +1698,11 @@ class ClientCommandTest {
         val name = target.second.name
         leavePlayer(target.first)
 
-        clientCommand.handleMessage("/setperm $uuid admin", player)
-        assertEquals(log("command.setPerm.queued", PlayerLookup.shortName(uuid)), playerData.lastReceivedMessage)
+        // The lookup is a database round-trip; the question comes after it.
+        answerYes(player, "/setperm") {
+            clientCommand.handleMessage("/setperm $uuid admin", player)
+            assertEquals(log("command.setPerm.queued", PlayerLookup.shortName(uuid)), playerData.lastReceivedMessage)
+        }
 
         val setPermDone = log("command.setPerm.success", name, "admin")
         val setPermSeen = observeMessages(playerData, 10000) { it == setPermDone }

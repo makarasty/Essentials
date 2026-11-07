@@ -4,7 +4,6 @@ import arc.Core
 import arc.Events
 import arc.graphics.Color
 import arc.graphics.Colors
-import arc.math.Mathf
 import arc.util.*
 import arc.util.Timer
 import com.github.lalyos.jfiglet.FigletFont
@@ -28,6 +27,16 @@ import essential.common.util.findPlayerData
 import essential.common.util.passesCooldown
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
+import essential.core.ui.ChoicePicker
+import essential.core.ui.Confirm
+import essential.core.ui.PICKER_PAGE_SIZE
+import essential.core.ui.HelpMenu
+import essential.core.ui.PagedMenu
+import essential.core.ui.TextInput
+import essential.core.ui.copy
+import essential.core.ui.pageArg
+import essential.core.ui.pickPlayerFor
+import essential.core.ui.runAsPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
@@ -74,7 +83,6 @@ import org.mindrot.jbcrypt.BCrypt
 import java.util.Locale
 import java.util.MissingResourceException
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.random.Random
@@ -271,12 +279,29 @@ class Commands {
          */
         private var nextMapAdminOverride: Map? = null
 
+        /** Least time between two /ranking button presses of one menu; a var so tests can lower it. */
+        internal var rankingPressGapMs = 1000L
+
+        /** One /ranking throttle per player, shared by all their open ranking menus; cleared on leave. */
+        internal class RankingGate {
+            @Volatile var last = System.nanoTime() - rankingPressGapMs * 1_000_000L
+            val busy = java.util.concurrent.atomic.AtomicBoolean(false)
+        }
+
+        internal val rankingGates = ConcurrentHashMap<String, RankingGate>()
+
         /**
          * `/info` on yourself has no actions on it, so its listener is a no-op and one id serves
          * every player forever. Registering a fresh one per call only grew `Menus.menuListeners`,
          * which the engine never prunes.
          */
         private val selfInfoMenu: Int by lazy { Menus.registerMenu { _, _ -> } }
+
+        private const val JS_CONFIRM_MAX = 1000
+
+        private val RANKING_KINDS = listOf("time", "exp", "attack", "place", "break", "pvp")
+        private val VOTE_TYPES = listOf("kick", "map", "gg", "skip", "back", "random", "draw")
+        private const val RANKING_PAGE_SIZE = 8
 
         /**
          * Calculate the Levenshtein distance between two strings
@@ -318,8 +343,14 @@ class Commands {
                 } else {
                     Vars.state.rules.mode()
                 }
-                loadMapNow(map, mode)
-                playerData.send("command.changeMap.done", map.plainName())
+                confirmed(playerData, "changemap", "command.menu.confirm.changemap", map.plainName(), mode) {
+                    if (Vars.maps.all().contains(map)) {
+                        loadMapNow(map, mode)
+                        playerData.send("command.changeMap.done", map.plainName())
+                    } else {
+                        playerData.err("command.changeMap.map.not.found", arg[0])
+                    }
+                }
             } catch (_: IllegalArgumentException) {
                 playerData.err("command.changeMap.mode.not.found", arg[1])
             }
@@ -460,10 +491,20 @@ class Commands {
 
     @ClientCommand(
         "effect",
-        "<on/off/level> [color]",
+        "[on/off/level] [color]",
         "Turn other players' effects on or off, or set effects and colors for each level."
     )
     fun effect(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            val bundle = playerData.bundle
+            // on, off, then every level up to the player's own; levels run past a screenful, so it pages.
+            PagedMenu(
+                playerData, bundle["command.menu.effect.title"], listOf("on", "off") + (0..playerData.level).map { it.toString() },
+                PICKER_PAGE_SIZE, closeLabel = bundle["command.menu.close"], fullNav = true,
+                label = { if (it == "on" || it == "off") bundle["command.menu.effect.$it"] else bundle["command.menu.effect.level", it] }
+            ) { p, choice -> runAsPlayer(p, "${CommandRegistry.registered("effect")} $choice") }
+            return
+        }
         scope.launch {
             when {
                 arg[0].toUShortOrNull() != null -> {
@@ -619,11 +660,8 @@ class Commands {
 
     @ClientCommand("gg", "[team]", "Make game over immediately.")
     fun gg(playerData: PlayerData, arg: Array<out String>) {
-        if (arg.isEmpty()) {
-            Events.fire(GameOverEvent(Vars.state.rules.waveTeam))
-        } else {
-            Events.fire(GameOverEvent(selectTeam(arg[0])))
-        }
+        val team = if (arg.isEmpty()) Vars.state.rules.waveTeam else selectTeam(arg[0])
+        confirmed(playerData, "gg", "command.menu.confirm.gg", team.coloredName()) { Events.fire(GameOverEvent(team)) }
     }
 
     @ClientCommand("god", "[player]", "Set max player health")
@@ -644,38 +682,7 @@ class Commands {
             return
         }
 
-        val temp = ArrayList<String>()
-        for (a in 0 until Vars.netServer.clientCommands.commandList.size) {
-            val command = Vars.netServer.clientCommands.commandList[a]
-            val name = CommandRegistry.canonical(command.text)
-            if (Permission.check(playerData, name)) {
-                val key = "command.description." + name.lowercase()
-                val description = if (playerData.bundle.resource.containsKey(key)) {
-                    playerData.bundle[key]
-                } else {
-                    command.description
-                }
-                temp.add("[orange] /${command.text} [white]${command.paramText} [lightgray]- $description\n")
-            }
-        }
-        val result = StringBuilder()
-        val per = 8
-        var page = if (arg.isNotEmpty()) abs(Strings.parseInt(arg[0])) else 1
-        val pages = Mathf.ceil(temp.size.toFloat() / per)
-        page--
-
-        if (page !in 0..<pages) {
-            playerData.err("command.page.range", pages)
-            return
-        }
-
-        result.append("[orange]-- ${playerData.bundle["command.page"]}[lightgray] ${page + 1}[gray]/[lightgray]${pages}[orange] --\n")
-        for (a in per * page until (per * (page + 1)).coerceAtMost(temp.size)) {
-            result.append(temp[a])
-        }
-
-        val msg = result.toString().substring(0, result.length - 1)
-        playerData.sendDirect(msg)
+        HelpMenu.open(playerData)
     }
 
     @OptIn(ExperimentalTime::class)
@@ -729,7 +736,15 @@ class Commands {
         val cancel = "info.button.cancel"
 
         if (arg.isEmpty()) {
-            Call.menu(playerData.player.con(), selfInfoMenu, bundle["info.title"], show(playerData), arrayOf(arrayOf(bundle[close])))
+            if (Permission.check(playerData, "info.other")) {
+                val menu = OwnedMenus.register(playerData) { _, select -> if (select == 1) pickPlayerFor(playerData, "info") }
+                OwnedMenus.show(
+                    playerData.player.con(), menu, bundle["info.title"], show(playerData),
+                    arrayOf(arrayOf(bundle[close]), arrayOf(bundle["command.menu.other.player"]))
+                )
+            } else {
+                Call.menu(playerData.player.con(), selfInfoMenu, bundle["info.title"], show(playerData), arrayOf(arrayOf(bundle[close])))
+            }
         } else if (Permission.check(playerData, "info.other")) {
             var targetData: PlayerData? = null
             var isBanned = false
@@ -839,77 +854,61 @@ class Commands {
                                     }"]
 
                                     if (s <= 5) {
-                                        val tempBanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
-                                            if (i == 0) {
-                                                require(targetData != null) {
-                                                    "DB error?"
+                                        Confirm.ask(
+                                            playerData, bundle["info.tempBan.title"], bundle["info.tempBan.confirm", timeText] + lineBreak
+                                        ) { _ ->
+                                            require(targetData != null) {
+                                                "DB error?"
+                                            }
+                                            targetData!!.banExpireDate =
+                                                Clock.System.now().plus(time.minutes).toLocalDateTime(systemTimezone)
+                                            // The ban itself is applied below regardless (banPlayerID does
+                                            // not depend on this row), so a failed write here is a durability
+                                            // problem, not a "nothing happened" one - the admin is told rather
+                                            // than the confirm silently going through. Captured now: targetData
+                                            // is a mutable var that a later /info call can repoint before this
+                                            // coroutine's Core.app.post runs.
+                                            val bannedTarget = targetData!!
+                                            scope.launch {
+                                                if (!bannedTarget.update()) {
+                                                    Core.app.post { playerData.err("command.tempBan.db.failed", bannedTarget.name) }
                                                 }
-                                                targetData!!.banExpireDate =
-                                                    Clock.System.now().plus(time.minutes).toLocalDateTime(systemTimezone)
-                                                // The ban itself is applied below regardless (banPlayerID does
-                                                // not depend on this row), so a failed write here is a durability
-                                                // problem, not a "nothing happened" one - the admin is told rather
-                                                // than the confirm silently going through. Captured now: targetData
-                                                // is a mutable var that a later /info call can repoint before this
-                                                // coroutine's Core.app.post runs.
-                                                val bannedTarget = targetData!!
-                                                scope.launch {
-                                                    if (!bannedTarget.update()) {
-                                                        Core.app.post { playerData.err("command.tempBan.db.failed", bannedTarget.name) }
-                                                    }
-                                                }
-                                                Events.fire(
-                                                    CustomEvents.PlayerTempBanned(
-                                                        targetData!!.name,
-                                                        p.plainName(),
-                                                        Clock.System.now().plus(time.minutes).toString()
-                                                    )
+                                            }
+                                            Events.fire(
+                                                CustomEvents.PlayerTempBanned(
+                                                    targetData!!.name,
+                                                    p.plainName(),
+                                                    Clock.System.now().plus(time.minutes).toString()
                                                 )
-                                                val uuid = targetData!!.uuid
-                                                val label = Undo.label(uuid)
-                                                // As in the server /tempban path: banPlayerID returns false when the
-                                                // target was already banned and did nothing, so an undo entry that
-                                                // reverts via Undo.unban must not be recorded here — it would fully
-                                                // lift a ban that predates this menu action.
-                                                val freshBan = Vars.netServer.admins.banPlayerID(uuid)
-                                                if (targetData!!.player.con() != null) {
-                                                    targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
-                                                }
-                                                if (freshBan) {
-                                                    Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
-                                                } else {
-                                                    playerData.send(
-                                                        "command.tempBan.already.banned",
-                                                        targetData!!.name,
-                                                        targetData!!.banExpireDate.toString()
-                                                    )
-                                                }
+                                            )
+                                            val uuid = targetData!!.uuid
+                                            val label = Undo.label(uuid)
+                                            // As in the server /tempban path: banPlayerID returns false when the
+                                            // target was already banned and did nothing, so an undo entry that
+                                            // reverts via Undo.unban must not be recorded here — it would fully
+                                            // lift a ban that predates this menu action.
+                                            val freshBan = Vars.netServer.admins.banPlayerID(uuid)
+                                            if (targetData!!.player.con() != null) {
+                                                targetData!!.player.kick(bundle["command.tempBan.banned", targetData!!.name, p.plainName(), targetData!!.banExpireDate.toString()])
+                                            }
+                                            if (freshBan) {
+                                                Undo.record(playerData, "tempban", uuid, label) { Undo.unban(it, false) }
+                                            } else {
+                                                playerData.send(
+                                                    "command.tempBan.already.banned",
+                                                    targetData!!.name,
+                                                    targetData!!.banExpireDate.toString()
+                                                )
                                             }
                                         }
-                                        OwnedMenus.show(
-                                            p.con(),
-                                            tempBanConfirmMenu,
-                                            bundle["info.tempBan.title"],
-                                            bundle["info.tempBan.confirm", timeText] + lineBreak,
-                                            arrayOf(arrayOf(bundle[ban], bundle[cancel]))
-                                        )
                                     } else if (s == 6) {
-                                        val banConfirmMenu = OwnedMenus.register(playerData) { _, i ->
-                                            if (i == 0) {
-                                                val uuid = targetData!!.uuid
-                                                val label = Undo.label(uuid)
-                                                val ipBanned = Undo.ban(uuid)
-                                                Undo.record(playerData, "ban", uuid, label) { Undo.unban(it, ipBanned) }
-                                            }
-                                        }
                                         // 영구 차단
-                                        OwnedMenus.show(
-                                            p.con(),
-                                            banConfirmMenu,
-                                            bundle["info.ban.title"],
-                                            bundle["info.ban.confirm"] + lineBreak,
-                                            arrayOf(arrayOf(bundle[ban], bundle[cancel]))
-                                        )
+                                        Confirm.ask(playerData, bundle["info.ban.title"], bundle["info.ban.confirm"] + lineBreak) { _ ->
+                                            val uuid = targetData!!.uuid
+                                            val label = Undo.label(uuid)
+                                            val ipBanned = Undo.ban(uuid)
+                                            Undo.record(playerData, "ban", uuid, label) { Undo.unban(it, ipBanned) }
+                                        }
                                     }
                                 } catch (_: MissingResourceException) {
                                     // Dead: Bundle.get returns the key when the bundle does not
@@ -928,34 +927,27 @@ class Commands {
                         }
 
                         1 -> {
-                            val unbanConfirmMenu = OwnedMenus.register(playerData) { _, i ->
-                                if (i == 0) {
-                                    targetData!!.banExpireDate = null
-                                    // Captured now: targetData is a mutable var a later /info call can repoint
-                                    // before this coroutine's Core.app.post runs. The unban itself (below) does
-                                    // not depend on this write succeeding; only its durability does.
-                                    val unbannedTarget = targetData!!
-                                    scope.launch {
-                                        if (!unbannedTarget.update()) {
-                                            Core.app.post { playerData.err("command.unban.db.failed", unbannedTarget.name) }
-                                        }
+                            Confirm.ask(
+                                playerData, bundle["info.unban.title"], bundle["info.unban.confirm", targetData!!.name] + lineBreak
+                            ) { _ ->
+                                targetData!!.banExpireDate = null
+                                // Captured now: targetData is a mutable var a later /info call can repoint
+                                // before this coroutine's Core.app.post runs. The unban itself (below) does
+                                // not depend on this write succeeding; only its durability does.
+                                val unbannedTarget = targetData!!
+                                scope.launch {
+                                    if (!unbannedTarget.update()) {
+                                        Core.app.post { playerData.err("command.unban.db.failed", unbannedTarget.name) }
                                     }
-                                    unbanPlayer(targetData)
-                                    Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
-                                    playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
-                                    val uuid = targetData!!.uuid
-                                    Undo.record(
-                                        playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
-                                    ) { Undo.ban(it) }
                                 }
+                                unbanPlayer(targetData)
+                                Events.fire(CustomEvents.PlayerUnbanned(targetData!!.name, currentTime()))
+                                playerData.send("log.player.unbanned", targetData!!.name, targetData!!.uuid)
+                                val uuid = targetData!!.uuid
+                                Undo.record(
+                                    playerData, "unban", uuid, Undo.label(uuid), "command.undo.button.banAgain"
+                                ) { Undo.ban(it) }
                             }
-                            OwnedMenus.show(
-                                p.con(),
-                                unbanConfirmMenu,
-                                bundle["info.unban.title"],
-                                bundle["info.unban.confirm", targetData!!.name] + lineBreak,
-                                arrayOf(arrayOf(bundle["info.button.unban"], bundle[cancel]))
-                            )
                         }
 
                         2 -> {
@@ -1004,14 +996,20 @@ class Commands {
     fun js(playerData: PlayerData, arg: Array<out String>) {
         if (arg.isEmpty()) {
             playerData.err("command.js.invalid")
+        } else if (arg[0].length > JS_CONFIRM_MAX) {
+            // The confirm must show everything Yes will run, so code too long to show is not asked about.
+            playerData.err("command.js.tooLong", JS_CONFIRM_MAX.toString())
         } else {
-            Vars.mods.scripts.runConsole(arg[0]).also { result ->
-                try {
-                    val errorName: String = result.take(result.indexOf(' ') - 1)
-                    Class.forName("org.mozilla.javascript.$errorName")
-                    playerData.sendDirect("[scarlet]> $result")
-                } catch (_: Throwable) {
-                    playerData.sendDirect("> $result")
+            // "[[" is the engine's literal "[": the shown copy cannot hide code behind color tags; the run below stays arg[0].
+            confirmed(playerData, "js", "command.menu.confirm.js", arg[0].replace("[", "[[")) {
+                Vars.mods.scripts.runConsole(arg[0]).also { result ->
+                    try {
+                        val errorName: String = result.take(result.indexOf(' ') - 1)
+                        Class.forName("org.mozilla.javascript.$errorName")
+                        playerData.sendDirect("[scarlet]> $result")
+                    } catch (_: Throwable) {
+                        playerData.sendDirect("> $result")
+                    }
                 }
             }
         }
@@ -1019,15 +1017,17 @@ class Commands {
 
     @ClientCommand("kickall", description = "Kick all players without admins.")
     fun kickAll(playerData: PlayerData, arg: Array<out String>) {
-        Groups.player.toList().forEach { player ->
-            if (player.uuid() == playerData.uuid) return@forEach
-            val target = findPlayerData(player.uuid())
-            if (target == null || !Permission.check(target, "kick.admin")) {
-                player.kick(Packets.KickReason.kick)
-                player.remove()
+        confirmed(playerData, "kickall", "command.menu.confirm.kickall") {
+            Groups.player.toList().forEach { player ->
+                if (player.uuid() == playerData.uuid) return@forEach
+                val target = findPlayerData(player.uuid())
+                if (target == null || !Permission.check(target, "kick.admin")) {
+                    player.kick(Packets.KickReason.kick)
+                    player.remove()
+                }
             }
+            playerData.send("command.kickAll.done")
         }
-        playerData.send("command.kickAll.done")
     }
 
     @ServerCommand("kickall", description = "Kick all players.")
@@ -1047,12 +1047,24 @@ class Commands {
             if (Permission.check(playerData, "kill.other")) {
                 val other = PlayerLookup.online(arg[0], playerData)
                 if (other != null && (other.uuid() == playerData.uuid || outranks(playerData, other))) {
-                    val unit = other.unit()
-                    if (unit != null) {
-                        unit.kill()
-                        playerData.send("command.kill.done", other.plainName())
+                    fun killIt() {
+                        val unit = other.unit()
+                        if (unit != null) {
+                            unit.kill()
+                            playerData.send("command.kill.done", other.plainName())
+                        } else {
+                            playerData.err("command.kill.no.unit", other.plainName())
+                        }
+                    }
+                    if (other.uuid() == playerData.uuid) {
+                        killIt()
                     } else {
-                        playerData.err("command.kill.no.unit", other.plainName())
+                        val uuid = other.uuid()
+                        confirmed(playerData, "kill.other", "command.menu.confirm.kill", other.plainName()) {
+                            // They may have left while the menu was open.
+                            if (Groups.player.contains { it.uuid() == uuid } && outranks(playerData, other)) killIt()
+                            else playerData.err(PLAYER_NOT_FOUND)
+                        }
                     }
                 }
             } else {
@@ -1077,19 +1089,21 @@ class Commands {
 
     @ClientCommand("killall", "[team]", "Kill all enemy units")
     fun killAll(playerData: PlayerData, arg: Array<out String>) {
-        val count: Int
-        if (arg.isEmpty()) {
-            count = Groups.unit.size()
-            repeat(Team.all.count()) {
-                Groups.unit.each { u: Unit -> u.kill() }
+        val team = arg.firstOrNull()?.let { selectTeam(it) }
+        val message = if (team == null) "command.menu.confirm.killall" else "command.menu.confirm.killall.team"
+        confirmed(playerData, "killall", message, team?.coloredName() ?: "") {
+            val count: Int
+            if (team == null) {
+                count = Groups.unit.size()
+                repeat(Team.all.count()) {
+                    Groups.unit.each { u: Unit -> u.kill() }
+                }
+            } else {
+                count = Groups.unit.filter { u -> u.team == team }.size
+                Groups.unit.each { u -> if (u.team == team) u.kill() }
             }
-
-        } else {
-            val team = selectTeam(arg[0])
-            count = Groups.unit.filter { u -> u.team == team }.size
-            Groups.unit.each { u -> if (u.team == team) u.kill() }
+            playerData.send("command.killall.count", count)
         }
-        playerData.send("command.killall.count", count)
     }
 
     @ServerCommand("killall", "[team]", "Kill all units")
@@ -1126,20 +1140,31 @@ class Commands {
             }
         }
 
+        fun ask(team: Team, effect: () -> kotlin.Unit) {
+            val amount = arg.getOrNull(1)?.toIntOrNull() ?: 0
+            if (amount > 0) {
+                confirmed(playerData, "killunit", "command.menu.confirm.killunit.amount", amount, arg[0], team.coloredName(), onYes = effect)
+            } else {
+                confirmed(playerData, "killunit", "command.menu.confirm.killunit", arg[0], team.coloredName(), onYes = effect)
+            }
+        }
+
         if (unit != null) {
             if (arg.size > 1) {
                 if (arg[1].toIntOrNull() != null) {
                     if (arg.size == 3) {
                         val team = selectTeam(arg[2])
-                        destroy(team)
+                        ask(team) { destroy(team) }
                     } else {
-                        destroy(playerData.player.team())
+                        val team = playerData.player.team()
+                        ask(team) { destroy(team) }
                     }
                 } else {
                     playerData.err("command.killUnit.invalid.number")
                 }
             } else {
-                Groups.unit.each { if (it.type() == unit && it.team == playerData.player.team()) it.kill() }
+                val team = playerData.player.team()
+                ask(team) { Groups.unit.each { if (it.type() == unit && it.team == team) it.kill() } }
             }
         } else {
             playerData.err("command.killUnit.not.found")
@@ -1190,7 +1215,11 @@ class Commands {
     fun lang(playerData: PlayerData, arg: Array<out String>) {
         val available = Bundle.translations.joinToString(", ")
         if (arg.isEmpty()) {
-            playerData.send("command.lang.current", playerData.localeTag(), available)
+            val bundle = playerData.bundle
+            ChoicePicker.open(
+                playerData, bundle["command.menu.lang.title"], bundle["command.lang.current", playerData.localeTag(), available],
+                Bundle.translations.map { it to it } + (bundle["command.menu.lang.auto"] to "auto")
+            ) { p, choice -> runAsPlayer(p, "${CommandRegistry.registered("lang")} $choice") }
             return
         }
 
@@ -1230,47 +1259,17 @@ class Commands {
     fun maps(playerData: PlayerData, arg: Array<out String>) {
         val list = mapsById()
         val bundle = playerData.bundle
-        val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
-        val buffer = Mathf.ceil(list.size.toFloat() / CommandsTuning.LIST_PAGE_SIZE)
-        val pages = if (buffer > 1.0) buffer - 1 else 0
-        val title = bundle["command.page.server"]
-
-        for (page in 0..pages) {
-            val build = StringBuilder()
-            for (a in CommandsTuning.LIST_PAGE_SIZE * page until (CommandsTuning.LIST_PAGE_SIZE * (page + 1)).coerceAtMost(list.size)) {
-                build.append("${list[a].name()}\n[orange]${bundle["command.maps.author"]} ${list[a].author()}[white]\n[gray]ID: $a[green]   ${list[a].width}x${list[a].height}[white]\n\n")
+        PagedMenu(
+            playerData, bundle["command.page.server"], list, CommandsTuning.LIST_PAGE_SIZE,
+            startPage = (arg.firstOrNull()?.toIntOrNull() ?: 1) - 1,
+            closeLabel = bundle["command.maps.close"],
+            pageLabel = { page, pages -> bundle["command.maps.page", page, pages] },
+            header = { shown, offset ->
+                shown.withIndex().joinToString("") { (i, map) ->
+                    "${map.name()}\n[orange]${bundle["command.maps.author"]} ${map.author()}[white]\n[gray]ID: ${offset + i}[green]   ${map.width}x${map.height}[white]\n\n"
+                }
             }
-
-            val options = arrayOf(
-                arrayOf("<-", bundle["command.maps.page", page + 1, pages + 1], "->"),
-                arrayOf(bundle["command.maps.close"])
-            )
-
-            prebuilt.add(Pair(build.toString(), options))
-        }
-
-        var mainMenu = 0
-        var page = ((arg.firstOrNull()?.toIntOrNull() ?: 1) - 1).coerceIn(0, pages)
-        mainMenu = OwnedMenus.register(playerData) { p, select ->
-            when (select) {
-                0 -> {
-                    if (page != 0) page--
-                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
-                }
-
-                1 -> {
-                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
-                }
-
-                2 -> {
-                    if (page != pages) page++
-                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
-                }
-
-                else -> {}
-            }
-        }
-        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+        )
     }
 
     @ClientCommand("meme", "<type>", "Enjoy mindustry meme features!")
@@ -1463,8 +1462,12 @@ class Commands {
         }
     }
 
-    @ClientCommand("mute", "<player>", "Mute player")
+    @ClientCommand("mute", "[player]", "Mute player")
     fun mute(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "mute")
+            return
+        }
         val senderRank = rankOf(playerData)
         scope.launch {
             val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
@@ -1502,203 +1505,205 @@ class Commands {
     @ClientCommand("players", "[page]", "Show current players list")
     fun players(playerData: PlayerData, arg: Array<out String>) {
         val bundle = playerData.bundle
-        val prebuilt = ArrayList<Pair<String, Array<Array<String>>>>()
-        val buffer = Mathf.ceil(players.size.toFloat() / CommandsTuning.LIST_PAGE_SIZE)
-        val pages = if (buffer > 1.0) buffer - 1 else 0
-        val title = bundle["command.page.server"]
         val showUuid = Permission.check(playerData, "info.other")
-
-        for (page in 0..pages) {
-            val build = StringBuilder()
-            for (a in CommandsTuning.LIST_PAGE_SIZE * page until (CommandsTuning.LIST_PAGE_SIZE * (page + 1)).coerceAtMost(players.size)) {
-                val data = players[a]
-                val uuid = if (showUuid) " [gray]${data.uuid.take(8)}[]" else ""
-                build.append("[gray]${data.entityId}[] ${PlayerLookup.shortName(data.player.plainName())}$uuid\n")
+        PagedMenu(
+            playerData, bundle["command.page.server"], players.toList(), CommandsTuning.LIST_PAGE_SIZE,
+            startPage = (arg.firstOrNull()?.toIntOrNull() ?: 1) - 1,
+            closeLabel = bundle["command.players.close"],
+            pageLabel = { page, pages -> bundle["command.players.page", page, pages] },
+            header = { shown, _ ->
+                shown.joinToString("") { data ->
+                    val uuid = if (showUuid) " [gray]${data.uuid.take(8)}[]" else ""
+                    "[gray]${data.entityId}[] ${PlayerLookup.shortName(data.player.plainName())}$uuid\n"
+                }
             }
-
-            val options = arrayOf(
-                arrayOf("<-", bundle["command.players.page", page + 1, pages + 1], "->"),
-                arrayOf(bundle["command.players.close"])
-            )
-
-            prebuilt.add(Pair(build.toString(), options))
-        }
-
-        var mainMenu = 0
-        var page = ((arg.firstOrNull()?.toIntOrNull() ?: 1) - 1).coerceIn(0, pages)
-        mainMenu = OwnedMenus.register(playerData) { p, select ->
-            when (select) {
-                0 -> {
-                    if (page != 0) page--
-                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
-                }
-
-                1 -> {
-                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
-                }
-
-                2 -> {
-                    if (page != pages) page++
-                    OwnedMenus.show(p.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
-                }
-
-                else -> {}
-            }
-        }
-        OwnedMenus.show(playerData.player.con(), mainMenu, title, prebuilt[page].first, prebuilt[page].second)
+        )
     }
 
-    @ClientCommand("ranking", "<time/exp/attack/place/break/pvp> [page]", "Show player ranking")
+    @ClientCommand("ranking", "[time/exp/attack/place/break/pvp] [page]", "Show player ranking")
     fun ranking(playerData: PlayerData, arg: Array<out String>) {
-        if (!playerData.passesCooldown("ranking")) return
         val bundle = playerData.bundle
-        val player = playerData.player
+        if (arg.isEmpty()) {
+            ChoicePicker.open(
+                playerData, bundle["command.ranking.title"], "",
+                RANKING_KINDS.map { bundle["command.ranking.kind.$it"] to it }
+            ) { p, kind -> runAsPlayer(p, "ranking $kind") }
+            return
+        }
+        if (!playerData.passesCooldown("ranking")) return
 
-        scope.launch {
-            try {
-                fun timeFormat(seconds: Long): String {
-                    val days = seconds / (24 * 60 * 60)
-                    val hours = (seconds % (24 * 60 * 60)) / (60 * 60)
-                    val minutes = ((seconds % (24 * 60 * 60)) % (60 * 60)) / 60
-                    val remainingSeconds = ((seconds % (24 * 60 * 60)) % (60 * 60)) % 60
+        val firstKind = arg[0].lowercase()
+        if (firstKind !in RANKING_KINDS) {
+            playerData.err("command.ranking.wrong")
+            return
+        }
+        playerData.send("command.ranking.wait")
 
-                    return bundle["command.info.time", days, hours, minutes, remainingSeconds]
-                }
+        fun timeFormat(seconds: Long): String {
+            val days = seconds / (24 * 60 * 60)
+            val hours = (seconds % (24 * 60 * 60)) / (60 * 60)
+            val minutes = ((seconds % (24 * 60 * 60)) % (60 * 60)) / 60
+            val remainingSeconds = ((seconds % (24 * 60 * 60)) % (60 * 60)) % 60
 
-                val firstMessage = when (arg[0].lowercase()) {
-                    "time" -> "command.ranking.time"
-                    "exp" -> "command.ranking.exp"
-                    "attack" -> "command.ranking.attack"
-                    "place" -> "command.ranking.place"
-                    "break" -> "command.ranking.break"
-                    "pvp" -> "command.ranking.pvp"
-                    else -> null
-                }
+            return bundle["command.info.time", days, hours, minutes, remainingSeconds]
+        }
 
-                if (firstMessage == null) {
-                    playerData.err("command.ranking.wrong")
-                    return@launch
-                }
+        data class Rank(val name: String, val uuid: String, val value: Int, val lose: Int)
 
-                Core.app.post { playerData.send("command.ranking.wait") }
+        // pvp: the header names the colours once, so a line is just the numbers
+        fun format(kind: String, rank: Rank): String = when (kind) {
+            "time" -> timeFormat(rank.value.toLong())
+            "exp" -> "Lv.${Exp.calculateLevel(rank.value)} - ${rank.value}"
+            "pvp" -> "[green]${rank.value}[white]/[scarlet]${rank.lose}[white] [sky]${pvpWinRate(rank.value, rank.lose)}%"
+            else -> rank.value.toString()
+        }
 
-                val kind = arg[0].lowercase()
-                // The ordering column. Every ranking is "highest first" on exactly one column, so the
-                // database can do the sorting and the paging: this used to pull every row of every
-                // account on the shared database into a map, sort it in Kotlin and keep eight.
-                val sortColumn: Column<*> = when (kind) {
-                    "time" -> PlayerTable.totalPlayed
-                    "exp" -> PlayerTable.exp
-                    "attack" -> PlayerTable.attackClear
-                    "place" -> PlayerTable.blockPlaceCount
-                    "break" -> PlayerTable.blockBreakCount
-                    else -> PlayerTable.pvpWinCount
-                }
+        fun line(kind: String, position: Long, rank: Rank) = "[white]$position. ${rank.name}[white] [yellow]-[white] ${format(kind, rank)}[white]"
 
-                val per = 8
-                var page = if (arg.size == 2) abs(Strings.parseInt(arg[1])) else 1
-                page--
+        // Every page and kind is its own database page (LIMIT/OFFSET), so every rank stays reachable;
+        // the menu is re-registered and re-shown once a page is read.
+        var shownKind = firstKind
+        var shownPage = 0
+        // One throttle and one query in flight per player, over all their ranking menus: opening /ranking
+        // again and again without answering cannot pile up sessions that each press in turn.
+        val gate = rankingGates.computeIfAbsent(playerData.uuid) { RankingGate() }
+        val busy = gate.busy
+        var shownMessage = ""
+        var shownOptions: Array<Array<String>> = emptyArray()
+        // present() and load() call each other, which local functions cannot do by name.
+        var loader: (String, Int) -> kotlin.Unit = { _, _ -> }
 
-                val total = suspendTransaction {
-                    PlayerTable.selectAll().where { PlayerTable.hideRanking eq false }.count()
-                }
-                val pages = Mathf.ceil(total.toFloat() / per)
-
-                if (page !in 0..<pages) {
-                    Core.app.post { playerData.err("command.page.range", pages) }
-                    return@launch
-                }
-
-                data class Rank(val name: String, val uuid: String, val value: Int, val lose: Int)
-
-                val rows = suspendTransaction {
-                    PlayerTable.select(
-                        PlayerTable.name,
-                        PlayerTable.uuid,
-                        sortColumn,
-                        PlayerTable.pvpLoseCount
-                    ).where { PlayerTable.hideRanking eq false }
-                        // uuid breaks ties, or equal rows could swap between the LIMIT/OFFSET pages
-                        .orderBy(sortColumn to SortOrder.DESC, PlayerTable.uuid to SortOrder.ASC)
-                        .limit(per)
-                        .offset(page.toLong() * per)
-                        .map {
-                            Rank(
-                                it[PlayerTable.name],
-                                it[PlayerTable.uuid],
-                                when (kind) {
-                                    "time" -> it[PlayerTable.totalPlayed]
-                                    "exp" -> it[PlayerTable.exp]
-                                    "attack" -> it[PlayerTable.attackClear]
-                                    "place" -> it[PlayerTable.blockPlaceCount]
-                                    "break" -> it[PlayerTable.blockBreakCount]
-                                    else -> it[PlayerTable.pvpWinCount].toInt()
-                                },
-                                it[PlayerTable.pvpLoseCount].toInt()
-                            )
-                        }.toList()
-                }
-
-                // pvp: the header names the colours once, so a line is just the numbers
-                fun format(rank: Rank): String = when (kind) {
-                    "time" -> timeFormat(rank.value.toLong())
-                    "exp" -> "Lv.${Exp.calculateLevel(rank.value)} - ${rank.value}"
-                    "pvp" -> "[green]${rank.value}[white]/[scarlet]${rank.lose}[white] [sky]${pvpWinRate(rank.value, rank.lose)}%"
-                    else -> rank.value.toString()
-                }
-
-                fun line(position: Long, rank: Rank) = "[white]$position. ${rank.name}[white] [yellow]-[white] ${format(rank)}[white]"
-
-                val string = StringBuilder()
-                string.append(bundle[firstMessage, page + 1, pages] + "\n")
-
-                rows.forEachIndexed { index, rank ->
-                    string.append(line(per.toLong() * page + index + 1, rank) + "\n")
-                }
-
-                if (!playerData.hideRanking) {
-                    // The caller's own position, counted in the database rather than by walking the
-                    // whole table: everyone ahead of them on this column, plus one.
-                    val own = when (kind) {
-                        "time" -> playerData.totalPlayed
-                        "exp" -> playerData.exp
-                        "attack" -> playerData.attackClear
-                        "place" -> playerData.blockPlaceCount
-                        "break" -> playerData.blockBreakCount
-                        else -> playerData.pvpWinCount.toInt()
+        // A fresh registration for every show, right beside it: dispatch frees this menu's slot when the
+        // press that opened it returns, so another player may hold it by now. Shown on the connection the
+        // player has now, not the one the query started on; nobody online, nothing registered.
+        fun present(message: String, options: Array<Array<String>>) {
+            val con = players.byUuid(playerData.uuid)?.player?.con() ?: return
+            shownMessage = message
+            shownOptions = options
+            val menuId = OwnedMenus.register(playerData) { _, select ->
+                // A modified client can press without end and each press is up to three queries. A press the
+                // gate refuses re-shows this page: the client already closed the dialog. Close starts no
+                // query, so it is never gated.
+                val switchTo = RANKING_KINDS.filter { it != shownKind }
+                if (select < switchTo.size + 3) {
+                    val now = System.nanoTime()
+                    if (busy.get() || now - gate.last < rankingPressGapMs * 1_000_000L) {
+                        present(shownMessage, shownOptions)
+                        return@register
                     }
-                    val ahead = suspendTransaction {
-                        PlayerTable.selectAll()
-                            .where {
-                                (PlayerTable.hideRanking eq false) and when (kind) {
-                                    "time" -> PlayerTable.totalPlayed greater own
-                                    "exp" -> PlayerTable.exp greater own
-                                    "attack" -> PlayerTable.attackClear greater own
-                                    "place" -> PlayerTable.blockPlaceCount greater own
-                                    "break" -> PlayerTable.blockBreakCount greater own
-                                    else -> PlayerTable.pvpWinCount greater own.toShort()
+                    gate.last = now
+                }
+                when {
+                    select < switchTo.size -> loader(switchTo[select], 0)
+                    // nav row: previous, refresh, next
+                    select < switchTo.size + 3 -> loader(shownKind, shownPage + (select - switchTo.size - 1))
+                }
+            }
+            OwnedMenus.show(con, menuId, bundle["command.ranking.title"], message, options)
+        }
+
+        // A button press holds the shared busy flag; the typed command (behind its own cooldown) never
+        // waits on it, so it is not dropped while a press query is in flight.
+        fun load(kind: String, wanted: Int, button: Boolean) {
+            if (button && !busy.compareAndSet(false, true)) return
+            scope.launch {
+                try {
+                    // The ordering column. Every ranking is "highest first" on exactly one column, so the
+                    // database can do the sorting and the paging: this used to pull every row of every
+                    // account on the shared database into a map, sort it in Kotlin and keep eight.
+                    val sortColumn: Column<*> = when (kind) {
+                        "time" -> PlayerTable.totalPlayed
+                        "exp" -> PlayerTable.exp
+                        "attack" -> PlayerTable.attackClear
+                        "place" -> PlayerTable.blockPlaceCount
+                        "break" -> PlayerTable.blockBreakCount
+                        else -> PlayerTable.pvpWinCount
+                    }
+
+                    val total = suspendTransaction {
+                        PlayerTable.selectAll().where { PlayerTable.hideRanking eq false }.count()
+                    }
+                    val pages = maxOf(1L, (total + RANKING_PAGE_SIZE - 1) / RANKING_PAGE_SIZE).toInt()
+                    val page = wanted.coerceIn(0, pages - 1)
+
+                    val rows = suspendTransaction {
+                        PlayerTable.select(
+                            PlayerTable.name,
+                            PlayerTable.uuid,
+                            sortColumn,
+                            PlayerTable.pvpLoseCount
+                        ).where { PlayerTable.hideRanking eq false }
+                            // uuid breaks ties, or equal rows could swap between the LIMIT/OFFSET pages
+                            .orderBy(sortColumn to SortOrder.DESC, PlayerTable.uuid to SortOrder.ASC)
+                            .limit(RANKING_PAGE_SIZE)
+                            .offset(page.toLong() * RANKING_PAGE_SIZE)
+                            .map {
+                                Rank(
+                                    it[PlayerTable.name],
+                                    it[PlayerTable.uuid],
+                                    when (kind) {
+                                        "time" -> it[PlayerTable.totalPlayed]
+                                        "exp" -> it[PlayerTable.exp]
+                                        "attack" -> it[PlayerTable.attackClear]
+                                        "place" -> it[PlayerTable.blockPlaceCount]
+                                        "break" -> it[PlayerTable.blockBreakCount]
+                                        else -> it[PlayerTable.pvpWinCount].toInt()
+                                    },
+                                    it[PlayerTable.pvpLoseCount].toInt()
+                                )
+                            }.toList()
+                    }
+
+                    var ownLine: String? = null
+                    if (!playerData.hideRanking) {
+                        // The caller's own position, counted in the database rather than by walking the
+                        // whole table: everyone ahead of them on this column, plus one.
+                        val own = when (kind) {
+                            "time" -> playerData.totalPlayed
+                            "exp" -> playerData.exp
+                            "attack" -> playerData.attackClear
+                            "place" -> playerData.blockPlaceCount
+                            "break" -> playerData.blockBreakCount
+                            else -> playerData.pvpWinCount.toInt()
+                        }
+                        val ahead = suspendTransaction {
+                            PlayerTable.selectAll()
+                                .where {
+                                    (PlayerTable.hideRanking eq false) and when (kind) {
+                                        "time" -> PlayerTable.totalPlayed greater own
+                                        "exp" -> PlayerTable.exp greater own
+                                        "attack" -> PlayerTable.attackClear greater own
+                                        "place" -> PlayerTable.blockPlaceCount greater own
+                                        "break" -> PlayerTable.blockBreakCount greater own
+                                        else -> PlayerTable.pvpWinCount greater own.toShort()
+                                    }
                                 }
-                            }
-                            .count()
+                                .count()
+                        }
+                        ownLine = line(kind, ahead + 1, Rank(playerData.name, playerData.uuid, own, playerData.pvpLoseCount.toInt()))
                     }
-                    val self = Rank(
-                        playerData.name,
-                        playerData.uuid,
-                        own,
-                        playerData.pvpLoseCount.toInt()
-                    )
-                    string.append("[purple]=======================================[]\n")
-                    string.append(line(ahead + 1, self))
-                }
 
-                Core.app.post {
-                    playerData.sendDirect(string.toString())
+                    Core.app.post {
+                        shownKind = kind
+                        shownPage = page
+                        val lines = rows.withIndex().joinToString("\n") { (i, rank) -> line(kind, page.toLong() * RANKING_PAGE_SIZE + i + 1, rank) }
+                        val own = ownLine?.let { "\n[purple]=======================================[]\n$it" } ?: ""
+                        val message = bundle["command.ranking.$kind", page + 1, pages] + "\n$lines$own"
+                        val options = RANKING_KINDS.filter { it != kind }.map { arrayOf(bundle["command.ranking.kind.$it"]) } +
+                            listOf(arrayOf("<-", "${page + 1}/$pages", "->"), arrayOf(bundle["command.menu.close"]))
+                        if (button) busy.set(false)
+                        present(message, options.toTypedArray())
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    if (button) busy.set(false)
+                    Core.app.post { playerData.err("command.ranking.wrong") }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                Core.app.post { playerData.err("command.ranking.wrong") }
             }
         }
+
+        loader = { kind, wanted -> load(kind, wanted, true) }
+        load(firstKind, if (arg.size == 2) pageArg(arg[1]) else 0, false)
     }
 
     /**
@@ -1757,13 +1762,34 @@ class Commands {
         if (targetUuid != null && e.uuid != null) e.uuid == targetUuid
         else Strings.stripColors(e.player).equals(name, ignoreCase = true)
 
-    @ClientCommand("rollback", "<player>", "Undo all actions taken by the player.")
+    @ClientCommand("rollback", "[player]", "Undo all actions taken by the player.")
     fun rollback(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "rollback", includeSelf = true)
+            return
+        }
         val senderRank = rankOf(playerData)
         scope.launch {
             try {
                 // Only a resolved account is ranked; a bare name match below is history, not a group.
                 val resolved = (PlayerLookup.findExact(arg[0]) as? PlayerLookup.Result.Found)?.value
+                if (resolved != null && resolved.uuid != playerData.uuid && !outranksStored(playerData, senderRank, resolved)) return@launch
+                Core.app.post {
+                    confirmed(playerData, "rollback", "command.menu.confirm.rollback", resolved?.name ?: arg[0]) {
+                        rollbackApply(playerData, arg[0], resolved, rankOf(playerData))
+                    }
+                }
+            } catch (e: Exception) {
+                Core.app.post { playerData.err("command.rollback.failed") }
+                Log.err("Failed to roll back the actions of ${arg[0]}", e)
+            }
+        }
+    }
+
+    /** The rollback itself, after the sender said Yes; the sender must still outrank the target. */
+    private fun rollbackApply(playerData: PlayerData, target: String, resolved: PlayerData?, senderRank: Int) {
+        scope.launch {
+            try {
                 if (resolved != null && resolved.uuid != playerData.uuid && !outranksStored(playerData, senderRank, resolved)) return@launch
                 WorldHistoryBuffer.flush()
                 val history = getAllWorldHistory()
@@ -1784,7 +1810,7 @@ class Commands {
                 // the game thread is only the world edit itself, still applied in one post, so no tick runs
                 // between the first restored tile and the last.
                 val touched = history.groupBy { Pair(it.x.toInt(), it.y.toInt()) }.mapNotNull { (pos, entries) ->
-                    if (entries.none { matchesRollbackTarget(it, targetUuid, arg[0]) }) null
+                    if (entries.none { matchesRollbackTarget(it, targetUuid, target) }) null
                     else pos to entries.sortedBy { it.time }
                 }
 
@@ -1794,7 +1820,7 @@ class Commands {
                         val unrestoredConfigs = mutableListOf<String>()
 
                         touched.forEach { (pos, entries) ->
-                            val firstIdx = entries.indexOfFirst { matchesRollbackTarget(it, targetUuid, arg[0]) }
+                            val firstIdx = entries.indexOfFirst { matchesRollbackTarget(it, targetUuid, target) }
                             if (firstIdx == -1) return@forEach
 
                             val targetTile = Vars.world.tile(pos.first, pos.second) ?: return@forEach
@@ -1896,7 +1922,7 @@ class Commands {
                             Vars.netServer.sendWorldData(p)
                         }
 
-                        playerData.send("command.rollback.success", arg[0], affectedCount)
+                        playerData.send("command.rollback.success", target, affectedCount)
                         if (unrestoredConfigs.isNotEmpty()) {
                             playerData.send(
                                 "command.rollback.config.unrestored",
@@ -1906,12 +1932,12 @@ class Commands {
                         }
                     } catch (e: Exception) {
                         playerData.err("command.rollback.failed")
-                        Log.err("Failed to roll back the actions of ${arg[0]}", e)
+                        Log.err("Failed to roll back the actions of ${target}", e)
                     }
                 }
             } catch (e: Exception) {
                 Core.app.post { playerData.err("command.rollback.failed") }
-                Log.err("Failed to roll back the actions of ${arg[0]}", e)
+                Log.err("Failed to roll back the actions of $target", e)
             }
         }
     }
@@ -2191,8 +2217,28 @@ class Commands {
         }
     }
 
-    @ClientCommand("setperm", "<player> <group>", "Set the player's permission group.")
+    @ClientCommand("setperm", "[player] [group]", "Set the player's permission group.")
     fun setPerm(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.size < 2) {
+            // Only groups below the caller's own: the check further down refuses the rest, so they would be dead buttons.
+            val groups = Permission.groups.filter { Permission.rank(it) < rankOf(playerData) }
+            if (groups.isEmpty()) return playerData.err("command.permission.false")
+            val bundle = playerData.bundle
+            val command = CommandRegistry.registered("setperm")
+            fun pickGroup(who: String) = ChoicePicker.open(
+                playerData, bundle["command.menu.setperm.title"], "/$command", groups.map { it to it }
+            ) { p, group -> runAsPlayer(p, "$command $who $group") }
+            if (arg.isEmpty()) {
+                pickPlayerFor(playerData, "setperm", filter = { Permission.outranks(playerData, it) }) { pickGroup("#${it.entityId}") }
+            } else {
+                // Pinned to this session now: a prefix may match someone else by the time the group is picked.
+                val online = PlayerLookup.findOnline(arg[0])
+                if (PlayerLookup.ambiguous(online, arg[0], playerData)) return
+                val sid = (online as? PlayerLookup.Result.Found)?.value?.let { PlayerLookup.sessionId(it.uuid()) }
+                pickGroup(sid?.let { "#$it" } ?: arg[0])
+            }
+            return
+        }
         if (!validPermissionGroup(arg[1], playerData)) return
         // Only the console hands out a group at or above the sender's own, or moves someone who holds one.
         if (Permission.rank(arg[1]) >= Permission.rank(Permission.effectiveGroup(playerData))) {
@@ -2200,7 +2246,13 @@ class Commands {
             return
         }
         withPermissionTarget(arg[0], playerData) { data ->
-            if (outranks(playerData, data)) applyPermissionGroup(data, arg[1], playerData)
+            if (outranks(playerData, data)) {
+                confirmed(playerData, "setperm", "command.menu.confirm.setperm", data.name, arg[1]) {
+                    // The sender's group or the target's may have changed while the menu was open.
+                    if (Permission.rank(arg[1]) >= rankOf(playerData)) playerData.err("command.permission.false")
+                    else if (outranks(playerData, data)) applyPermissionGroup(data, arg[1], playerData)
+                }
+            }
         }
     }
 
@@ -2339,7 +2391,6 @@ class Commands {
         val message = StringBuilder()
         message.append(
             """
-                [#DEA82A]${bundle["command.status.info"]}[]
                 [#2B60DE]========================================[]
                 ${bundle["command.status.name"]}: ${Vars.state.map.name()}[white]
                 ${bundle["command.status.creator"]}: ${Vars.state.map.author()}[white]
@@ -2375,15 +2426,17 @@ class Commands {
             teamRate.forEach {
                 message.appendLine("${it.key.coloredName()} : ${it.value.toInt()}%")
             }
-
-            playerData.sendDirect(message.toString().dropLast(1))
-        } else {
-            playerData.sendDirect(message.toString())
         }
+
+        ChoicePicker.open<Unit>(playerData, "[#DEA82A]${bundle["command.status.info"]}[]", message.toString().trimEnd('\n'), emptyList()) { _, _ -> }
     }
 
-    @ClientCommand("strict", "<player>", "Set whether the target player can build or not.")
+    @ClientCommand("strict", "[player]", "Set whether the target player can build or not.")
     fun strict(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "strict")
+            return
+        }
         val target = PlayerLookup.onlineData(arg[0], playerData) ?: return
         if (!outranks(playerData, target)) return
         target.strictMode = !target.strictMode
@@ -2431,8 +2484,15 @@ class Commands {
         Rtv.vote(playerData, arg.firstOrNull())
     }
 
-    @ClientCommand("team", "<team> [name]", "Set player team")
+    @ClientCommand("team", "[team] [name]", "Set player team")
     fun team(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            ChoicePicker.open(
+                playerData, playerData.bundle["command.menu.team.title"], "",
+                listOf(Team.derelict, Team.sharded, Team.crux, Team.green, Team.malis, Team.blue).map { "[#${it.color}]${it.name}[]" to it.name }
+            ) { p, name -> runAsPlayer(p, "${CommandRegistry.registered("team")} $name") }
+            return
+        }
         val team = selectTeam(arg[0])
 
         if (arg.size == 1) {
@@ -2517,8 +2577,12 @@ class Commands {
         playerData.send("command.time", now)
     }
 
-    @ClientCommand("tp", "<player>", "Teleport to other players")
+    @ClientCommand("tp", "[player]", "Teleport to other players")
     fun tp(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "tp", filter = { seesAcrossTeams(playerData) || it.player.team() == playerData.player.team() })
+            return
+        }
         val other = PlayerLookup.online(arg[0], playerData) ?: return
         if (!seesAcrossTeams(playerData) && other.team() != playerData.player.team()) {
             playerData.err("command.permission.false")
@@ -2651,8 +2715,17 @@ class Commands {
             if (stack.isEmpty()) {
                 playerData.send("command.undo.empty")
             } else {
-                stack.forEach { entry ->
-                    playerData.sendDirect(bundle["command.undo.list", entry.id.toString(), entry.description])
+                PagedMenu(
+                    playerData, bundle["command.undo.list.title"], stack, CommandsTuning.LIST_PAGE_SIZE,
+                    closeLabel = bundle["command.menu.close"],
+                    label = { bundle["command.undo.list", it.id.toString(), it.description] }
+                ) { p, entry ->
+                    showCard(
+                        p, bundle["command.undo.menu.title"], entry.description,
+                        arrayOf(arrayOf(bundle["command.undo.button.undo"], bundle["command.menu.back"]))
+                    ) { player, select ->
+                        if (select == 0) runAsPlayer(player, "undo ${entry.id}") else show(player)
+                    }
                 }
             }
             return
@@ -2709,8 +2782,12 @@ class Commands {
         }
     }
 
-    @ClientCommand("unmute", "<player>", "Unmute player")
+    @ClientCommand("unmute", "[player]", "Unmute player")
     fun unmute(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "unmute")
+            return
+        }
         val senderRank = rankOf(playerData)
         scope.launch {
             val target = PlayerLookup.offline(arg[0], playerData) ?: return@launch
@@ -2749,8 +2826,24 @@ class Commands {
         }
     }
 
-    @ClientCommand("weather", "<weather> <seconds>", "Adds a weather effect to the map.")
+    @ClientCommand("weather", "[weather] [seconds]", "Adds a weather effect to the map.")
     fun weather(playerData: PlayerData, arg: Array<out String>) {
+        val bundle = playerData.bundle
+        val command = CommandRegistry.registered("weather")
+        fun askSeconds(type: String) = TextInput.ask(
+            playerData.player.self(), bundle["command.menu.weather.title"], bundle["command.menu.weather.seconds"], 6, numeric = true
+        ) { p, seconds -> runAsPlayer(p, "$command $type $seconds") }
+        if (arg.isEmpty()) {
+            ChoicePicker.open(
+                playerData, bundle["command.menu.weather.title"], "",
+                listOf("snow", "sandstorm", "sporestorm", "fog", "suspendParticles", "rain").map { it to it }
+            ) { _, type -> askSeconds(type) }
+            return
+        }
+        if (arg.size == 1) {
+            askSeconds(arg[0])
+            return
+        }
         val weather = when (arg[0]) {
             "snow" -> Weathers.snow
             "sandstorm" -> Weathers.sandstorm
@@ -2773,7 +2866,44 @@ class Commands {
         }
     }
 
-    @ClientCommand("vote", "<kick/map/gg/skip/back/random/draw> [player/amount/world] [reason]", "Start voting")
+    /** `/vote` typed bare: the vote types this player may start as buttons; each pick asks for what its typed form needs, then runs it. */
+    private fun voteMenu(playerData: PlayerData) {
+        val bundle = playerData.bundle
+        val command = CommandRegistry.registered("vote")
+        val types = VOTE_TYPES.filter { Permission.check(playerData, "vote.$it") }
+        if (types.isEmpty()) return playerData.err("command.vote.arg.empty")
+        fun ask(title: String, line: String, numeric: Boolean = false, default: String = "") = TextInput.ask(
+            playerData.player.self(), bundle["command.menu.vote.title"], title, 120, default, numeric
+        ) { p, text -> runAsPlayer(p, "$command $line $text") }
+        ChoicePicker.open(
+            playerData, bundle["command.menu.vote.title"], "", types.map { bundle["command.menu.vote.$it"] to it }
+        ) { p, type ->
+            when (type) {
+                "kick" -> pickPlayerFor(playerData, "vote", filter = { !Vars.state.rules.pvp || it.player.team() == playerData.player.team() }) {
+                    ask(bundle["command.menu.vote.reason"], "kick #${it.entityId}")
+                }
+
+                "map" -> PagedMenu(
+                    playerData, bundle["command.menu.vote.map"], mapsById(), PICKER_PAGE_SIZE,
+                    closeLabel = bundle["command.menu.close"], fullNav = true, label = { it.plainName() }
+                ) { _, map ->
+                    // The list may reload before the reason comes back, so the index is resolved then, from the picked file.
+                    TextInput.ask(
+                        playerData.player.self(), bundle["command.menu.vote.title"], bundle["command.menu.vote.reason"], 120, default = bundle["command.votemap.reason"]
+                    ) { p, text ->
+                        val id = mapsById().indexOfFirst { it.file == map.file }
+                        if (id >= 0) runAsPlayer(p, "$command map $id $text") else playerData.err("command.vote.map.not.exists")
+                    }
+                }
+
+                "skip" -> ask(bundle["command.menu.vote.skip"], "skip", numeric = true)
+                "back" -> ask(bundle["command.menu.vote.reason"], "back")
+                else -> runAsPlayer(p, "$command $type")
+            }
+        }
+    }
+
+    @ClientCommand("vote", "[kick/map/gg/skip/back/random/draw] [player/amount/world] [reason...]", "Start voting")
     fun vote(playerData: PlayerData, arg: Array<out String>) {
         val coolTime = "command.vote.coolTime"
         val noReason = "command.vote.no.reason"
@@ -2792,7 +2922,7 @@ class Commands {
         }
 
         if (arg.isEmpty()) {
-            playerData.err("command.vote.arg.empty")
+            voteMenu(playerData)
             return
         }
 
@@ -2978,7 +3108,7 @@ class Commands {
                 }
                 val voteData = VoteData(
                     type = VoteType.Back,
-                    reason = arg[1],
+                    reason = arg.drop(1).joinToString(" "),
                     starter = playerData
                 )
                 nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)
@@ -3021,8 +3151,12 @@ class Commands {
         }
     }
 
-    @ClientCommand("votekick", "<player>", "Start kick voting")
+    @ClientCommand("votekick", "[player]", "Start kick voting")
     fun votekick(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "votekick", filter = { !Vars.state.rules.pvp || it.player.team() == playerData.player.team() })
+            return
+        }
         val target = PlayerLookup.onlineData(arg[0], playerData) ?: return
         if (Permission.check(target, "kick.admin")) {
             playerData.err("command.vote.kick.target.admin")
@@ -3039,19 +3173,19 @@ class Commands {
             if (mapVotes.isEmpty()) {
                 playerData.send("command.nextmap.vote.none")
             } else {
-                val message = StringBuilder(playerData.bundle["command.nextmap.vote.current"] + "\n")
-                nextMapTally().forEach { (map, count) ->
-                    message.append(playerData.bundle["command.nextmap.vote.count", map.plainName(), count] + "\n")
-                }
-
+                val bundle = playerData.bundle
                 val playerVote = mapVotes[playerData.uuid]
-                if (playerVote != null) {
-                    message.append("\n" + playerData.bundle["command.nextmap.vote.your", playerVote.plainName()])
-                } else {
-                    message.append("\n" + playerData.bundle["command.nextmap.vote.none.yours"])
+                val yours = if (playerVote != null) bundle["command.nextmap.vote.your", playerVote.plainName()] else bundle["command.nextmap.vote.none.yours"]
+                PagedMenu(
+                    playerData, bundle["command.nextmap.vote.current"], nextMapTally(), CommandsTuning.LIST_PAGE_SIZE,
+                    closeLabel = bundle["command.menu.close"],
+                    header = { _, _ -> yours },
+                    label = { (map, count) -> bundle["command.nextmap.vote.count", map.plainName(), count] }
+                ) { p, (map, _) ->
+                    // By ID, as /maps shows it: a name with a space would be two arguments.
+                    val id = mapsById().indexOfFirst { it.file == map.file }
+                    if (id >= 0) runAsPlayer(p, "nextmap $id")
                 }
-
-                playerData.player.sendMessage(message.toString())
             }
             return
         }
@@ -3531,6 +3665,19 @@ class Commands {
                 Log.err(bundle["command.delete.failed", e.message ?: "Unknown error"])
                 e.printStackTrace()
             }
+        }
+    }
+
+    /**
+     * Yes / Cancel in front of a destructive client command's effect: [key] says what will happen, and
+     * [onYes] runs once, only if the sender still holds [node]. [onYes] re-checks its own target.
+     */
+    private fun confirmed(playerData: PlayerData, node: String, key: String, vararg args: Any, onYes: () -> kotlin.Unit) {
+        // Gone while an async lookup ran: nobody to ask.
+        if (playerData.player.con() == null) return
+        val bundle = playerData.bundle
+        Confirm.ask(playerData, bundle["command.menu.confirm.title"], bundle.get(key, *args)) {
+            if (Permission.check(playerData, node)) onYes() else playerData.err("command.permission.false")
         }
     }
 

@@ -6,6 +6,7 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import essential.common.database.data.PlayerData
+import essential.core.answerYes
 import essential.common.database.data.getPlayerData
 import essential.common.permission.Permission
 import essential.common.rootPath
@@ -57,7 +58,7 @@ class SetPermStoreTest {
         val (target, targetData) = newPlayer()
         val uuid = target.uuid()
 
-        clientCommand.handleMessage("/setperm ${target.name} admin", admin)
+        answerYes(admin, "/setperm") { clientCommand.handleMessage("/setperm ${target.name} admin", admin) }
 
         assertEquals("admin", targetData.permission, "the group should apply on this server")
         assertFalse(Permission.hasUserEntry(uuid), "no local entry should have been written")
@@ -87,7 +88,7 @@ class SetPermStoreTest {
         file.writeString("$uuid:\n    group: \"user\"\n    customField: \"keep me\"\n", false)
         Permission.load()
 
-        clientCommand.handleMessage("/setperm ${target.name} admin", admin)
+        answerYes(admin, "/setperm") { clientCommand.handleMessage("/setperm ${target.name} admin", admin) }
 
         assertEquals(
             log("command.setPerm.success", target.name, "admin"),

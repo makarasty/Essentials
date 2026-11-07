@@ -2,6 +2,8 @@ package essential.core.service.chat
 
 import essential.common.database.data.PlayerData
 import essential.common.util.PlayerLookup
+import essential.core.ui.askTextFor
+import essential.core.ui.pickPlayerFor
 import ksp.command.ClientCommand
 import mindustry.Vars
 import mindustry.gen.Call
@@ -37,11 +39,17 @@ class Commands {
         }
     }
 
-    @ClientCommand(name = "pm", parameter = "<player> <message...>", description = "Send a private message")
+    @ClientCommand(name = "pm", parameter = "[player] [message...]", description = "Send a private message")
     fun pm(playerData: PlayerData, arg: Array<out String>) {
+        if (arg.isEmpty()) {
+            pickPlayerFor(playerData, "pm") { askTextFor(playerData, "pm", "#${it.entityId}", "command.menu.pm.message") }
+            return
+        }
         val target: Playerc = PlayerLookup.online(arg[0], playerData) ?: return
 
-        if (arg.size > 1) {
+        if (arg.size == 1) {
+            askTextFor(playerData, "pm", PlayerLookup.sessionId(target.uuid())?.let { "#$it" } ?: arg[0], "command.menu.pm.message")
+        } else if (arg.size > 1) {
             // Same defect as /me: a private message reached its target without passing any chat filter,
             // so a muted or globally muted player could still write to anybody. Filtering after the
             // lookup so a message addressed to nobody does not consume a vote or an anti-spam slot.

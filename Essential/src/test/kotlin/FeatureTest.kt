@@ -1,4 +1,3 @@
-import PluginTest.Companion.changeMap
 import PluginTest.Companion.clientCommand
 import PluginTest.Companion.createPlayer
 import PluginTest.Companion.leavePlayer
@@ -14,6 +13,7 @@ import PluginTest.Companion.setPermission
 import essential.common.database.data.checkRoutingPermission
 import essential.common.database.data.consumeRoutingPermission
 import essential.common.bundle.Bundle
+import essential.core.answerYes
 import essential.common.database.data.PlayerData
 import essential.common.database.data.createTemporaryPlayerData
 import essential.common.database.data.getWorldHistoryByCoordinates
@@ -39,6 +39,7 @@ import essential.common.systemTimezone
 import essential.common.timeSource
 import essential.common.service.fileWatchService
 import essential.core.Main
+import essential.core.ui.UiHarness
 import essential.core.buildingBulletDestroy
 import essential.core.connectPacket
 import essential.core.gameOver
@@ -95,6 +96,18 @@ import kotlin.time.ExperimentalTime
 class FeatureTest {
     companion object {
         private var done = false
+    }
+
+    /** The harness's `changeMap` types /changemap, which asks first now; this answers Yes and then re-adds the saved players as it does. */
+    private fun changeMap(args: String) {
+        val saved = Groups.player.toList()
+        answerYes(player, "/changemap") { clientCommand.handleMessage("/changemap $args", player) }
+        saved.filter { !it.isAdded }.forEach { it.add() }
+        Groups.player.update()
+        assertTrue(
+            saved.all { s -> Groups.player.find { it === s } != null },
+            "changeMap must leave every player the engine saved back in Groups.player"
+        )
     }
 
     private class TestConnection(address: String) : NetConnection(address) {
@@ -787,13 +800,32 @@ class FeatureTest {
                 assertEquals(Permission.default, temporary.permission)
                 assertTrue(allowPlaceBlock(joined), "Temporary data must still allow building.")
 
-                clientCommand.handleMessage("/help", joined)
+                // /help is a menu now, not a chat reply: the command ran if a dialog went out. Call.* only sends while Net.server is on.
+                val oldCon = joined.con
+                val sent = ArrayList<Any>()
+                joined.con = object : NetConnection(oldCon.address) {
+                    override fun send(`object`: Any?, reliable: Boolean) {
+                        if (`object` != null) sent.add(`object`)
+                    }
+
+                    override fun close() {}
+                }.also { it.uuid = oldCon.uuid; it.usid = oldCon.usid }
+                try {
+                    UiHarness.netServer(true)
+                    clientCommand.handleMessage("/help", joined)
+                } finally {
+                    UiHarness.netServer(false)
+                    joined.con = oldCon
+                }
                 assertNotEquals(
                     Bundle(joined.locale())["command.data.loading"],
                     temporary.lastReceivedMessage,
                     "Commands must work while the data is temporary."
                 )
-                assertTrue(temporary.lastReceivedMessage.isNotEmpty())
+                assertTrue(
+                    sent.any { it is mindustry.gen.MenuBuilderCallPacket },
+                    "/help must open its menu while the data is temporary."
+                )
 
                 temporary.blockPlaceCount = 12
                 temporary.blockBreakCount = 7
@@ -1013,7 +1045,7 @@ class FeatureTest {
 
         withoutLogErrors {
             try {
-                clientCommand.handleMessage("/rollback ${p.first.name()}", p.first)
+                answerYes(p.first, "/rollback") { clientCommand.handleMessage("/rollback ${p.first.name()}", p.first) }
                 // Not the last message after a fixed window: with an owner online, the one-second achievement
                 // sweep counts MeetOwner for every player, and a long-lived one reaching 60 broadcasts it to
                 // everyone online, p included, landing behind the reply.

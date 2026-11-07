@@ -5,6 +5,7 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import essential.common.database.WorldHistoryBuffer
+import essential.core.answerYes
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.content.Items
@@ -58,7 +59,7 @@ class RollbackConfigTest {
                 x = x, y = y, tile = Blocks.sorter.name, rotate = 0, team = "sharded", value = Items.titanium.name
             )
 
-            clientCommand.handleMessage("/rollback ${target.first.name()}", admin.first)
+            answerYes(admin.first, "/rollback") { clientCommand.handleMessage("/rollback ${target.first.name()}", admin.first) }
 
             assertEquals(
                 true,

@@ -14,6 +14,8 @@ import essential.common.players
 import essential.common.rootPath
 import essential.common.timeSource
 import essential.core.Undo
+import essential.core.answerYes
+import essential.core.ui.UiHarness
 import kotlinx.coroutines.runBlocking
 import mindustry.Vars
 import mindustry.game.EventType.MenuOptionChooseEvent
@@ -173,7 +175,7 @@ class UndoTest {
 
         assertFalse(Permission.hasUserEntry(uuid), "a fresh player should have no yaml entry")
 
-        clientCommand.handleMessage("/setperm ${target.name} admin", admin)
+        answerYes(admin, "/setperm") { clientCommand.handleMessage("/setperm ${target.name} admin", admin) }
         assertFalse(Permission.hasUserEntry(uuid), "setperm should not write an entry that masks the shared row")
         assertEquals("admin", Permission.groupOf(uuid, data(target).permission), "the group should still apply")
 
@@ -241,7 +243,7 @@ class UndoTest {
         val uuid = target.uuid()
         val before = Permission.groupOf(uuid, data(target).permission)
 
-        clientCommand.handleMessage("/setperm ${target.name} admin", admin)
+        answerYes(admin, "/setperm") { clientCommand.handleMessage("/setperm ${target.name} admin", admin) }
         assertEquals("admin", Permission.groupOf(uuid, data(target).permission))
 
         clientCommand.handleMessage("/undo", admin)
@@ -261,15 +263,25 @@ class UndoTest {
 
     @Test
     fun undo_entriesExpire() {
-        val admin = admin()
+        // A recording connection: /undo list is a menu now, and a menu only reaches a packet with Net.server set.
+        val sent = UiHarness.joined("admin")
+        UiHarness.netServer(false)
+        val admin = sent.player
         val target = newPlayer().first
 
         clientCommand.handleMessage("/mute ${target.name}", admin)
         assertTrue(waitUntil(10000) { Undo.stack(admin.uuid()).isNotEmpty() }, "mute should be recorded")
 
         val id = Undo.stack(admin.uuid()).first().id
-        clientCommand.handleMessage("/undo list", admin)
-        assertTrue(data(admin).lastReceivedMessage.contains("$id."), "list should show the entry id")
+        val menusBefore = sent.menus.size
+        UiHarness.netServer(true)
+        try {
+            clientCommand.handleMessage("/undo list", admin)
+            assertTrue(waitUntil(10000) { sent.menus.size > menusBefore }, "/undo list opens a menu")
+        } finally {
+            UiHarness.netServer(false)
+        }
+        assertTrue(sent.menus.last().options.flatten().any { it.contains("$id.") }, "list should show the entry id")
 
         Undo.stack(admin.uuid()).forEach { it.expiresAt = timeSource.markNow().minus(1.minutes) }
         assertTrue(Undo.stack(admin.uuid()).isEmpty(), "expired entries should be dropped")

@@ -5,6 +5,7 @@ import PluginTest.Companion.newPlayer
 import PluginTest.Companion.setPermission
 import PluginTest.Companion.waitUntil
 import essential.common.database.WorldHistoryBuffer
+import essential.core.answerYes
 import essential.common.database.data.PlayerData
 import essential.common.database.data.getAllWorldHistory
 import kotlinx.coroutines.runBlocking
@@ -59,7 +60,7 @@ class WorldHistoryScopeTest {
         val (player, _) = admin()
         recordOneRow()
 
-        clientCommand.handleMessage("/changemap fork survival", player)
+        answerYes(player, "/changemap") { clientCommand.handleMessage("/changemap fork survival", player) }
 
         assertEquals("Fork", Vars.state.map.name(), "the map should actually have changed")
         assertTrue(
@@ -71,7 +72,7 @@ class WorldHistoryScopeTest {
         // a different map changes the world every later class stands on, and createPlayer spawns its unit
         // at coordinates up to 300x500 - on a smaller map the spawn falls outside and the player is left
         // with no unit, which makes leavePlayer throw in whichever class runs next.
-        clientCommand.handleMessage("/changemap glacier", player)
+        answerYes(player, "/changemap") { clientCommand.handleMessage("/changemap glacier", player) }
         assertEquals("Glacier", Vars.state.map.name(), "the suite should be left on the map it started on")
     }
 

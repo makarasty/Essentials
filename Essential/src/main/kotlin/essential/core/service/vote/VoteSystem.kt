@@ -27,10 +27,12 @@ import mindustry.game.EventType.WorldLoadEvent
 import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
+import mindustry.gen.Player
 import mindustry.io.SaveIO
 import mindustry.net.Administration
 import mindustry.net.Packets
 import mindustry.net.WorldReloader
+import mindustry.ui.Menus
 import kotlin.math.ceil
 import kotlin.math.sqrt
 import kotlin.time.Duration.Companion.minutes
@@ -41,6 +43,14 @@ private val noWords = setOf("n", "no", "ні", "-")
 
 private fun isYes(message: String) = message.trim().lowercase() in yesWords
 private fun isNo(message: String) = message.trim().lowercase() in noWords
+
+/** The vote that is running, for the Yes / No buttons: the engine never unregisters a menu listener, so one lazy listener routes to it. */
+@Volatile
+private var currentVote: VoteSystem? = null
+
+private val voteMenuId: Int by lazy {
+    Menus.registerMenu { player, option -> currentVote?.press(player, option) }
+}
 
 /**
  * The save a passed `vote back` restores: the newest `rollback_*.msav` on disk.
@@ -158,6 +168,9 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     private var isCanceled = false
     private var isPvP = Vars.state.rules.pvp
 
+    /** Uuids of those holding the vote's menu. */
+    private val shown = HashSet<String>()
+
     /**
      * Who may vote: [Electorate]'s rule, among the players on the server (on a PvP map, on the vote's team) when
      * the vote started. Without the members fixed, a raid could start a kick and then join bots to answer it,
@@ -172,25 +185,8 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
     init {
         fun sendMessage(playerData: PlayerData?) {
             if (playerData != null) {
-                val bundle = playerData.bundle
                 playerData.send("command.vote.starter", voteData.starter.player.plainName())
-                playerData.player.sendMessage(
-                    when (voteData.type) {
-                        VoteType.Kick -> bundle["command.vote.kick.start", voteData.target!!.plainName(), voteData.reason!!]
-                        VoteType.Map -> bundle["command.vote.map.start", voteData.map!!.name(), voteData.reason!!]
-                        VoteType.GameOver -> {
-                            if (!isPvP) {
-                                bundle["command.vote.gg.start"]
-                            } else {
-                                bundle["command.vote.gg.pvp.team"]
-                            }
-                        }
-                        VoteType.Skip -> bundle["command.vote.skip.start", voteData.wave!!]
-                        VoteType.Back -> bundle["command.vote.back.start", voteData.reason!!]
-                        VoteType.Random -> bundle["command.vote.random.start"]
-                        VoteType.Draw -> bundle["command.vote.draw.start"]
-                    }
-                )
+                playerData.player.sendMessage(startText(playerData))
                 playerData.send("command.vote.how")
             }
         }
@@ -207,42 +203,27 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
             }
         }
 
+        // The menu goes to exactly the announcement's set (the starter's team on a PvP map), minus a kick's target; whether
+        // an answer counts is cast()'s call, so an afk-flagged player who can type "y" has the buttons too.
+        // A vote reset and started again within a second leaves the old one to cancel later: its menus go now, not then.
+        currentVote?.hideMenus()
+        currentVote = this
+        players.filter { it.uuid != voteData.targetUUID && (!isPvP || it.player.team() == voteData.team) }.forEach {
+            shown.add(it.uuid)
+            val bundle = it.bundle
+            Call.followUpMenu(
+                it.player.con(), voteMenuId, bundle["command.vote.menu.title"], startText(it),
+                arrayOf(arrayOf(bundle["command.menu.yes"], bundle["command.menu.no"]))
+            )
+        }
+
         chatFilter = Administration.ChatFilter { player, message ->
-            if (!message.startsWith("/")) {
-                val data = findPlayerData(player.uuid())
-                if (data != null) {
-                    val isAdmin = Permission.check(data, "vote.pass")
-                    // Every vote word is input, whichever branch below takes it - a re-affirming "y" from a voter
-                    // back at the keyboard too. This filter swallows the word, so the chat formatter never marks it:
-                    // castBy is the one place that does, and its answer is the cast's eligibility.
-                    val mayVote = isVoting && (isYes(message) || isNo(message)) && electorate.castBy(data)
-                    // The starter is pre-seeded into `voted` at construction (so their own vote
-                    // counts without them having to speak), which also means the ordinary yes-branch
-                    // below - guarded on `!voted.contains` - can never see them. A starter holding
-                    // vote.pass needs its own branch to reach the instant pass at all.
-                    if (isVoting && isYes(message) && voteData.starter == data && isAdmin && !isAdminVote) {
-                        isAdminVote = true
-                        data.send("command.vote.voted")
-                    } else if (isVoting && isYes(message) && !voted.contains(player.uuid())) {
-                        if (mayVote) {
-                            voted.add(player.uuid())
-                            data.send("command.vote.voted")
-                        } else {
-                            data.err("command.vote.ineligible")
-                        }
-                    } else if (isVoting && isNo(message) && isAdmin) {
-                        isCanceled = true
-                    }
-                    if (isVoting && (isYes(message) || isNo(message))) {
-                        return@ChatFilter null
-                    } else {
-                        return@ChatFilter message
-                    }
-                } else {
-                    return@ChatFilter message
-                }
+            val data = findPlayerData(player.uuid())
+            if (!message.startsWith("/") && isVoting && data != null && (isYes(message) || isNo(message))) {
+                cast(data, isYes(message))
+                null
             } else {
-                return@ChatFilter message
+                message
             }
         }
 
@@ -259,6 +240,66 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
         Events.on(WorldLoadEvent::class.java, worldLoadEvent)
     }
 
+    private fun startText(playerData: PlayerData): String {
+        val bundle = playerData.bundle
+        return when (voteData.type) {
+            VoteType.Kick -> bundle["command.vote.kick.start", voteData.target!!.plainName(), voteData.reason!!]
+            VoteType.Map -> bundle["command.vote.map.start", voteData.map!!.name(), voteData.reason!!]
+            VoteType.GameOver -> {
+                if (!isPvP) {
+                    bundle["command.vote.gg.start"]
+                } else {
+                    bundle["command.vote.gg.pvp.team"]
+                }
+            }
+            VoteType.Skip -> bundle["command.vote.skip.start", voteData.wave!!]
+            VoteType.Back -> bundle["command.vote.back.start", voteData.reason!!]
+            VoteType.Random -> bundle["command.vote.random.start"]
+            VoteType.Draw -> bundle["command.vote.draw.start"]
+        }
+    }
+
+    /** One answer, [yes] or no, from [data]: the single path of the chat words and the menu buttons. */
+    private fun cast(data: PlayerData, yes: Boolean) {
+        hideMenu(data.uuid)
+        val isAdmin = Permission.check(data, "vote.pass")
+        // Every vote word is input, whichever branch below takes it - a re-affirming "y" from a voter
+        // back at the keyboard too. The chat filter swallows the word, so the chat formatter never marks it:
+        // castBy is the one place that does, and its answer is the cast's eligibility.
+        val mayVote = electorate.castBy(data)
+        // The starter is pre-seeded into `voted` at construction (so their own vote
+        // counts without them having to speak), which also means the ordinary yes-branch
+        // below - guarded on `!voted.contains` - can never see them. A starter holding
+        // vote.pass needs its own branch to reach the instant pass at all.
+        if (yes && voteData.starter == data && isAdmin && !isAdminVote) {
+            isAdminVote = true
+            data.send("command.vote.voted")
+        } else if (yes && !voted.contains(data.uuid)) {
+            if (mayVote) {
+                voted.add(data.uuid)
+                data.send("command.vote.voted")
+            } else {
+                data.err("command.vote.ineligible")
+            }
+        } else if (!yes && isAdmin) {
+            isCanceled = true
+        }
+    }
+
+    /** A Yes (0) or No (1) button. A press from someone the vote does not count, or after it ended, is dropped: a client can send any menu id. */
+    internal fun press(player: Player, option: Int) {
+        if (!isVoting || option !in 0..1 || currentVote !== this) return
+        val data = findPlayerData(player.uuid()) ?: return
+        if (data.uuid !in shown) return
+        cast(data, option == 0)
+    }
+
+    private fun hideMenus() = shown.toList().forEach { hideMenu(it) }
+
+    private fun hideMenu(uuid: String) {
+        if (shown.remove(uuid)) players.byUuid(uuid)?.let { Call.hideFollowUpMenu(it.player.con(), voteMenuId) }
+    }
+
     fun send(message: String, vararg parameter: Any) {
         players.forEach {
             if (voteData.targetUUID != it.uuid) {
@@ -272,7 +313,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
      * of the threshold, so a vote cast by one has to leave the tally too, or idle bots could carry a vote
      * that the active players on the server never reached.
      */
-    private fun votes() = electorate.tally(voted)
+    internal fun votes() = electorate.tally(voted)
 
     fun check(): Int {
         // Sized from the electorate only: anyone who joined later cannot vote, so counting them would let a
@@ -302,6 +343,10 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
 
     override fun cancel() {
         isVoting = false
+        if (currentVote === this) {
+            currentVote = null
+            hideMenus()
+        }
         Vars.netServer.admins.chatFilters.remove(chatFilter)
         Events.remove(GameOverEvent::class.java, gameoverEvent)
         Events.remove(WorldLoadEvent::class.java, worldLoadEvent)

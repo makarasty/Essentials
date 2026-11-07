@@ -7,6 +7,7 @@ import PluginTest.Companion.serverCommand
 import PluginTest.Companion.setPermission
 import essential.common.database.data.PlayerData
 import essential.common.util.PlayerLookup
+import essential.core.answerYes
 import mindustry.gen.Player
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -45,7 +46,7 @@ class KillNoUnitTest {
         try {
             target.clearUnit()
 
-            clientCommand.handleMessage("/kill ${target.name}", admin)
+            answerYes(admin, "/kill") { clientCommand.handleMessage("/kill ${target.name}", admin) }
 
             assertEquals(err("command.kill.no.unit", target.plainName()), adminData.lastReceivedMessage)
         } finally {

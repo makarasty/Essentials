@@ -24,6 +24,8 @@ import essential.common.util.findPlayerData
 import essential.core.Commands.WorldEditSelection
 import essential.core.Main.Companion.conf
 import essential.core.Main.Companion.scope
+import essential.core.ui.HelpMenu
+import essential.core.ui.TextInput
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -1181,6 +1183,9 @@ fun playerLeave(event: PlayerLeave) {
     Undo.leave(event.player.uuid())
     // Their dialogs went with their connection, so the menu ids they held can be handed out again.
     OwnedMenus.release(event.player.uuid())
+    TextInput.forget(event.player.uuid())
+    HelpMenu.forget(event.player.uuid())
+    Commands.rankingGates.remove(event.player.uuid())
     cancelPlayerDataRetry(event.player.uuid())
     // A player who leaves before their data loads would otherwise stay counted on their connect pick.
     pvpConnectPicks.remove(event.player.uuid(), event.player)

@@ -1,21 +1,23 @@
 package essential.core.service.achievements
 
-import arc.util.Strings
 import essential.common.bundle.Bundle
 import essential.common.database.data.PlayerData
 import essential.common.permission.Permission
 import essential.common.util.PlayerLookup
+import essential.core.ui.PagedMenu
+import essential.core.ui.pageArg
 import ksp.command.ClientCommand
 import ksp.command.ServerCommand
 import java.util.*
-import kotlin.math.abs
-import kotlin.math.ceil
-import kotlin.math.min
 
 class Commands {
+    private companion object {
+        const val ACH_PAGE_SIZE = 3
+    }
+
     @ClientCommand(name = "ach", parameter = "[page]", description = "Show your achievements")
     fun achievements(playerData: PlayerData, args: Array<String>) {
-        val temp: MutableList<String?> = arrayListOf()
+        val entries: MutableList<String> = arrayListOf()
         val bundle = try {
             Bundle.resolve("bundles/achievements/bundle", Locale.forLanguageTag(playerData.player.locale().replace("_", "-")))
         } catch (e: MissingResourceException) {
@@ -30,34 +32,19 @@ class Commands {
             if (!ach.isHidden || achieved) {
                 val name: String = ach.toString().lowercase(Locale.getDefault())
                 val cleared = if (achieved) "[sky][" + bundle.getString("cleared") + "][] " else ""
-                temp.add(cleared + bundle.getString("achievement.$name") + "[orange] (" + ach.current(playerData) + " / " + ach.value() + ")[][]\n")
-                temp.add("[yellow]" + bundle.getString("description.$name") + "[]\n")
-                temp.add("\n")
+                entries.add(
+                    cleared + bundle.getString("achievement.$name") + "[orange] (" + ach.current(playerData) + " / " + ach.value() + ")[][]\n" +
+                        "[yellow]" + bundle.getString("description.$name") + "[]"
+                )
             }
         }
 
-        val result = StringBuilder()
-        val per = 9
-        var page = if (args.isEmpty()) 1 else abs(Strings.parseInt(args[0]))
-        val pages = ceil((temp.size.toFloat() / per).toDouble()).toInt()
-        page--
-
-        if (page !in 0..<pages) {
-            playerData.err("command.page.range", pages)
-            return
-        }
-
-        result.append("[orange]-- ").append(bundle.getString("command.page"))
-            .append("[lightgray] ").append(page + 1)
-            .append("[gray]/[lightgray]").append(pages)
-            .append("[orange] --[white]\n")
-
-        for (a in per * page..<min(per * (page + 1), temp.size)) {
-            result.append(temp[a])
-        }
-
-        val msg = result.substring(0, result.length - 1)
-        playerData.player.sendMessage(msg)
+        PagedMenu(
+            playerData, bundle.getString("command.page"), entries, ACH_PAGE_SIZE,
+            startPage = pageArg(args.firstOrNull()),
+            closeLabel = playerData.bundle["command.menu.close"],
+            header = { shown, _ -> shown.joinToString("\n\n") }
+        )
     }
 
     @ServerCommand(name = "setmapprovider", parameter = "<player>", description = "Set the MapProvider achievement for a player")
