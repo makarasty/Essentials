@@ -117,6 +117,40 @@ class VoteMenuTest {
         assertFalse(isVoting, "a vote.pass holder's No cancels, as the word n does")
     }
 
+    /** On a PvP map: team crux starts, a vote.pass holder from [team] types "n"; whether the vote survived. */
+    private fun pvpNoSurvives(team: Team): Boolean {
+        val wasPvp = Vars.state.rules.pvp
+        val all = listOf(UiHarness.joined("user"), UiHarness.joined("user"), UiHarness.joined("owner"))
+        val (starter, mate, admin) = all
+        val teams = all.map { it.player.team() }
+        try {
+            Vars.state.rules.pvp = true
+            starter.player.team(Team.crux)
+            mate.player.team(Team.crux)
+            admin.player.team(team)
+            isVoting = true
+            val vote = VoteSystem(VoteData(type = VoteType.Skip, wave = 1, starter = starter.data))
+            try {
+                Vars.netServer.admins.filterMessage(admin.player, "n")
+                vote.run()
+                return isVoting
+            } finally {
+                vote.cancel()
+            }
+        } finally {
+            isVoting = false
+            Vars.state.rules.pvp = wasPvp
+            all.forEachIndexed { i, s -> s.player.team(teams[i]) }
+            all.forEach { leavePlayer(it.player) }
+        }
+    }
+
+    @Test
+    fun aVotePassHolderOnTheOtherPvpTeamCannotCancelWithTheWordN() = assertTrue(pvpNoSurvives(Team.sharded))
+
+    @Test
+    fun aVotePassHolderOnTheStartersPvpTeamCancelsWithTheWordN() = assertFalse(pvpNoSurvives(Team.crux))
+
     @Test
     fun aDoublePressCountsOnce() = withVote(4) { all, vote, id ->
         press(all[1], id, 0)

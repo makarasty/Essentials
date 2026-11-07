@@ -281,7 +281,7 @@ class VoteSystem(val voteData: VoteData) : Timer.Task() {
             } else {
                 data.err("command.vote.ineligible")
             }
-        } else if (!yes && isAdmin) {
+        } else if (!yes && isAdmin && mayVote) { // a cancel from a team the vote does not count (PvP) is not a cancel
             isCanceled = true
         }
     }
