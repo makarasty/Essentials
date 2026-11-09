@@ -437,6 +437,21 @@ object Trigger {
             val labelLife: Float,
         )
 
+        /** The text a warp label shows, after any plugin listening for ServerLabel has had its say. */
+        private fun label(
+            player: Playerc,
+            ip: String,
+            port: Int,
+            alive: Boolean,
+            players: Int,
+            mapName: String,
+            text: String,
+        ): String {
+            val event = CustomEvents.ServerLabel(player, ip, port, alive, players, mapName, text)
+            Events.fire(event)
+            return event.text
+        }
+
         private fun Cycle.hostFor(ip: String, port: Int): Host? {
             val address = resolved[ip]
             return serverInfo.find { (it.address == ip || (address != null && it.address == address)) && it.port == port }
@@ -537,7 +552,10 @@ object Trigger {
                                 Groups.player.forEach { a ->
                                     memory.add(
                                         a to Triple(
-                                            "${info.mapname}\n[white][yellow]${info.players}[] ${Bundle(a.locale)["event.server.warp.players"]}",
+                                            label(
+                                                a, value.ip, value.port, true, info.players, info.mapname,
+                                                "${info.mapname}\n[white][yellow]${info.players}[] ${Bundle(a.locale)["event.server.warp.players"]}"
+                                            ),
                                             x,
                                             y
                                         )
@@ -547,7 +565,7 @@ object Trigger {
                                 Groups.player.forEach { a ->
                                     memory.add(
                                         a to Triple(
-                                            Bundle(a.locale)["event.server.warp.offline"],
+                                            label(a, value.ip, value.port, false, 0, "", Bundle(a.locale)["event.server.warp.offline"]),
                                             x,
                                             y
                                         )
@@ -572,6 +590,8 @@ object Trigger {
 
                 for (value in cycle.warpZone) {
                     if (mapName == value.mapName) {
+                        // Read by the walk-in and tap warps, which fire ServerUnreachable instead of moving the player.
+                        value.reachable = cycle.hostFor(value.ip, value.port) != null
                         val start = value.startTile
                         val finish = value.finishTile
                         if (start == null || finish == null) {
@@ -597,8 +617,11 @@ object Trigger {
                         for (a in Groups.player) {
                             memory.add(
                                 a to Triple(
-                                    if (info != null) "[yellow]${info.players}[] ${Bundle(a.locale)["event.server.warp.players"]}"
-                                    else Bundle(a.locale)["event.server.warp.offline"],
+                                    if (info != null) label(
+                                        a, value.ip, value.port, true, info.players, "",
+                                        "[yellow]${info.players}[] ${Bundle(a.locale)["event.server.warp.players"]}"
+                                    )
+                                    else label(a, value.ip, value.port, false, 0, "", Bundle(a.locale)["event.server.warp.offline"]),
                                     (center.first * 8).toFloat(),
                                     (center.second * 8).toFloat()
                                 )
@@ -793,6 +816,14 @@ object Trigger {
                     val start = two.startTile ?: continue
                     val finish = two.finishTile ?: continue
                     if (isUnitInside(unitTile, start, finish)) {
+                        if (!two.reachable) {
+                            val unreachable = CustomEvents.ServerUnreachable(data.player, two.ip, two.port, true)
+                            Events.fire(unreachable)
+                            if (unreachable.handled) {
+                                break
+                            }
+                        }
+
                         Log.info(Bundle()["log.warp.move", data.player.plainName(), two.ip, two.port.toString()])
 
                         val hubMapName = pluginData.hubMapName

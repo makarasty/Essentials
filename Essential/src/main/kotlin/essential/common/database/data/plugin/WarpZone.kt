@@ -1,6 +1,7 @@
 package essential.common.database.data.plugin
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import mindustry.Vars
 import mindustry.world.Tile
 
@@ -20,4 +21,7 @@ data class WarpZone(
      */
     val startTile: Tile? get() = Vars.world.tile(start)
     val finishTile: Tile? get() = Vars.world.tile(finish)
+
+    @Transient
+    var reachable: Boolean = true
 }

@@ -300,7 +300,7 @@ class CommandProcessor(
                                     data.err("command.permission.false")
                                 }
                             }
-                        } else if (annotation.name == "login" || annotation.name == "reg") {
+                        } else if (annotation.name == "login" || annotation.name == "reg" || annotation.name == "changepw") {
                             // Player has no stored data yet (e.g. new device under password auth);
                             // still allow authentication commands using a temporary data object.
                             val placeholder = temporaryData.compute(player.uuid()) { _, existing ->
