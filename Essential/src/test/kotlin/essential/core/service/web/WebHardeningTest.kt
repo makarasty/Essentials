@@ -2,6 +2,7 @@ package essential.core.service.web
 
 import essential.common.onGameThread
 import essential.common.database.data.PlayerData
+import essential.common.database.data.updateAccountCredentials
 import essential.common.rootPath
 import essential.core.service.chat.ChatService
 import essential.core.service.web.auth.LoginRequest
@@ -110,7 +111,11 @@ class WebHardeningTest {
         data.accountID = "account-${System.nanoTime()}"
         data.accountPW = BCrypt.hashpw(password, BCrypt.gensalt())
         data.discordID = "discord-${System.nanoTime()}"
-        runBlocking { data.update() }
+        // update() no longer writes accountID/accountPW (a4cb2f83); credentials have their own writer
+        runBlocking {
+            data.update()
+            updateAccountCredentials(data.id, data.accountID, data.accountPW!!)
+        }
         return data
     }
 
