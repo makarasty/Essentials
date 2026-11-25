@@ -2915,7 +2915,7 @@ class Commands {
         }
     }
 
-    @ClientCommand("vote", "[kick/map/gg/skip/back/random/draw] [player/amount/world] [reason...]", "Start voting")
+    @ClientCommand("vote", "[kick/map/gg/skip/back/random/draw] [player/amount/world/\"map-name\"] [reason...]", "Start voting")
     fun vote(playerData: PlayerData, arg: Array<out String>) {
         val coolTime = "command.vote.coolTime"
         val noReason = "command.vote.no.reason"
@@ -3025,11 +3025,18 @@ class Commands {
                     playerData.err("command.vote.no.map")
                     return
                 }
-                if (arg.size == 2) {
+                // A quoted name may hold spaces (`vote map "Desert Fortress" reason`); the reason is what follows it.
+                // Arc splits on every single space, so `map  name` would leave an empty arg[1]: parse the rejoined rest.
+                val rest = arg.drop(1).joinToString(" ").trimStart()
+                val close = if (rest.startsWith('"')) rest.indexOf('"', 1) else -1
+                val query = if (close > 0) rest.substring(1, close) else rest.substringBefore(' ')
+                val reason = (if (close > 0) rest.substring(close + 1) else rest.substringAfter(' ', "")).trim()
+                if (reason.isEmpty()) {
                     playerData.err(noReason)
                     return
                 }
-                val target = findMap(arg[1])
+                // findMap("") would match the first map by "contains"
+                val target = if (query.isBlank()) null else findMap(query, nameOnly = close > 0)
                 if (target == null) {
                     playerData.err(mapNotFound)
                 } else if (players.size != 1) {
@@ -3044,7 +3051,7 @@ class Commands {
                         val voteData = VoteData(
                             type = VoteType.Map,
                             map = target,
-                            reason = arg[2],
+                            reason = reason,
                             starter = playerData
                         )
                         nextVoteAvailable = timeSource.markNow().plus(VoteStartTuning.COOLDOWN_MINUTES.minutes)

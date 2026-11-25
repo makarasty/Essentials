@@ -169,6 +169,9 @@ class CommandProcessor(
         fileSpec.writeTo(codeGenerator, Dependencies(true, *functions.mapNotNull { it.containingFile }.toTypedArray()))
     }
 
+    /** Escapes a value for embedding inside a double-quoted string literal in generated Kotlin source. */
+    private fun escGen(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
+
     private fun generateRegisterServerCommandsFunction(functions: List<KSFunctionDeclaration>): FunSpec {
         // Here get annotation parameter values
         val annotationValues = functions.map { function ->
@@ -183,7 +186,7 @@ class CommandProcessor(
             val description = annotation?.arguments?.find { it.name?.asString() == "description" }?.value?.toString()
                 ?: "Generated server command"
 
-            Triple(name, parameter, description)
+            Triple(escGen(name), escGen(parameter), escGen(description))
         }
 
         return FunSpec.builder("registerGeneratedServerCommands")
@@ -248,7 +251,7 @@ class CommandProcessor(
             val description = annotation?.arguments?.find { it.name?.asString() == "description" }?.value?.toString()
                 ?: "Generated client command"
 
-            Triple(name, parameter, description)
+            Triple(escGen(name), escGen(parameter), escGen(description))
         }
 
         return FunSpec.builder("registerGeneratedClientCommands")

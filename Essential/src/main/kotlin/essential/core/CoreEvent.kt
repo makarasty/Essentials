@@ -541,7 +541,7 @@ fun tap(event: TapEvent) {
 fun wave(event: WaveEvent) {
     ServerDescription.changed()
     for (data in players) {
-        data.exp += ExpTuning.WAVE_CLEAR_XP
+        if (conf.feature.level.playExp) data.exp += ExpTuning.WAVE_CLEAR_XP
         data.waveClear++
     }
 
@@ -997,8 +997,10 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
                         tile.build.maxHealth() == tile.block().health.toFloat() &&
                         (lastBlock == null || lastBlock != tile.block().name)) {
                         target.blockPlaceCount++
-                        target.exp += blockExp[block.name] ?: 0
-                        target.currentExp += blockExp[block.name] ?: 0
+                        if (conf.feature.level.blockExp) {
+                            target.exp += blockExp[block.name] ?: 0
+                            target.currentExp += blockExp[block.name] ?: 0
+                        }
                     }
 
                     addLog(
@@ -1040,9 +1042,11 @@ fun blockBuildEnd(event: BlockBuildEndEvent) {
 
                     if (!Vars.state.rules.infiniteResources) {
                         target.blockBreakCount++
-                        val removedExp = blockExp[checkValidBlock(tile)] ?: 0
-                        target.exp -= removedExp
-                        target.currentExp -= removedExp
+                        if (conf.feature.level.blockExp) {
+                            val removedExp = blockExp[checkValidBlock(tile)] ?: 0
+                            target.exp -= removedExp
+                            target.currentExp -= removedExp
+                        }
                     }
                 }
             }

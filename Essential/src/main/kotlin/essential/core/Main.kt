@@ -67,7 +67,10 @@ class Main : Plugin() {
                 Log.err("Unhandled exception in a background coroutine ($context)", throwable)
             }
         )
-        val threadPool: ExecutorService = Executors.newFixedThreadPool(MainTuning.THREAD_POOL_SIZE)
+        // Daemon threads: these run endless loops (file watcher, ping), and non-daemon ones kept the JVM alive after an OOM
+        val threadPool: ExecutorService = Executors.newFixedThreadPool(MainTuning.THREAD_POOL_SIZE) { r ->
+            Thread(r).apply { isDaemon = true; name = "Essentials-worker" }
+        }
 
         /**
          * Applies the client command set for the current [conf] to [handler]: every generated

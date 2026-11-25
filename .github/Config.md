@@ -68,6 +68,8 @@ feature:
       maxPacketsPerRun: 2000
     levelNotify: false
     display: false
+    blockExp: true
+    playExp: true
   game:
     wave:
       autoSkip: 1
@@ -287,6 +289,16 @@ At game over, tell each player the EXP they earned and their level.
 
 Default: ``false``<br>
 Show each player's current EXP and the EXP needed for the next level on their screen, refreshed every second.
+
+### feature.level.blockExp
+
+Default: ``true``<br>
+Give EXP for each block a player builds and take it back when they deconstruct one.
+
+### feature.level.playExp
+
+Default: ``true``<br>
+Give EXP for time played (a small random amount every second) and for each wave cleared.
 
 ## feature.game
 

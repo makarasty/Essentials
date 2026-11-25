@@ -23,11 +23,12 @@ fun mapsById(): List<Map> = Vars.maps.all().sortedBy { it.name() }
  * The map [query] names, for every command that takes one (/rtv, /changemap, /vote map, /nextmap). A whole number is
  * an ID and nothing else: the map at that index in [mapsById], or none. Any other query is a name, matched against
  * plain names (no colour tags) ignoring case: the map named exactly that, else the first in that same order whose
- * name contains it - so "fortress" is Fortress even when Desert Fortress comes first.
+ * name contains it - so "fortress" is Fortress even when Desert Fortress comes first. [nameOnly] skips the ID reading,
+ * for a name the player quoted (`vote map "3" reason` is the map named 3).
  */
-fun findMap(query: String): Map? {
+fun findMap(query: String, nameOnly: Boolean = false): Map? {
     val maps = mapsById()
-    query.toIntOrNull()?.let { return maps.getOrNull(it) }
+    if (!nameOnly) query.toIntOrNull()?.let { return maps.getOrNull(it) }
     return maps.find { it.plainName().equals(query, ignoreCase = true) }
         ?: maps.find { it.plainName().contains(query, ignoreCase = true) }
 }

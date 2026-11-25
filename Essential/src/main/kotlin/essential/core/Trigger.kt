@@ -953,9 +953,12 @@ object Trigger {
                     it.mousePosition = activityMark(it)
                 }
 
-                val randomResult = (Random.nextInt(ExpTuning.PLAY_SECOND_XP_BOUND) * it.expMultiplier)
-                it.exp += randomResult.toInt()
-                it.currentExp += randomResult.toInt()
+                if (conf.feature.level.playExp) {
+                    val randomResult = (Random.nextInt(ExpTuning.PLAY_SECOND_XP_BOUND) * it.expMultiplier)
+                    it.exp += randomResult.toInt()
+                    it.currentExp += randomResult.toInt()
+                }
+                // Outside the toggle: block exp also needs this once-a-second level check
                 Commands.Exp[it]
 
                 if (conf.feature.level.display) {

@@ -355,6 +355,32 @@ class ElectorateTest {
     }
 
     @Test
+    fun voteMapTakesAQuotedNameWithSpacesAndStillWantsAReason() {
+        players.toList().forEach { leavePlayer(it.player) }
+        val map = mapsById().first { it.plainName().contains(' ') && !isCurrentMap(it) }
+        val (a) = join(1)
+        clientCommand.handleMessage("/vote map \"${map.plainName()}\"", a.first)
+        assertEquals(err("command.vote.no.reason"), a.second.lastReceivedMessage)
+        clientCommand.handleMessage("/vote map \"\" why", a.first)
+        assertEquals(err("command.vote.map.not.exists"), a.second.lastReceivedMessage, "an empty name is no map, not the first one")
+        clientCommand.handleMessage("/vote map  \"${map.plainName()}\" new map", a.first)
+        assertEquals(map.file, Vars.state.map.file, "a doubled space before the name changes nothing")
+    }
+
+    @Test
+    fun findMapReadsAQuotedNumberAsAName() {
+        val maps = Vars.maps.all()
+        val three = Map(Fi("3-test.msav"), 1, 1, StringMap.of("name", "3"), true)
+        maps.add(three)
+        try {
+            assertEquals(three, findMap("3", nameOnly = true))
+            assertEquals(mapsById().getOrNull(3), findMap("3"))
+        } finally {
+            maps.remove(three)
+        }
+    }
+
+    @Test
     fun findMapPrefersTheExactNameOverOneThatContainsIt() {
         val maps = Vars.maps.all()
         val fortress = Map(Fi("Fortress-test.msav"), 1, 1, StringMap.of("name", "Testfortress"), true)

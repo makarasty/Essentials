@@ -21,6 +21,9 @@ mockito = "5.24.0"
 jts = "1.20.0"
 proguard = "7.10.0"
 reactorNetty = "1.3.8"
+micrometer = "1.16.0"
+micrometerTracing = "1.6.0"
+contextPropagation = "1.2.0"
 
 lingua = "1.2.2"
 discord = "6.7.0"
@@ -99,6 +102,9 @@ r2dbc-postgresql = { module = "org.postgresql:r2dbc-postgresql", version.ref = "
 
 proguard = { module = "com.guardsquare:proguard-base", version.ref = "proguard"}
 reactor-netty-core = { module = "io.projectreactor.netty:reactor-netty-core", version.ref = "reactorNetty" }
+micrometer-core = { module = "io.micrometer:micrometer-core", version.ref = "micrometer" }
+micrometer-tracing = { module = "io.micrometer:micrometer-tracing", version.ref = "micrometerTracing" }
+context-propagation = { module = "io.micrometer:context-propagation", version.ref = "contextPropagation" }
 
 [bundles]
 kotlinxEcosystem = ["kotlinxDatetime", "kotlinxCoroutines", "kotlinxSerializer"]
