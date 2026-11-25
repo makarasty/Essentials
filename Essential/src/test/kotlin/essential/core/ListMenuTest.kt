@@ -111,7 +111,11 @@ class ListMenuTest {
         }
     }
 
-    /** 120 ranked rows: seed001 is last, seed120 first, on both exp and pvp wins. Removed again after [body]. */
+    /**
+     * 120 ranked rows: seed001 is last, seed120 first, on both exp and pvp wins. Removed again after [body].
+     * The values sit far above anything another test's players earn (a PvP defeat alone pays 5000+ EXP),
+     * so rows those tests leave in the shared database never rank among the seeds.
+     */
     private fun <T> withSeededRanking(body: () -> T): T {
         val uuids = (1..120).map { "rk%03d".format(it) }
         runBlocking {
@@ -120,8 +124,8 @@ class ListMenuTest {
                     PlayerTable.insert {
                         it[PlayerTable.name] = "seed%03d".format(i)
                         it[PlayerTable.uuid] = uuids[i - 1]
-                        it[PlayerTable.exp] = 5000 + i
-                        it[PlayerTable.pvpWinCount] = i.toShort()
+                        it[PlayerTable.exp] = 10_000_000 + i
+                        it[PlayerTable.pvpWinCount] = (30_000 + i).toShort()
                     }
                 }
             }
