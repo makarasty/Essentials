@@ -190,4 +190,66 @@ class GameOverExpTest {
             leavePlayer(specter.player)
         }
     }
+
+    private fun setPlayExp(on: Boolean) {
+        Main.conf = Main.conf.copy(feature = Main.conf.feature.copy(level = Main.conf.feature.level.copy(playExp = on)))
+    }
+
+    @Test
+    fun playExpOffPaysNoMatchReward() {
+        val (player, data) = newPlayer()
+        val original = Main.conf
+        val previousPvp = Vars.state.rules.pvp
+        val previousMapStart = mapStartTime
+        try {
+            setPlayExp(false)
+            data.player.team(Team.sharded)
+            Vars.state.rules.pvp = true
+            mapStartTime = timeSource.markNow().minus(6.minutes)
+            data.currentPlayTime = 600
+            val exp = data.exp
+
+            Events.fire(GameOverEvent(Team.sharded))
+
+            assertEquals(exp, data.exp, "with playExp off the winner's play-time reward is not paid")
+        } finally {
+            Main.conf = original
+            Vars.state.rules.pvp = previousPvp
+            mapStartTime = previousMapStart
+            leavePlayer(player)
+        }
+    }
+
+    @Test
+    fun playExpOffPaysNoPvpDefeatReward() {
+        val (player, data) = newPlayer()
+        val original = Main.conf
+        val previousPvp = Vars.state.rules.pvp
+        try {
+            Vars.state.rules.pvp = true
+            for (on in listOf(true, false)) {
+                setPlayExp(on)
+                pvpSpecters.remove(data.uuid)
+                data.player.team(Team.malis) // no core on the test map: a defeated team
+                pvpPlayer[data.uuid] = Team.malis
+                val exp = data.exp
+                val losses = data.pvpLoseCount
+
+                Trigger.recordPvpDefeat(data)
+
+                assertEquals(losses + 1, data.pvpLoseCount.toInt(), "the defeat is recorded either way")
+                if (on) {
+                    assertTrue(data.exp > exp, "with playExp on the defeat pays")
+                } else {
+                    assertEquals(exp, data.exp, "with playExp off the defeat pays nothing")
+                }
+            }
+        } finally {
+            Main.conf = original
+            Vars.state.rules.pvp = previousPvp
+            pvpSpecters.remove(data.uuid)
+            pvpPlayer.remove(data.uuid)
+            leavePlayer(player)
+        }
+    }
 }

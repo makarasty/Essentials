@@ -298,7 +298,7 @@ Give EXP for each block a player builds and take it back when they deconstruct o
 ### feature.level.playExp
 
 Default: ``true``<br>
-Give EXP for time played (a small random amount every second) and for each wave cleared.
+Give EXP for time played (a small random amount every second), for each wave cleared, and at the end of a match (the match reward and the PvP defeat reward are both built on play time).
 
 ## feature.game
 

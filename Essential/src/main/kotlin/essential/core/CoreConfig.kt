@@ -238,7 +238,7 @@ data class LevelConfig(
     val display: Boolean = false,
     @YamlComment("Gain experience on block placement and lose experience on block deconstruction")
     val blockExp: Boolean = true,
-    @YamlComment("Gain experience from play time and wave clears")
+    @YamlComment("Gain experience from play time, wave clears and match results")
     val playExp: Boolean = true,
 )
 

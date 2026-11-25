@@ -1818,7 +1818,10 @@ fun earnEXP(winner: Team, p: Playerc, target: PlayerData, isConnected: Boolean) 
         val erekirAttack = if (Vars.state.planet == Planets.erekir) target.currentUnitDestroyedCount else 0
         val erekirPvP = if (Vars.state.planet == Planets.erekir) ExpTuning.EREKIR_PVP_BONUS else 0
 
-        val score = if (winner == p.team()) {
+        // The match reward is built on play time, so playExp switches it off with the per-second and wave EXP
+        val score = if (!conf.feature.level.playExp) {
+            0
+        } else if (winner == p.team()) {
             if (Vars.state.rules.attackMode) {
                 time + (target.currentBuildAttackCount + erekirAttack)
             } else if (Vars.state.rules.pvp) {

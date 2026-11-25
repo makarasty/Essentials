@@ -1065,7 +1065,7 @@ object Trigger {
             player.changeTeam(Team.derelict)
         }
 
-        val score = data.currentPlayTime + 5000
+        val score = if (conf.feature.level.playExp) data.currentPlayTime + 5000 else 0
         data.exp += (score * data.expMultiplier).toInt()
         data.send("event.exp.earn.defeat", data.currentExp + score)
     }
