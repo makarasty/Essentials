@@ -1,15 +1,15 @@
 # Essentials (makarasty fork)
-[![CI](https://github.com/makarasty/Essentials/actions/workflows/ci.yml/badge.svg)](https://github.com/makarasty/Essentials/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/makarasty/Essentials?style=flat-square)](https://github.com/makarasty/Essentials/releases/latest)
-![Downloads](https://img.shields.io/github/downloads/makarasty/Essentials/total?style=flat-square)
-![Downloads of the latest release](https://img.shields.io/github/downloads/makarasty/Essentials/latest/total?style=flat-square)
+[![CI](https://img.shields.io/github/actions/workflow/status/makarasty/Essentials/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/makarasty/Essentials/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/makarasty/Essentials?include_prereleases&style=flat-square&label=release)](https://github.com/makarasty/Essentials/releases)
+[![Upstream](https://img.shields.io/badge/upstream-v23-blue?style=flat-square)](https://github.com/Kieaer/Essentials)
+[![Mindustry](https://img.shields.io/badge/Mindustry-v160.7-blue?style=flat-square)](https://github.com/Anuken/Mindustry)
 
 A Mindustry server plugin that adds moderation, accounts, voting, statistics, achievements, server
 hubs and a lot of admin tooling. This is a fork of [Kieaer/Essentials](https://github.com/Kieaer/Essentials)
 run on a group of servers that share one database. It follows upstream closely and merges it
 regularly; everything listed under [What this fork changes](#what-this-fork-changes) is on top of it.
 
-Currently based on upstream **v22** for **Mindustry v160.7** (8.0).
+Currently based on upstream **v23** for **Mindustry v160.7** (8.0).
 
 ## Requirements
 
